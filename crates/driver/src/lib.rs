@@ -7,4 +7,5 @@ pub mod hid;
 pub mod outputs;
 mod self_test;
 pub mod settings;
+mod velocity;
 pub mod virmidi_bridge;

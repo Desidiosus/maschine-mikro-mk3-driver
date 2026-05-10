@@ -2,6 +2,7 @@ use maschine_library::controls::PadEventType;
 use num::FromPrimitive;
 
 use crate::events::ControlEvent;
+use crate::velocity::{PadVelocityCurve, pad_velocity};
 
 pub struct ControlState {
     buttons: [bool; 41],
@@ -28,6 +29,14 @@ impl Default for ControlState {
 }
 
 pub fn decode_packet(state: &mut ControlState, buf: &[u8; 64]) -> Vec<ControlEvent> {
+    decode_packet_with_curve(state, buf, PadVelocityCurve::Linear)
+}
+
+pub(crate) fn decode_packet_with_curve(
+    state: &mut ControlState,
+    buf: &[u8; 64],
+    curve: PadVelocityCurve,
+) -> Vec<ControlEvent> {
     let mut events = Vec::new();
 
     match buf[0] {
@@ -107,10 +116,11 @@ pub fn decode_packet(state: &mut ControlState, buf: &[u8; 64]) -> Vec<ControlEve
                     continue;
                 };
 
-                let mut velocity = (val >> 5) as u8;
-                if val > 0 && velocity == 0 {
-                    velocity = 1;
+                if idx >= 16 {
+                    continue;
                 }
+
+                let velocity = pad_velocity(val, curve);
 
                 match pad_evt {
                     PadEventType::NoteOn | PadEventType::PressOn => {
@@ -137,18 +147,22 @@ pub fn decode_packet(state: &mut ControlState, buf: &[u8; 64]) -> Vec<ControlEve
 
 #[cfg(test)]
 mod tests {
+    use super::{ControlState, decode_packet, decode_packet_with_curve};
+    use crate::events::ControlEvent;
+    use crate::velocity::PadVelocityCurve;
+
     #[test]
     fn decodes_button_press_to_event() {
-        let mut state = crate::hid::ControlState::new();
+        let mut state = ControlState::new();
         let mut buf = [0u8; 64];
         buf[0] = 0x01;
         buf[1] = 0b0000_0001;
 
-        let events = crate::hid::decode_packet(&mut state, &buf);
+        let events = decode_packet(&mut state, &buf);
 
         assert_eq!(
             events,
-            vec![crate::events::ControlEvent::ButtonChanged {
+            vec![ControlEvent::ButtonChanged {
                 index: 0,
                 pressed: true
             }]
@@ -157,16 +171,16 @@ mod tests {
 
     #[test]
     fn decodes_slider_change_to_event() {
-        let mut state = crate::hid::ControlState::new();
+        let mut state = ControlState::new();
         let mut buf = [0u8; 64];
         buf[0] = 0x01;
         buf[10] = 101;
 
-        let events = crate::hid::decode_packet(&mut state, &buf);
+        let events = decode_packet(&mut state, &buf);
 
         assert_eq!(
             events,
-            vec![crate::events::ControlEvent::SliderMoved {
+            vec![ControlEvent::SliderMoved {
                 raw: 101,
                 cc_value: 63
             }]
@@ -175,17 +189,17 @@ mod tests {
 
     #[test]
     fn repeated_same_button_packet_does_not_emit_duplicate_event() {
-        let mut state = crate::hid::ControlState::new();
+        let mut state = ControlState::new();
         let mut buf = [0u8; 64];
         buf[0] = 0x01;
         buf[1] = 0b0000_0001;
 
-        let first_events = crate::hid::decode_packet(&mut state, &buf);
-        let second_events = crate::hid::decode_packet(&mut state, &buf);
+        let first_events = decode_packet(&mut state, &buf);
+        let second_events = decode_packet(&mut state, &buf);
 
         assert_eq!(
             first_events,
-            vec![crate::events::ControlEvent::ButtonChanged {
+            vec![ControlEvent::ButtonChanged {
                 index: 0,
                 pressed: true
             }]
@@ -195,7 +209,7 @@ mod tests {
 
     #[test]
     fn encoder_touch_packet_with_changed_position_does_not_emit_encoder_turn() {
-        let mut state = crate::hid::ControlState::new();
+        let mut state = ControlState::new();
         let mut initial = [0u8; 64];
         initial[0] = 0x01;
         initial[7] = 0x04;
@@ -205,13 +219,13 @@ mod tests {
         touched[6] = 0b0000_0001;
         touched[7] = 0x05;
 
-        let initial_events = crate::hid::decode_packet(&mut state, &initial);
-        let touched_events = crate::hid::decode_packet(&mut state, &touched);
+        let initial_events = decode_packet(&mut state, &initial);
+        let touched_events = decode_packet(&mut state, &touched);
 
         assert!(initial_events.is_empty());
         assert_eq!(
             touched_events,
-            vec![crate::events::ControlEvent::ButtonChanged {
+            vec![ControlEvent::ButtonChanged {
                 index: 40,
                 pressed: true
             }]
@@ -220,7 +234,7 @@ mod tests {
 
     #[test]
     fn encoder_delta_resumes_after_touch_suppression_packet() {
-        let mut state = crate::hid::ControlState::new();
+        let mut state = ControlState::new();
         let mut initial = [0u8; 64];
         initial[0] = 0x01;
         initial[7] = 0x04;
@@ -240,18 +254,18 @@ mod tests {
         normal_turn[6] = 0b0000_0001;
         normal_turn[7] = 0x07;
 
-        assert!(crate::hid::decode_packet(&mut state, &initial).is_empty());
+        assert!(decode_packet(&mut state, &initial).is_empty());
         assert_eq!(
-            crate::hid::decode_packet(&mut state, &touched),
-            vec![crate::events::ControlEvent::ButtonChanged {
+            decode_packet(&mut state, &touched),
+            vec![ControlEvent::ButtonChanged {
                 index: 40,
                 pressed: true
             }]
         );
-        assert!(crate::hid::decode_packet(&mut state, &suppressed_next).is_empty());
+        assert!(decode_packet(&mut state, &suppressed_next).is_empty());
         assert_eq!(
-            crate::hid::decode_packet(&mut state, &normal_turn),
-            vec![crate::events::ControlEvent::EncoderTurn {
+            decode_packet(&mut state, &normal_turn),
+            vec![ControlEvent::EncoderTurn {
                 delta: 1,
                 cc_value: 65
             }]
@@ -260,7 +274,7 @@ mod tests {
 
     #[test]
     fn decodes_pad_note_on_and_stops_at_packet_terminator() {
-        let mut state = crate::hid::ControlState::new();
+        let mut state = ControlState::new();
         let mut buf = [0u8; 64];
         buf[0] = 0x02;
         buf[1] = 2;
@@ -273,11 +287,11 @@ mod tests {
         buf[8] = 0x10;
         buf[9] = 96;
 
-        let events = crate::hid::decode_packet(&mut state, &buf);
+        let events = decode_packet(&mut state, &buf);
 
         assert_eq!(
             events,
-            vec![crate::events::ControlEvent::PadNoteOn {
+            vec![ControlEvent::PadNoteOn {
                 index: 2,
                 velocity: 2
             }]
@@ -285,19 +299,39 @@ mod tests {
     }
 
     #[test]
+    fn decodes_pad_note_on_with_hard_velocity_curve() {
+        let mut state = ControlState::new();
+        let mut buf = [0u8; 64];
+        buf[0] = 0x02;
+        buf[1] = 2;
+        buf[2] = 0x18;
+        buf[3] = 0x00;
+
+        let events = decode_packet_with_curve(&mut state, &buf, PadVelocityCurve::Hard3);
+
+        assert_eq!(
+            events,
+            vec![ControlEvent::PadNoteOn {
+                index: 2,
+                velocity: 26
+            }]
+        );
+    }
+
+    #[test]
     fn decodes_pad_note_off_event() {
-        let mut state = crate::hid::ControlState::new();
+        let mut state = ControlState::new();
         let mut buf = [0u8; 64];
         buf[0] = 0x02;
         buf[1] = 3;
         buf[2] = 0x30;
         buf[3] = 96;
 
-        let events = crate::hid::decode_packet(&mut state, &buf);
+        let events = decode_packet(&mut state, &buf);
 
         assert_eq!(
             events,
-            vec![crate::events::ControlEvent::PadNoteOff {
+            vec![ControlEvent::PadNoteOff {
                 index: 3,
                 velocity: 3
             }]
@@ -306,7 +340,7 @@ mod tests {
 
     #[test]
     fn decodes_encoder_wraparound_as_forward_step() {
-        let mut state = crate::hid::ControlState::new();
+        let mut state = ControlState::new();
         let mut initial = [0u8; 64];
         initial[0] = 0x01;
         initial[7] = 0x0f;
@@ -315,13 +349,27 @@ mod tests {
         wrapped[0] = 0x01;
         wrapped[7] = 0x00;
 
-        assert!(crate::hid::decode_packet(&mut state, &initial).is_empty());
+        assert!(decode_packet(&mut state, &initial).is_empty());
         assert_eq!(
-            crate::hid::decode_packet(&mut state, &wrapped),
-            vec![crate::events::ControlEvent::EncoderTurn {
+            decode_packet(&mut state, &wrapped),
+            vec![ControlEvent::EncoderTurn {
                 delta: 1,
                 cc_value: 65
             }]
         );
+    }
+
+    #[test]
+    fn drops_pad_events_with_out_of_range_index() {
+        let mut state = ControlState::new();
+        let mut buf = [0u8; 64];
+        buf[0] = 0x02;
+        buf[1] = 16;
+        buf[2] = 0x10;
+        buf[3] = 64;
+
+        let events = decode_packet(&mut state, &buf);
+
+        assert!(events.is_empty());
     }
 }

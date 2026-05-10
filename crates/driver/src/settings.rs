@@ -1,5 +1,7 @@
 use serde::{Deserialize, Deserializer};
 
+use crate::velocity::PadVelocityCurve;
+
 const PAD_COUNT: usize = 16;
 const BUTTON_COUNT: usize = 41;
 
@@ -110,6 +112,7 @@ pub struct Settings {
     pub virmidi_client_name: String,
     /// Port number on the virmidi client (usually 0).
     pub virmidi_port: usize,
+    pub pad_velocity_curve: String,
 }
 
 impl Default for Settings {
@@ -125,6 +128,7 @@ impl Default for Settings {
             autoconnect_virmidi: true,
             virmidi_client_name: "".to_string(),
             virmidi_port: 0,
+            pad_velocity_curve: "linear".to_string(),
         }
     }
 }
@@ -159,7 +163,13 @@ impl Settings {
             return Err("Input port name must not be empty".to_string());
         }
 
+        self.pad_velocity_curve()?;
+
         Ok(())
+    }
+
+    pub(crate) fn pad_velocity_curve(&self) -> Result<PadVelocityCurve, String> {
+        crate::velocity::parse_pad_velocity_curve_setting(&self.pad_velocity_curve)
     }
 }
 
@@ -186,6 +196,8 @@ const fn default_slider_cc() -> u8 {
 
 #[cfg(test)]
 mod tests {
+    use super::Settings;
+    use crate::velocity::PadVelocityCurve;
     use config::{Config, File, FileFormat};
 
     fn load_settings(src: &str) -> crate::settings::Settings {
@@ -220,4 +232,33 @@ notemaps = [36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
             .unwrap_err();
         assert!(err.to_string().contains("button CC mappings"));
     }
+
+    #[test]
+    fn rejects_invalid_pad_velocity_curve() {
+        let settings = Settings {
+            pad_velocity_curve: "flat".to_string(),
+            ..Settings::default()
+        };
+
+        assert_eq!(
+            settings
+                .validate()
+                .expect_err("pad_velocity_curve should be rejected"),
+            "invalid pad_velocity_curve=\"flat\" (expected one of: soft3, soft2, soft1, linear, hard1, hard2, hard3)"
+        );
+    }
+
+    #[test]
+    fn pad_velocity_curve_helper_uses_shared_parser() {
+        let settings = Settings {
+            pad_velocity_curve: "Hard 2".to_string(),
+            ..Settings::default()
+        };
+
+        assert_eq!(
+            settings.pad_velocity_curve().unwrap(),
+            PadVelocityCurve::Hard2
+        );
+    }
+
 }

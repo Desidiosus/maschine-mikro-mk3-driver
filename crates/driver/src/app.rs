@@ -10,7 +10,7 @@ use num::FromPrimitive;
 use crate::backend::midi::MidiBackend;
 use crate::error::{DriverError, DriverResult};
 use crate::feedback::local::apply_local_output_feedback;
-use crate::hid::{ControlState, decode_packet};
+use crate::hid::{ControlState, decode_packet_with_curve};
 use crate::outputs::DeviceOutputs;
 use crate::self_test::self_test;
 use crate::settings::Settings;
@@ -24,6 +24,9 @@ pub fn run(settings: Settings) -> DriverResult<()> {
 
 pub fn run_with_device<D: HidIo>(settings: Settings, device: &D) -> DriverResult<()> {
     settings.validate().map_err(DriverError::Settings)?;
+    let pad_velocity_curve = settings
+        .pad_velocity_curve()
+        .map_err(DriverError::Settings)?;
 
     run_startup_self_test(device)?;
 
@@ -44,7 +47,7 @@ pub fn run_with_device<D: HidIo>(settings: Settings, device: &D) -> DriverResult
             continue;
         }
 
-        for event in decode_packet(&mut state, &buf) {
+        for event in decode_packet_with_curve(&mut state, &buf, pad_velocity_curve) {
             apply_local_output_feedback(&outputs, &settings, &event)?;
             backend.handle_event(&event)?;
         }
