@@ -30,7 +30,7 @@ client_name = "Maschine Mikro MK3"
 # MIDI output port name (pads/buttons/encoder/slider -> DAW)
 port_name = "Maschine Mikro MK3 MIDI Out"
 
-# MIDI input port name (DAW -> LEDs)
+# MIDI input port name (DAW -> LED and screen/SysEx feedback)
 port_name_in = "Maschine Mikro MK3 MIDI In"
 
 # Runtime backend:
@@ -45,6 +45,19 @@ midi_bridge_virmidi = false
 autoconnect_virmidi = true
 virmidi_client_name = ""
 virmidi_port = 0
+
+# ============================================
+# Startup hardware preferences
+# ============================================
+# These values are written to the controller during startup.
+# Valid range for both numeric values: 0..=100
+pad_sensitivity = 50
+display_contrast = 50
+
+# Global pad velocity curve applied to every pad note event.
+# Supported values: "soft3", "soft2", "soft1", "linear", "hard1", "hard2", "hard3"
+# Per-pad curves are not implemented yet.
+pad_velocity_curve = "linear"
 
 # ============================================
 # MIDI mapping
@@ -79,6 +92,8 @@ slider_cc = 9
 # ============================================
 # If enabled, button LEDs that would normally be Off will be set to a low backlight level.
 # This makes the buttons visible in the dark (like a keyboard backlight).
-backlight_buttons = true
+#
+# Example choice below: runtime default is false.
+backlight_buttons = false
 # One of: "dim", "normal", "bright"
 backlight_brightness = "dim"

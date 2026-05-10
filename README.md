@@ -25,17 +25,27 @@ Then we can proceed with the repo:
 git clone https://github.com/r00tman/maschine-mikro-mk3-driver.git; cd maschine-mikro-mk3-driver
 sudo cp 98-maschine.rules /etc/udev/rules.d/
 sudo udevadm control --reload && sudo udevadm trigger
-cargo run --release
+cargo run -p driver --release
 ```
 
 This will init the controller in the default `backend = "midi"` mode.
 The MIDI backend always exposes virtual MIDI output and input ports. For raw-MIDI bridge setups such as Bitwig, enable `midi_bridge_virmidi = true` in your config and start the driver with that config.
+On startup, the driver also writes the configured hardware preferences to the controller before entering the main runtime loop:
+
+```toml
+pad_sensitivity = 50
+display_contrast = 50
+pad_velocity_curve = "linear"
+```
+
+`pad_sensitivity` and `display_contrast` accept `0..=100`.
+`pad_velocity_curve` is a global pad response curve applied to every pad note event.
 
 Pads have been tested to work with Hydrogen, EZdrummer 2/3, Addictive Drums 2 as plugins via REAPER+LinVst and standalone via Wine.
 
 Note that you can use your custom config with your own MIDI mappings and other settings like this:
 ```shell
-cargo run --release -- -c example_config.toml
+cargo run -p driver --release -- -c example_config.toml
 ```
 
 ## Backend Configuration
@@ -69,17 +79,22 @@ When enabled, any incoming "Off" state for **button LEDs** is treated as the con
 
 **Build-time MIDI API note:** This is separate from `backend = "midi"` above. By default the project builds against ALSA via `midir`. If you need the JACK `midir` backend instead, use:
 ```shell
-cargo run --release --features jack
+cargo run -p driver --release --features jack
 ```
 I tried to make a version that could do both, but due to 1) how `midir` handles backends during compile-time (no features = alsa, `["jack"]` features = jack) and 2) how rust handles dependencies with different feature flag sets ([feature unification](https://github.com/rust-lang/cargo/issues/10489)), it does not seem possible.
 
 **Note:** In previous versions, 98-maschine.rules was granting access to Maschine only to users in `input` group. This is no longer needed, the new version of the udev rules file allows Maschine to be accessed by any user. This simplifies installation, e.g., for Ubuntu users, as by default there's no `input` group there.
 
+## Soft-Off
+
+Press `Shift + Maschine` to toggle soft-off.
+While soft-off is active, the driver blanks the controller lights and screen and suppresses both outgoing control events and incoming MIDI feedback until you press the combo again to wake it.
+
 ## Progress
 
 What works:
  - Pads (MIDI Notes)
- - All 39 Buttons (MIDI CC)
+ - All 41 Buttons (MIDI CC, including Encoder Press and Encoder Touch)
  - Encoder (MIDI CC, relative mode)
  - Slider/Touch Strip (MIDI CC)
  - All LEDs (DAW-driven LED input via the MIDI backend virtual input)
@@ -121,6 +136,26 @@ slider_cc = 9
 
 ### Pads (MIDI Notes)
 Pads send Note On/Off messages. Notes are configurable via `pad_notes` in config.
+
+### Pad Velocity Curves
+
+Pad note velocity uses a single global curve configured with:
+
+```toml
+pad_velocity_curve = "linear"
+```
+
+Supported values are:
+- `soft3`
+- `soft2`
+- `soft1`
+- `linear`
+- `hard1`
+- `hard2`
+- `hard3`
+
+Softer curves raise midrange velocities more aggressively. Harder curves do the opposite.
+Per-pad velocity curves are not implemented yet.
 
 ### Buttons (MIDI CC)
 All buttons send configured CC messages on press (value 127) and release (value 0). Default map:
@@ -209,8 +244,8 @@ virmidi_port = 0
 ```
 
 ```shell
-# Start the driver
-cargo run --release -- -c example_config.toml
+# After enabling midi_bridge_virmidi = true in your config, start the driver
+cargo run -p driver --release -- -c example_config.toml
 ```
 
 Then in Bitwig:
