@@ -60,6 +60,7 @@ pub fn render_centered_text(screen: &mut Screen, text: &str) {
     render_centered_text_with_style(screen, text, SCREEN_TEXT_SCALE, SCREEN_TEXT_Y_POSITION);
 }
 
+#[derive(Clone)]
 pub struct Screen {
     buffer: [u8; 512],
 }

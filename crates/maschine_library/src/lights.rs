@@ -33,6 +33,7 @@ pub enum PadColors {
     White = 17,
 }
 
+#[derive(Clone)]
 pub struct Lights {
     status: [u8; 80],
 }

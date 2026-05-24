@@ -7,6 +7,7 @@ use crate::events::ControlEvent;
 use crate::feedback::midi::apply_incoming_midi_message;
 use crate::outputs::DeviceOutputs;
 use crate::settings::{MidiMapping, Settings};
+use crate::soft_off::SoftOffSync;
 use crate::virmidi_bridge::try_autoconnect_virmidi;
 
 /// Downstream MIDI send step; lets tests substitute a capturing fake.
@@ -28,7 +29,11 @@ pub struct MidiBackend<S: MidiSink = MidiOutputConnection> {
 }
 
 impl MidiBackend {
-    pub fn new(settings: &Settings, outputs: &DeviceOutputs) -> DriverResult<Self> {
+    pub fn new(
+        settings: &Settings,
+        outputs: &DeviceOutputs,
+        soft_off: SoftOffSync,
+    ) -> DriverResult<Self> {
         let sink = MidiOutput::new(&settings.client_name)
             .map_err(|err| DriverError::Midi(format!("couldn't open MIDI output: {err}")))?
             .create_virtual(&settings.port_name)
@@ -36,7 +41,7 @@ impl MidiBackend {
                 DriverError::Midi(format!("couldn't create virtual output port: {err}"))
             })?;
 
-        let input = create_midi_input(settings, outputs.clone())?;
+        let input = create_midi_input(settings, outputs.clone(), soft_off)?;
 
         if settings.midi_bridge_virmidi && settings.autoconnect_virmidi {
             try_autoconnect_virmidi(settings)?;
@@ -75,6 +80,7 @@ impl<S: MidiSink> MidiBackend<S> {
 fn create_midi_input(
     settings: &Settings,
     outputs: DeviceOutputs,
+    soft_off: SoftOffSync,
 ) -> DriverResult<MidiInputConnection<DeviceOutputs>> {
     let midi_mapping = settings.midi.clone();
     let backlight_enabled = settings.backlight_buttons;
@@ -86,6 +92,10 @@ fn create_midi_input(
         .create_virtual(
             &settings.port_name_in,
             move |_timestamp, message, outputs| {
+                let _guard = soft_off.lock();
+                if soft_off.is_active() {
+                    return;
+                }
                 apply_incoming_midi_message(
                     message,
                     outputs,

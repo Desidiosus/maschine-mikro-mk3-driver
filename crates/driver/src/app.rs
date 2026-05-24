@@ -15,6 +15,7 @@ use crate::hid::{ControlState, decode_packet_with_curve};
 use crate::outputs::DeviceOutputs;
 use crate::self_test::self_test;
 use crate::settings::Settings;
+use crate::soft_off::{SoftOffOutcome, SoftOffState, SoftOffSync};
 
 pub fn run(settings: Settings) -> DriverResult<()> {
     let api = HidApi::new()?;
@@ -42,7 +43,8 @@ pub fn run_with_device<D: HidIo>(settings: Settings, device: &D) -> DriverResult
     prepare_startup_outputs(&outputs, &settings);
     outputs.flush(device)?;
 
-    let mut backend = MidiBackend::new(&settings, &outputs)?;
+    let mut soft_off = SoftOffState::new(SoftOffSync::new());
+    let mut backend = MidiBackend::new(&settings, &outputs, soft_off.sync())?;
     let mut state = ControlState::new();
     let mut buf = [0u8; 64];
 
@@ -56,6 +58,9 @@ pub fn run_with_device<D: HidIo>(settings: Settings, device: &D) -> DriverResult
         }
 
         for event in decode_packet_with_curve(&mut state, &buf, pad_velocity_curve) {
+            if soft_off.observe_event(&outputs, &event) == SoftOffOutcome::Swallow {
+                continue;
+            }
             apply_local_output_feedback(&outputs, &settings, &event)?;
             backend.handle_event(&event)?;
         }
