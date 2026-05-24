@@ -10,6 +10,7 @@ pub struct ControlState {
     encoder_pos: Option<u8>,
     suppress_encoder_packet: bool,
     last_aftertouch: [Option<u8>; 16],
+    slider_touched: bool,
 }
 
 impl ControlState {
@@ -20,6 +21,7 @@ impl ControlState {
             encoder_pos: None,
             suppress_encoder_packet: false,
             last_aftertouch: [None; 16],
+            slider_touched: false,
         }
     }
 }
@@ -98,8 +100,22 @@ pub(crate) fn decode_packet_with_curve(
                 state.suppress_encoder_packet = false;
             }
 
+            // Slider touch: the device reports buf[10] = 0 when the slider is
+            // not touched and buf[10] = position (1..=200) while touched.
+            // Confirmed from wireshark/slider_touch_event.pcapng: touch-on frame
+            // has buf[10] = 0x5b (91), touch-off frame has buf[10] = 0x00.
+            // There is no separate dedicated touch bit; the zero/non-zero state of
+            // the cooked position byte serves as the touch indicator.
             let slider_raw = buf[10];
-            if slider_raw != 0 && slider_raw != state.slider_value {
+            let slider_touched = slider_raw != 0;
+            if slider_touched != state.slider_touched {
+                state.slider_touched = slider_touched;
+                events.push(ControlEvent::SliderTouch {
+                    pressed: slider_touched,
+                });
+            }
+
+            if slider_touched && slider_raw != state.slider_value {
                 state.slider_value = slider_raw;
                 let cc_value = ((slider_raw as u16 - 1) * 127 / 200).min(127) as u8;
                 events.push(ControlEvent::SliderMoved {
@@ -194,12 +210,16 @@ mod tests {
 
         let events = decode_packet(&mut state, &buf);
 
+        // First contact emits both SliderTouch (pressed) and SliderMoved.
         assert_eq!(
             events,
-            vec![ControlEvent::SliderMoved {
-                raw: 101,
-                cc_value: 63
-            }]
+            vec![
+                ControlEvent::SliderTouch { pressed: true },
+                ControlEvent::SliderMoved {
+                    raw: 101,
+                    cc_value: 63
+                },
+            ]
         );
     }
 
@@ -463,6 +483,61 @@ mod tests {
         assert!(
             second.is_empty(),
             "duplicate pressure should not re-emit, got {second:?}"
+        );
+    }
+
+    #[test]
+    fn decodes_slider_touch_press_then_release() {
+        let mut state = ControlState::new();
+
+        // Touch-on: buf[10] is any non-zero value (slider position while touched).
+        let mut press = [0u8; 64];
+        press[0] = 0x01;
+        press[10] = 0x5b; // position 91, confirmed from wireshark/slider_touch_event.pcapng
+
+        // Touch-off: buf[10] = 0 (device sends 0 when slider is released).
+        let mut release = [0u8; 64];
+        release[0] = 0x01;
+        release[10] = 0;
+
+        let press_events = decode_packet(&mut state, &press);
+        let release_events = decode_packet(&mut state, &release);
+
+        // (0x5b - 1) * 127 / 200 = 90 * 127 / 200 = 57
+        assert_eq!(
+            press_events,
+            vec![
+                ControlEvent::SliderTouch { pressed: true },
+                ControlEvent::SliderMoved {
+                    raw: 0x5b,
+                    cc_value: 57
+                },
+            ]
+        );
+        assert_eq!(
+            release_events,
+            vec![ControlEvent::SliderTouch { pressed: false }]
+        );
+    }
+
+    #[test]
+    fn slider_touch_stable_state_does_not_re_emit() {
+        let mut state = ControlState::new();
+
+        let mut press = [0u8; 64];
+        press[0] = 0x01;
+        press[10] = 0x5b;
+
+        let first = decode_packet(&mut state, &press);
+        let second = decode_packet(&mut state, &press);
+
+        assert!(
+            first.contains(&ControlEvent::SliderTouch { pressed: true }),
+            "expected SliderTouch on first packet, got {first:?}"
+        );
+        assert!(
+            !second.contains(&ControlEvent::SliderTouch { pressed: true }),
+            "expected no SliderTouch on stable touch, got {second:?}"
         );
     }
 
