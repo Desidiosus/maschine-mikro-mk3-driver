@@ -90,11 +90,12 @@ fn run() -> DriverResult<()> {
         builder = builder.add_source(config::File::with_name(config_fn.as_str()));
     }
 
-    let settings: Settings = builder
+    let partial: driver::settings::PartialSettings = builder
         .build()
         .map_err(|err| driver::error::DriverError::Settings(err.to_string()))?
         .try_deserialize()
         .map_err(|err| driver::error::DriverError::Settings(err.to_string()))?;
+    let settings = Settings::default().merge_overrides(partial);
     settings
         .validate()
         .map_err(driver::error::DriverError::Settings)?;
