@@ -36,148 +36,116 @@
 # virmidi_client_name = ""
 # virmidi_port = 0
 
-[[pads]]
-
-[pads.hit]
+[pads.0.hit]
 # type = "note"
 # note = 48
 
-[pads.pressure]
+[pads.0.pressure]
 # type = "disabled"
 
-[[pads]]
-
-[pads.hit]
+[pads.1.hit]
 # type = "note"
 # note = 49
 
-[pads.pressure]
+[pads.1.pressure]
 # type = "disabled"
 
-[[pads]]
-
-[pads.hit]
-# type = "note"
-# note = 50
-
-[pads.pressure]
-# type = "disabled"
-
-[[pads]]
-
-[pads.hit]
-# type = "note"
-# note = 51
-
-[pads.pressure]
-# type = "disabled"
-
-[[pads]]
-
-[pads.hit]
-# type = "note"
-# note = 44
-
-[pads.pressure]
-# type = "disabled"
-
-[[pads]]
-
-[pads.hit]
-# type = "note"
-# note = 45
-
-[pads.pressure]
-# type = "disabled"
-
-[[pads]]
-
-[pads.hit]
-# type = "note"
-# note = 46
-
-[pads.pressure]
-# type = "disabled"
-
-[[pads]]
-
-[pads.hit]
-# type = "note"
-# note = 47
-
-[pads.pressure]
-# type = "disabled"
-
-[[pads]]
-
-[pads.hit]
-# type = "note"
-# note = 40
-
-[pads.pressure]
-# type = "disabled"
-
-[[pads]]
-
-[pads.hit]
-# type = "note"
-# note = 41
-
-[pads.pressure]
-# type = "disabled"
-
-[[pads]]
-
-[pads.hit]
+[pads.10.hit]
 # type = "note"
 # note = 42
 
-[pads.pressure]
+[pads.10.pressure]
 # type = "disabled"
 
-[[pads]]
-
-[pads.hit]
+[pads.11.hit]
 # type = "note"
 # note = 43
 
-[pads.pressure]
+[pads.11.pressure]
 # type = "disabled"
 
-[[pads]]
-
-[pads.hit]
+[pads.12.hit]
 # type = "note"
 # note = 36
 
-[pads.pressure]
+[pads.12.pressure]
 # type = "disabled"
 
-[[pads]]
-
-[pads.hit]
+[pads.13.hit]
 # type = "note"
 # note = 37
 
-[pads.pressure]
+[pads.13.pressure]
 # type = "disabled"
 
-[[pads]]
-
-[pads.hit]
+[pads.14.hit]
 # type = "note"
 # note = 38
 
-[pads.pressure]
+[pads.14.pressure]
 # type = "disabled"
 
-[[pads]]
-
-[pads.hit]
+[pads.15.hit]
 # type = "note"
 # note = 39
 
-[pads.pressure]
+[pads.15.pressure]
+# type = "disabled"
+
+[pads.2.hit]
+# type = "note"
+# note = 50
+
+[pads.2.pressure]
+# type = "disabled"
+
+[pads.3.hit]
+# type = "note"
+# note = 51
+
+[pads.3.pressure]
+# type = "disabled"
+
+[pads.4.hit]
+# type = "note"
+# note = 44
+
+[pads.4.pressure]
+# type = "disabled"
+
+[pads.5.hit]
+# type = "note"
+# note = 45
+
+[pads.5.pressure]
+# type = "disabled"
+
+[pads.6.hit]
+# type = "note"
+# note = 46
+
+[pads.6.pressure]
+# type = "disabled"
+
+[pads.7.hit]
+# type = "note"
+# note = 47
+
+[pads.7.pressure]
+# type = "disabled"
+
+[pads.8.hit]
+# type = "note"
+# note = 40
+
+[pads.8.pressure]
+# type = "disabled"
+
+[pads.9.hit]
+# type = "note"
+# note = 41
+
+[pads.9.pressure]
 # type = "disabled"
 
 [buttons.auto.press]

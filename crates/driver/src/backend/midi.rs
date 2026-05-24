@@ -156,17 +156,17 @@ pub fn event_to_midi_bytes(event: &ControlEvent, settings: &Settings) -> Option<
             ]),
         },
         ControlEvent::PadNoteOn { index, velocity } => {
-            let pad = settings.pads.get(*index)?;
+            let pad = settings.pads.0.get(*index)?;
             let PadHitAction::Note { channel, note } = &pad.hit;
             Some([0x90 | resolve_channel(*channel, global), *note, *velocity])
         }
         ControlEvent::PadNoteOff { index, velocity } => {
-            let pad = settings.pads.get(*index)?;
+            let pad = settings.pads.0.get(*index)?;
             let PadHitAction::Note { channel, note } = &pad.hit;
             Some([0x80 | resolve_channel(*channel, global), *note, *velocity])
         }
         ControlEvent::PadAftertouch { index, pressure } => {
-            let pad = settings.pads.get(*index)?;
+            let pad = settings.pads.0.get(*index)?;
             match &pad.pressure {
                 PadPressureAction::Disabled => None,
                 PadPressureAction::Poly { channel, note } => {

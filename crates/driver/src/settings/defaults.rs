@@ -4,6 +4,7 @@ use crate::settings::{
         PadPressureAction, SliderConfig, SliderPositionAction, SliderTouchAction,
     },
     buttons_by_name::ButtonsByName,
+    pads_by_index::PadsByIndex,
 };
 
 const DEFAULT_PAD_NOTES: [u8; 16] = [
@@ -18,14 +19,15 @@ const DEFAULT_BUTTON_CCS: [u8; 41] = [
 pub(crate) const DEFAULT_ENCODER_CC: u8 = 1;
 pub(crate) const DEFAULT_SLIDER_CC: u8 = 9;
 
-pub(crate) fn default_pads() -> [PadConfig; 16] {
-    std::array::from_fn(|i| PadConfig {
+pub(crate) fn default_pads() -> PadsByIndex {
+    let arr: [PadConfig; 16] = std::array::from_fn(|i| PadConfig {
         hit: PadHitAction::Note {
             channel: None,
             note: DEFAULT_PAD_NOTES[i],
         },
         pressure: PadPressureAction::Disabled,
-    })
+    });
+    PadsByIndex(arr)
 }
 
 pub(crate) fn default_buttons() -> ButtonsByName {

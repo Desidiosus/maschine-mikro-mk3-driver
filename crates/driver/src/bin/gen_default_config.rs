@@ -100,10 +100,9 @@ mod tests {
             stripped.push('\n');
         }
 
-        // Parse as Settings directly: the generated TOML uses the same
-        // serialization format as Settings (array-of-tables for pads,
-        // named-table map for buttons). PartialSettings uses a different
-        // integer-keyed map format for pads and is not compatible here.
+        // Parse as Settings directly: both Settings and PartialSettings now use
+        // the same integer-keyed map format for pads ([pads.0], [pads.1], …),
+        // so the generated TOML is compatible with both paths.
         let parsed: Settings =
             toml::from_str(&stripped).expect("uncommented config must parse as Settings");
         assert_eq!(parsed, Settings::default());

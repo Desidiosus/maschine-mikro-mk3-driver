@@ -4,6 +4,7 @@ pub mod actions;
 pub mod buttons_by_name;
 pub mod defaults;
 pub mod groups;
+pub mod pads_by_index;
 pub mod partial;
 pub use partial::PartialSettings;
 
@@ -13,6 +14,7 @@ pub use actions::{
 };
 pub use buttons_by_name::ButtonsByName;
 pub use groups::{BridgeSettings, GlobalSettings, HardwareSettings};
+pub use pads_by_index::PadsByIndex;
 
 #[derive(Default, Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -67,7 +69,7 @@ pub struct Settings {
     pub global: GlobalSettings,
     pub hardware: HardwareSettings,
     pub bridge: BridgeSettings,
-    pub pads: [PadConfig; 16],
+    pub pads: PadsByIndex,
     pub buttons: ButtonsByName,
     pub encoder: EncoderConfig,
     pub slider: SliderConfig,
