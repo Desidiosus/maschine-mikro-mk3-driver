@@ -7,9 +7,12 @@
     "build": "rollup -c",
     "watch": "rollup -c -w"
   },
+  "engines": {
+    "node": ">=24 <25"
+  },
   "devDependencies": {
-    "@rollup/plugin-terser": "^0.4.4",
-    "rollup": "^4.9.6"
+    "@rollup/plugin-terser": "^1.0.0",
+    "rollup": "^4.60.3"
   },
   "author": "",
   "license": "MIT"

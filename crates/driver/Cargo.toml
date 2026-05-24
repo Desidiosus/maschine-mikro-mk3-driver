@@ -13,7 +13,7 @@ clap.workspace = true
 config.workspace = true
 serde.workspace = true
 
-midir = { version = "0.10.2", features = ["default"] }
+midir = { version = "0.10.4", features = ["default"] }
 
 [features]
 jack = ["midir/jack"]
