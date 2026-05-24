@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod groups;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
