@@ -1,3 +1,5 @@
+pub mod actions;
+
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::velocity::PadVelocityCurve;
@@ -307,8 +309,6 @@ notemaps = [36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
         );
     }
 
-    }
-
     #[test]
     fn midi_channel_round_trips_via_toml_as_integer() {
         use crate::settings::MidiChannel;
@@ -319,4 +319,5 @@ notemaps = [36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
 
         let parsed: MidiChannel = toml::Value::Integer(7).try_into().unwrap();
         assert_eq!(parsed.as_u8(), 7);
+    }
 }
