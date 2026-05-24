@@ -185,16 +185,41 @@ pub fn event_to_midi_bytes(event: &ControlEvent, settings: &Settings) -> Option<
     }
 }
 
-#[allow(dead_code)]
-pub fn pad_index_for_message(_settings: &Settings, _channel: u8, _note: u8) -> Option<usize> {
-    // Real implementation arrives in Task 17.
-    None
+pub fn pad_index_for_message(settings: &Settings, channel: u8, note: u8) -> Option<usize> {
+    let global = settings.global.midi_channel.as_u8();
+    settings.pads.iter().enumerate().find_map(|(idx, pad)| {
+        let PadHitAction::Note {
+            channel: pad_channel,
+            note: pad_note,
+        } = &pad.hit;
+        let resolved_channel = pad_channel.map(|c| c.as_u8()).unwrap_or(global);
+        if resolved_channel == channel && *pad_note == note {
+            Some(idx)
+        } else {
+            None
+        }
+    })
 }
 
-#[allow(dead_code)]
-pub fn button_index_for_message(_settings: &Settings, _channel: u8, _cc: u8) -> Option<usize> {
-    // Real implementation arrives in Task 17.
-    None
+pub fn button_index_for_message(settings: &Settings, channel: u8, cc: u8) -> Option<usize> {
+    let global = settings.global.midi_channel.as_u8();
+    settings
+        .buttons
+        .0
+        .iter()
+        .enumerate()
+        .find_map(|(idx, btn)| {
+            let ButtonPressAction::Cc {
+                channel: btn_channel,
+                cc: btn_cc,
+            } = &btn.press;
+            let resolved_channel = btn_channel.map(|c| c.as_u8()).unwrap_or(global);
+            if resolved_channel == channel && *btn_cc == cc {
+                Some(idx)
+            } else {
+                None
+            }
+        })
 }
 
 pub fn button_brightness_from_value(
