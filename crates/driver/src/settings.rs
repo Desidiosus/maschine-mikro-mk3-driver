@@ -1,4 +1,4 @@
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::velocity::PadVelocityCurve;
 
@@ -18,7 +18,7 @@ where
     })
 }
 
-#[derive(Default, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum BacklightBrightness {
     #[default]
@@ -37,13 +37,19 @@ impl BacklightBrightness {
     }
 }
 
-#[derive(Default, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(try_from = "u8")]
+#[derive(Default, Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(try_from = "u8", into = "u8")]
 pub struct MidiChannel(u8);
 
 impl MidiChannel {
     pub const fn as_u8(self) -> u8 {
         self.0
+    }
+}
+
+impl From<MidiChannel> for u8 {
+    fn from(value: MidiChannel) -> Self {
+        value.0
     }
 }
 
@@ -301,4 +307,16 @@ notemaps = [36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
         );
     }
 
+    }
+
+    #[test]
+    fn midi_channel_round_trips_via_toml_as_integer() {
+        use crate::settings::MidiChannel;
+
+        let channel = MidiChannel::try_from(7).unwrap();
+        let toml_value = toml::Value::try_from(channel).unwrap();
+        assert_eq!(toml_value, toml::Value::Integer(7));
+
+        let parsed: MidiChannel = toml::Value::Integer(7).try_into().unwrap();
+        assert_eq!(parsed.as_u8(), 7);
 }

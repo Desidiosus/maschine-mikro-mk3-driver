@@ -1,9 +1,12 @@
+use serde::{Deserialize, Serialize};
+
 const VALID_PAD_VELOCITY_CURVE_NAMES: &[&str] = &[
     "soft3", "soft2", "soft1", "linear", "hard1", "hard2", "hard3",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PadVelocityCurve {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PadVelocityCurve {
     Soft3,
     Soft2,
     Soft1,
@@ -184,5 +187,22 @@ mod tests {
             assert_eq!(apply_pad_velocity_curve(127, curve), 127);
             assert!(apply_pad_velocity_curve(1, curve) >= 1);
         }
+    }
+
+    #[test]
+    fn pad_velocity_curve_serializes_as_lowercase_string() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct Wrapper {
+            curve: PadVelocityCurve,
+        }
+
+        let toml_str = toml::to_string(&Wrapper {
+            curve: PadVelocityCurve::Hard2,
+        })
+        .unwrap();
+        assert!(toml_str.contains("hard2"));
+
+        let round_trip: Wrapper = toml::from_str("curve = \"hard2\"").unwrap();
+        assert_eq!(round_trip.curve, PadVelocityCurve::Hard2);
     }
 }
