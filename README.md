@@ -52,10 +52,10 @@ Defaults live in code; your `config.toml` contains only the keys you want to ove
 
 ## Backend Configuration
 
-The runtime config now uses a single MIDI backend:
+The runtime config uses a single MIDI backend. ALSA raw-MIDI bridging (for Bitwig via `snd-virmidi`) lives under the `[bridge]` section:
 
 ```toml
-backend = "midi"
+[bridge]
 midi_bridge_virmidi = false
 autoconnect_virmidi = true
 virmidi_client_name = ""
@@ -64,7 +64,7 @@ virmidi_port = 0
 
 The MIDI backend always creates both virtual MIDI output and virtual MIDI input ports for the controller.
 Leave `midi_bridge_virmidi = false` for the normal sequencer-port workflow.
-Set `midi_bridge_virmidi = true` when you need an ALSA raw-MIDI bridge, such as Bitwig integration through `snd-virmidi`.
+Set `midi_bridge_virmidi = true` when you need the raw-MIDI bridge, such as Bitwig integration through `snd-virmidi`.
 
 ## Backlight / Night mode (dimly lit buttons)
 
@@ -73,6 +73,7 @@ Maschine Mikro MK3 buttons support multiple brightness levels. You can enable a 
 In your config:
 
 ```toml
+[hardware]
 backlight_buttons = true
 backlight_brightness = "dim" # "dim" | "normal" | "bright"
 ```
@@ -124,26 +125,80 @@ The screen is controlled via SysEx messages from the Bitwig controller script th
 
 ## MIDI Mapping
 
-All outgoing notes and CC messages are configurable:
+Every control is configured as a per-action override in your `config.toml`. The full list of available keys lives in the auto-generated `default_config.toml` — copy the sections you want and uncomment the lines you want to change.
+
+Global default MIDI channel:
 
 ```toml
-midi_channel = 0
-pad_notes = [48, 49, 50, 51, 44, 45, 46, 47, 40, 41, 42, 43, 36, 37, 38, 39]
-button_ccs = [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60]
-encoder_cc = 1
-slider_cc = 9
+[global]
+midi_channel = 0      # 0..=15; per-action `channel` can override
 ```
 
-`notemaps` still works as legacy alias for `pad_notes`.
+Pad notes (default scale: 48, 49, 50, 51, 44, ..., 39):
+
+```toml
+[pads.0.hit]
+type = "note"
+note = 48
+# channel = 1        # optional per-pad channel override
+```
+
+Pad aftertouch (poly-pressure) is **disabled by default**. Enable per pad:
+
+```toml
+[pads.0.pressure]
+type = "poly"
+# note inherits from [pads.0.hit] unless set
+# channel inherits from [global] unless set
+```
+
+Button CCs (snake_case names from the `Buttons` enum):
+
+```toml
+[buttons.play.press]
+type = "cc"
+cc = 42
+
+[buttons.stop.press]
+type = "cc"
+cc = 44
+```
+
+Encoder turn (relative-offset CC):
+
+```toml
+[encoder.turn]
+type = "cc"
+cc = 1
+```
+
+Slider position (absolute CC):
+
+```toml
+[slider.position]
+type = "cc"
+cc = 9
+```
+
+Slider touch is **disabled by default**. Enable as a Note or CC trigger:
+
+```toml
+[slider.touch]
+type = "cc"          # or "note"
+cc = 70              # or note = 60 when type = "note"
+on_value = 127
+off_value = 0
+```
 
 ### Pads (MIDI Notes)
-Pads send Note On/Off messages. Notes are configurable via `pad_notes` in config.
+Pads send Note On/Off messages. Notes are configurable via `[pads.<n>.hit]` in config.
 
 ### Pad Velocity Curves
 
 Pad note velocity uses a single global curve configured with:
 
 ```toml
+[hardware]
 pad_velocity_curve = "linear"
 ```
 
