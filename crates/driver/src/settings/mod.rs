@@ -4,6 +4,8 @@ pub mod actions;
 pub mod buttons_by_name;
 pub mod defaults;
 pub mod groups;
+pub mod partial;
+pub use partial::PartialSettings;
 
 pub use actions::{
     ButtonConfig, ButtonPressAction, EncoderConfig, EncoderTurnAction, PadConfig, PadHitAction,
