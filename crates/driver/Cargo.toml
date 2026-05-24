@@ -12,6 +12,7 @@ midly.workspace = true
 clap.workspace = true
 config.workspace = true
 serde.workspace = true
+toml.workspace = true
 
 midir = { version = "0.10.4", features = ["default"] }
 
