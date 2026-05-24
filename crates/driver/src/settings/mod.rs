@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod buttons_by_name;
 pub mod groups;
 
 use serde::{Deserialize, Deserializer, Serialize};
