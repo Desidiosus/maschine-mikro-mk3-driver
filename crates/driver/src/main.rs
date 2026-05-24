@@ -20,7 +20,11 @@ use std::{thread, time::Duration};
     author = env!("CARGO_PKG_AUTHORS"),
 )]
 struct Args {
-    #[clap(short, long, help = "Config file (see example_config.toml)")]
+    #[clap(
+        short,
+        long,
+        help = "Config file (see default_config.toml for available keys)"
+    )]
     config: Option<String>,
 
     #[clap(short, long, help = "Print text on screen (slides if > 4 chars)")]
