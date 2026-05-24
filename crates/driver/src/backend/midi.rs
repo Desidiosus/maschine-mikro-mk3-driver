@@ -75,10 +75,10 @@ impl<S: MidiSink> MidiBackend<S> {
     }
 
     pub fn handle_event(&mut self, event: &ControlEvent) -> DriverResult<()> {
-        let bytes = event_to_midi_bytes(event, &self.settings)
-            .ok_or_else(|| DriverError::Midi(format!("unsupported control event: {event:?}")))?;
-
-        self.sink.send(&bytes)
+        match event_to_midi_bytes(event, &self.settings) {
+            Some(bytes) => self.sink.send(&bytes),
+            None => Ok(()),
+        }
     }
 }
 
@@ -227,6 +227,18 @@ mod tests {
         ButtonPressAction, PadHitAction, PadPressureAction, SliderTouchAction,
     };
     use crate::settings::{MidiChannel, Settings};
+
+    #[derive(Default)]
+    struct CapturingSink {
+        sent: Vec<Vec<u8>>,
+    }
+
+    impl MidiSink for CapturingSink {
+        fn send(&mut self, bytes: &[u8]) -> DriverResult<()> {
+            self.sent.push(bytes.to_vec());
+            Ok(())
+        }
+    }
 
     fn settings_with_pad_pressure_enabled(idx: usize, channel: u8, note: Option<u8>) -> Settings {
         let mut s = Settings::default();
@@ -411,5 +423,38 @@ mod tests {
             channel: None,
             cc: 0,
         };
+    }
+
+    #[test]
+    fn handle_event_drops_silently_when_dispatch_returns_none() {
+        let mut backend = MidiBackend::with_sink(Settings::default(), CapturingSink::default());
+
+        backend
+            .handle_event(&ControlEvent::SliderTouch { pressed: true })
+            .unwrap();
+        backend
+            .handle_event(&ControlEvent::PadAftertouch {
+                index: 0,
+                pressure: 100,
+            })
+            .unwrap();
+
+        assert!(
+            backend.sink().sent.is_empty(),
+            "got {:?}",
+            backend.sink().sent
+        );
+    }
+
+    #[test]
+    fn handle_event_sends_button_press_under_default_settings() {
+        let mut backend = MidiBackend::with_sink(Settings::default(), CapturingSink::default());
+        backend
+            .handle_event(&ControlEvent::ButtonChanged {
+                index: 22,
+                pressed: true,
+            })
+            .unwrap();
+        assert_eq!(backend.sink().sent, vec![vec![0xB0, 42, 127]]);
     }
 }
