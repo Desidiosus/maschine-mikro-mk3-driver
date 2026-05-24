@@ -9,6 +9,7 @@ pub struct ControlState {
     slider_value: u8,
     encoder_pos: Option<u8>,
     suppress_encoder_packet: bool,
+    last_aftertouch: [Option<u8>; 16],
 }
 
 impl ControlState {
@@ -18,6 +19,7 @@ impl ControlState {
             slider_value: 0,
             encoder_pos: None,
             suppress_encoder_packet: false,
+            last_aftertouch: [None; 16],
         }
     }
 }
@@ -26,6 +28,10 @@ impl Default for ControlState {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn scale_pressure_to_midi(val: u16) -> u8 {
+    (val >> 5).min(127) as u8
 }
 
 pub fn decode_packet(state: &mut ControlState, buf: &[u8; 64]) -> Vec<ControlEvent> {
@@ -130,12 +136,22 @@ pub(crate) fn decode_packet_with_curve(
                         });
                     }
                     PadEventType::NoteOff | PadEventType::PressOff => {
+                        state.last_aftertouch[idx] = None;
                         events.push(ControlEvent::PadNoteOff {
                             index: idx,
                             velocity,
                         });
                     }
-                    PadEventType::Aftertouch => {}
+                    PadEventType::Aftertouch => {
+                        let pressure = scale_pressure_to_midi(val);
+                        if state.last_aftertouch[idx] != Some(pressure) {
+                            state.last_aftertouch[idx] = Some(pressure);
+                            events.push(ControlEvent::PadAftertouch {
+                                index: idx,
+                                pressure,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -371,5 +387,113 @@ mod tests {
         let events = decode_packet(&mut state, &buf);
 
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn decodes_aftertouch_to_event_with_scaled_pressure() {
+        let mut state = ControlState::new();
+        let mut buf = [0u8; 64];
+        buf[0] = 0x02;
+        buf[1] = 4;
+        buf[2] = 0x40; // PadEventType::Aftertouch
+        buf[3] = 0xFF; // val low byte; high nibble is in buf[2] & 0x0f (0)
+        // 12-bit val = 0x0FF = 255 → (255 >> 5) = 7
+
+        let events = decode_packet(&mut state, &buf);
+        assert_eq!(
+            events,
+            vec![ControlEvent::PadAftertouch {
+                index: 4,
+                pressure: 7
+            }]
+        );
+    }
+
+    #[test]
+    fn aftertouch_min_endpoint_pressure_is_zero() {
+        let mut state = ControlState::new();
+        let mut buf = [0u8; 64];
+        buf[0] = 0x02;
+        buf[1] = 4;
+        buf[2] = 0x40;
+        buf[3] = 0x00;
+        // val = 0 → pressure = 0
+
+        let events = decode_packet(&mut state, &buf);
+        assert_eq!(
+            events,
+            vec![ControlEvent::PadAftertouch {
+                index: 4,
+                pressure: 0
+            }]
+        );
+    }
+
+    #[test]
+    fn aftertouch_max_endpoint_pressure_is_127() {
+        let mut state = ControlState::new();
+        let mut buf = [0u8; 64];
+        buf[0] = 0x02;
+        buf[1] = 4;
+        buf[2] = 0x4F; // high nibble of 12-bit val = 0xF
+        buf[3] = 0xFF; // low byte of 12-bit val
+        // 12-bit val = 0xFFF = 4095 → (4095 >> 5) = 127
+
+        let events = decode_packet(&mut state, &buf);
+        assert_eq!(
+            events,
+            vec![ControlEvent::PadAftertouch {
+                index: 4,
+                pressure: 127
+            }]
+        );
+    }
+
+    #[test]
+    fn aftertouch_duplicate_value_does_not_re_emit() {
+        let mut state = ControlState::new();
+        let mut buf = [0u8; 64];
+        buf[0] = 0x02;
+        buf[1] = 4;
+        buf[2] = 0x40;
+        buf[3] = 0xFF;
+
+        let _first = decode_packet(&mut state, &buf);
+        let second = decode_packet(&mut state, &buf);
+        assert!(
+            second.is_empty(),
+            "duplicate pressure should not re-emit, got {second:?}"
+        );
+    }
+
+    #[test]
+    fn aftertouch_state_resets_after_note_off_in_same_packet() {
+        let mut state = ControlState::new();
+
+        // First: aftertouch on pad 4 with pressure 7
+        let mut at_buf = [0u8; 64];
+        at_buf[0] = 0x02;
+        at_buf[1] = 4;
+        at_buf[2] = 0x40;
+        at_buf[3] = 0xFF;
+        let _ = decode_packet(&mut state, &at_buf);
+
+        // Then a note-off on pad 4
+        let mut off_buf = [0u8; 64];
+        off_buf[0] = 0x02;
+        off_buf[1] = 4;
+        off_buf[2] = 0x30; // NoteOff
+        off_buf[3] = 0x00;
+        let _ = decode_packet(&mut state, &off_buf);
+
+        // Same aftertouch should now emit again
+        let again = decode_packet(&mut state, &at_buf);
+        assert_eq!(
+            again,
+            vec![ControlEvent::PadAftertouch {
+                index: 4,
+                pressure: 7
+            }]
+        );
     }
 }
