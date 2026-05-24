@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+#[allow(dead_code)]
 const VALID_PAD_VELOCITY_CURVE_NAMES: &[&str] = &[
     "soft3", "soft2", "soft1", "linear", "hard1", "hard2", "hard3",
 ];
@@ -16,6 +17,7 @@ pub enum PadVelocityCurve {
     Hard3,
 }
 
+#[allow(dead_code)]
 pub(crate) fn parse_pad_velocity_curve(value: &str) -> Option<PadVelocityCurve> {
     match normalize_pad_velocity_curve(value).as_str() {
         "soft3" => Some(PadVelocityCurve::Soft3),
@@ -29,6 +31,7 @@ pub(crate) fn parse_pad_velocity_curve(value: &str) -> Option<PadVelocityCurve> 
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn parse_pad_velocity_curve_setting(value: &str) -> Result<PadVelocityCurve, String> {
     parse_pad_velocity_curve(value).ok_or_else(|| {
         format!(
@@ -70,6 +73,7 @@ pub(crate) fn apply_pad_velocity_curve(velocity: u8, curve: PadVelocityCurve) ->
         .clamp(1.0, 127.0) as u8
 }
 
+#[allow(dead_code)]
 fn normalize_pad_velocity_curve(value: &str) -> String {
     value
         .chars()

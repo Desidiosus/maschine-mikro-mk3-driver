@@ -2,15 +2,14 @@ use maschine_library::controls::Buttons;
 use maschine_library::lights::{Brightness, PadColors};
 
 fn test_settings(midi_bridge_virmidi: bool) -> driver::settings::Settings {
-    driver::settings::Settings {
-        midi_bridge_virmidi,
-        backlight_buttons: true,
-        backlight_brightness: driver::settings::BacklightBrightness::Dim,
-        client_name: "Client".into(),
-        port_name: "Port".into(),
-        port_name_in: "Input".into(),
-        ..driver::settings::Settings::default()
-    }
+    let mut s = driver::settings::Settings::default();
+    s.bridge.midi_bridge_virmidi = midi_bridge_virmidi;
+    s.hardware.backlight_buttons = true;
+    s.hardware.backlight_brightness = driver::settings::BacklightBrightness::Dim;
+    s.global.client_name = "Client".into();
+    s.global.port_name = "Port".into();
+    s.global.port_name_in = "Input".into();
+    s
 }
 
 #[test]

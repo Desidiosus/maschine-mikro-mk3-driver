@@ -29,8 +29,10 @@ pub fn apply_local_output_feedback(
         ControlEvent::ButtonChanged {
             index,
             pressed: false,
-        } if settings.backlight_buttons && local_button_release_backlight_enabled(settings) => {
-            let brightness = settings.backlight_brightness.as_light_brightness();
+        } if settings.hardware.backlight_buttons
+            && local_button_release_backlight_enabled(settings) =>
+        {
+            let brightness = settings.hardware.backlight_brightness.as_light_brightness();
             outputs.with_lights_mut(|lights| {
                 if let Some(button) = Buttons::from_usize(*index)
                     && lights.button_has_light(button)
@@ -46,7 +48,7 @@ pub fn apply_local_output_feedback(
 }
 
 fn local_button_release_backlight_enabled(settings: &Settings) -> bool {
-    !settings.midi_bridge_virmidi
+    !settings.bridge.midi_bridge_virmidi
 }
 
 fn update_slider_lights(outputs: &DeviceOutputs, slider_raw: u8) {

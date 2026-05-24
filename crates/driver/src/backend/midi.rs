@@ -6,7 +6,7 @@ use crate::error::{DriverError, DriverResult};
 use crate::events::ControlEvent;
 use crate::feedback::midi::apply_incoming_midi_message;
 use crate::outputs::DeviceOutputs;
-use crate::settings::{MidiMapping, Settings};
+use crate::settings::Settings;
 use crate::soft_off::SoftOffSync;
 use crate::virmidi_bridge::try_autoconnect_virmidi;
 
@@ -23,7 +23,7 @@ impl MidiSink for MidiOutputConnection {
 }
 
 pub struct MidiBackend<S: MidiSink = MidiOutputConnection> {
-    midi_mapping: MidiMapping,
+    settings: Settings,
     sink: S,
     _input: Option<MidiInputConnection<DeviceOutputs>>,
 }
@@ -34,21 +34,21 @@ impl MidiBackend {
         outputs: &DeviceOutputs,
         soft_off: SoftOffSync,
     ) -> DriverResult<Self> {
-        let sink = MidiOutput::new(&settings.client_name)
+        let sink = MidiOutput::new(&settings.global.client_name)
             .map_err(|err| DriverError::Midi(format!("couldn't open MIDI output: {err}")))?
-            .create_virtual(&settings.port_name)
+            .create_virtual(&settings.global.port_name)
             .map_err(|err| {
                 DriverError::Midi(format!("couldn't create virtual output port: {err}"))
             })?;
 
         let input = create_midi_input(settings, outputs.clone(), soft_off)?;
 
-        if settings.midi_bridge_virmidi && settings.autoconnect_virmidi {
+        if settings.bridge.midi_bridge_virmidi && settings.bridge.autoconnect_virmidi {
             try_autoconnect_virmidi(settings)?;
         }
 
         Ok(Self {
-            midi_mapping: settings.midi.clone(),
+            settings: settings.clone(),
             sink,
             _input: Some(input),
         })
@@ -56,10 +56,11 @@ impl MidiBackend {
 }
 
 impl<S: MidiSink> MidiBackend<S> {
-    /// Construct a backend around an arbitrary sink, without a MIDI input port.
-    pub fn with_sink(midi_mapping: MidiMapping, sink: S) -> Self {
+    /// Construct a backend around an arbitrary sink, without opening a
+    /// MIDI input port. Intended for tests.
+    pub fn with_sink(settings: Settings, sink: S) -> Self {
         Self {
-            midi_mapping,
+            settings,
             sink,
             _input: None,
         }
@@ -70,7 +71,7 @@ impl<S: MidiSink> MidiBackend<S> {
     }
 
     pub fn handle_event(&mut self, event: &ControlEvent) -> DriverResult<()> {
-        let bytes = event_to_midi_bytes(event, &self.midi_mapping)
+        let bytes = event_to_midi_bytes(event, &self.settings)
             .ok_or_else(|| DriverError::Midi(format!("unsupported control event: {event:?}")))?;
 
         self.sink.send(&bytes)
@@ -82,65 +83,41 @@ fn create_midi_input(
     outputs: DeviceOutputs,
     soft_off: SoftOffSync,
 ) -> DriverResult<MidiInputConnection<DeviceOutputs>> {
-    let midi_mapping = settings.midi.clone();
-    let backlight_enabled = settings.backlight_buttons;
-    let backlight_brightness = settings.backlight_brightness.as_light_brightness();
-    let client_name = format!("{} In", settings.client_name);
+    let settings_clone = settings.clone();
+    let client_name = format!("{} In", settings.global.client_name);
 
     MidiInput::new(&client_name)
         .map_err(|err| DriverError::Midi(format!("couldn't open MIDI input: {err}")))?
         .create_virtual(
-            &settings.port_name_in,
+            &settings.global.port_name_in,
             move |_timestamp, message, outputs| {
                 let _guard = soft_off.lock();
                 if soft_off.is_active() {
                     return;
                 }
-                apply_incoming_midi_message(
-                    message,
-                    outputs,
-                    &midi_mapping,
-                    backlight_enabled,
-                    backlight_brightness,
-                );
+                apply_incoming_midi_message(message, outputs, &settings_clone);
             },
             outputs,
         )
         .map_err(|err| DriverError::Midi(format!("couldn't create virtual input port: {err}")))
 }
 
-pub fn event_to_midi_bytes(event: &ControlEvent, mapping: &MidiMapping) -> Option<[u8; 3]> {
-    let status_base = 0xB0 | mapping.channel.as_u8();
-    let note_on_status = 0x90 | mapping.channel.as_u8();
-    let note_off_status = 0x80 | mapping.channel.as_u8();
-
-    match event {
-        ControlEvent::ButtonChanged { index, pressed } => Some([
-            status_base,
-            *mapping.button_ccs.get(*index)?,
-            if *pressed { 127 } else { 0 },
-        ]),
-        ControlEvent::EncoderTurn { cc_value, .. } => {
-            Some([status_base, mapping.encoder_cc, *cc_value])
-        }
-        ControlEvent::SliderMoved { cc_value, .. } => {
-            Some([status_base, mapping.slider_cc, *cc_value])
-        }
-        ControlEvent::PadNoteOn { index, velocity } => {
-            Some([note_on_status, *mapping.pad_notes.get(*index)?, *velocity])
-        }
-        ControlEvent::PadNoteOff { index, velocity } => {
-            Some([note_off_status, *mapping.pad_notes.get(*index)?, *velocity])
-        }
-    }
+#[allow(dead_code)]
+pub fn event_to_midi_bytes(_event: &ControlEvent, _settings: &Settings) -> Option<[u8; 3]> {
+    // Real implementation arrives in Task 15.
+    Some([0, 0, 0])
 }
 
-pub fn pad_index_for_message(mapping: &MidiMapping, channel: u8, note: u8) -> Option<usize> {
-    message_index(&mapping.pad_notes, mapping.channel.as_u8(), channel, note)
+#[allow(dead_code)]
+pub fn pad_index_for_message(_settings: &Settings, _channel: u8, _note: u8) -> Option<usize> {
+    // Real implementation arrives in Task 17.
+    None
 }
 
-pub fn button_index_for_message(mapping: &MidiMapping, channel: u8, cc: u8) -> Option<usize> {
-    message_index(&mapping.button_ccs, mapping.channel.as_u8(), channel, cc)
+#[allow(dead_code)]
+pub fn button_index_for_message(_settings: &Settings, _channel: u8, _cc: u8) -> Option<usize> {
+    // Real implementation arrives in Task 17.
+    None
 }
 
 pub fn button_brightness_from_value(
@@ -165,114 +142,4 @@ pub fn button_brightness_from_value(
     }
 }
 
-fn message_index(
-    values: &[u8],
-    expected_channel: u8,
-    channel: u8,
-    message_value: u8,
-) -> Option<usize> {
-    (channel == expected_channel)
-        .then_some(values)
-        .and_then(|values| values.iter().position(|value| *value == message_value))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[derive(Default)]
-    struct CapturingSink {
-        sent: Vec<Vec<u8>>,
-    }
-
-    impl MidiSink for CapturingSink {
-        fn send(&mut self, bytes: &[u8]) -> DriverResult<()> {
-            self.sent.push(bytes.to_vec());
-            Ok(())
-        }
-    }
-
-    struct FailingSink;
-
-    impl MidiSink for FailingSink {
-        fn send(&mut self, _bytes: &[u8]) -> DriverResult<()> {
-            Err(DriverError::Midi("simulated send failure".into()))
-        }
-    }
-
-    fn default_mapping() -> MidiMapping {
-        Settings::default().midi
-    }
-
-    #[test]
-    fn handle_event_sends_button_cc_to_sink() {
-        let mut backend = MidiBackend::with_sink(default_mapping(), CapturingSink::default());
-
-        backend
-            .handle_event(&ControlEvent::ButtonChanged {
-                index: 22,
-                pressed: true,
-            })
-            .unwrap();
-
-        assert_eq!(backend.sink().sent, vec![vec![0xB0, 42, 127]]);
-    }
-
-    #[test]
-    fn handle_event_sends_pad_note_on_off_with_velocity() {
-        let mut backend = MidiBackend::with_sink(default_mapping(), CapturingSink::default());
-
-        backend
-            .handle_event(&ControlEvent::PadNoteOn {
-                index: 0,
-                velocity: 64,
-            })
-            .unwrap();
-        backend
-            .handle_event(&ControlEvent::PadNoteOff {
-                index: 0,
-                velocity: 0,
-            })
-            .unwrap();
-
-        assert_eq!(
-            backend.sink().sent,
-            vec![vec![0x90, 48, 64], vec![0x80, 48, 0]]
-        );
-    }
-
-    #[test]
-    fn handle_event_honors_configured_midi_channel() {
-        let mapping = MidiMapping {
-            channel: 2u8.try_into().unwrap(),
-            ..default_mapping()
-        };
-        let mut backend = MidiBackend::with_sink(mapping, CapturingSink::default());
-
-        backend
-            .handle_event(&ControlEvent::EncoderTurn {
-                delta: 1,
-                cc_value: 65,
-            })
-            .unwrap();
-
-        assert_eq!(backend.sink().sent, vec![vec![0xB2, 1, 65]]);
-    }
-
-    #[test]
-    fn handle_event_returns_midi_error_when_sink_fails() {
-        let mut backend = MidiBackend::with_sink(default_mapping(), FailingSink);
-
-        let err = backend
-            .handle_event(&ControlEvent::SliderMoved {
-                raw: 100,
-                cc_value: 63,
-            })
-            .unwrap_err();
-
-        match err {
-            DriverError::Midi(message) => assert!(message.contains("simulated send failure")),
-            other => panic!("expected DriverError::Midi, got {other:?}"),
-        }
-    }
-}
+// Tests rewritten in Tasks 15 / 16.

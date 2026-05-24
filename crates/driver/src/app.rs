@@ -26,16 +26,14 @@ pub fn run(settings: Settings) -> DriverResult<()> {
 }
 
 fn apply_startup_preferences(device: &HidDevice, settings: &Settings) -> DriverResult<()> {
-    set_pad_sensitivity(device, settings.pad_sensitivity)?;
-    set_display_contrast(device, settings.display_contrast)?;
+    set_pad_sensitivity(device, settings.hardware.pad_sensitivity)?;
+    set_display_contrast(device, settings.hardware.display_contrast)?;
     Ok(())
 }
 
 pub fn run_with_device<D: HidIo>(settings: Settings, device: &D) -> DriverResult<()> {
     settings.validate().map_err(DriverError::Settings)?;
-    let pad_velocity_curve = settings
-        .pad_velocity_curve()
-        .map_err(DriverError::Settings)?;
+    let pad_velocity_curve = settings.hardware.pad_velocity_curve;
 
     run_startup_self_test(device)?;
 
@@ -77,11 +75,11 @@ fn run_startup_self_test(device: &impl HidIo) -> DriverResult<()> {
 }
 
 fn initialize_button_backlight(outputs: &DeviceOutputs, settings: &Settings) {
-    if !settings.backlight_buttons {
+    if !settings.hardware.backlight_buttons {
         return;
     }
 
-    let brightness = settings.backlight_brightness.as_light_brightness();
+    let brightness = settings.hardware.backlight_brightness.as_light_brightness();
 
     outputs.with_lights_mut(|lights| {
         for idx in 0..41 {

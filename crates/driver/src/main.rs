@@ -1,5 +1,4 @@
 use clap::Parser;
-use config::Config;
 use driver::app;
 use driver::error::DriverResult;
 use driver::settings::Settings;
@@ -85,14 +84,20 @@ fn run() -> DriverResult<()> {
         return Ok(());
     }
 
-    let mut cfg = Config::builder();
+    let mut builder = config::Config::builder();
 
     if let Some(config_fn) = args.config {
-        cfg = cfg.add_source(config::File::with_name(config_fn.as_str()));
+        builder = builder.add_source(config::File::with_name(config_fn.as_str()));
     }
 
-    let cfg = cfg.build().expect("Can't create settings");
-    let settings: Settings = cfg.try_deserialize().expect("Can't parse settings");
+    let settings: Settings = builder
+        .build()
+        .map_err(|err| driver::error::DriverError::Settings(err.to_string()))?
+        .try_deserialize()
+        .map_err(|err| driver::error::DriverError::Settings(err.to_string()))?;
+    settings
+        .validate()
+        .map_err(driver::error::DriverError::Settings)?;
 
     println!("Running with settings:");
     println!("{settings:?}");

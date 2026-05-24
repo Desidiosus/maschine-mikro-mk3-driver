@@ -1,13 +1,12 @@
 use std::path::Path;
 
 fn test_settings() -> driver::settings::Settings {
-    driver::settings::Settings {
-        client_name: "Client".into(),
-        port_name: "Port".into(),
-        port_name_in: "Input".into(),
-        autoconnect_virmidi: false,
-        ..driver::settings::Settings::default()
-    }
+    let mut s = driver::settings::Settings::default();
+    s.global.client_name = "Client".into();
+    s.global.port_name = "Port".into();
+    s.global.port_name_in = "Input".into();
+    s.bridge.autoconnect_virmidi = false;
+    s
 }
 
 #[test]
