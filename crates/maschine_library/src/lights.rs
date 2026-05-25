@@ -40,6 +40,8 @@ pub struct Lights {
     status: [u8; 80],
 }
 
+const SLIDER_CENTER_LED: usize = 12;
+
 impl Lights {
     #[allow(clippy::new_without_default, reason = "intentional")]
     pub fn new() -> Self {
@@ -75,31 +77,48 @@ impl Lights {
         self.status[55 + idx]
     }
 
-    /// Render the 25-LED slider bar in "bar" mode from a raw touch reading
-    /// (0..=200 from the HID input report). When `raw == 0` (no touch), all
-    /// LEDs blank. Otherwise LEDs 0..=lit_count are lit; if `stylized` is true,
-    /// the trail (0..lit_count) renders Dim and the head (lit_count) Normal;
-    /// otherwise every lit LED renders Normal.
-    pub fn render_slider_bar(&mut self, raw: u8, color: PadColors, stylized: bool) {
-        if raw == 0 {
-            self.status[55..80].fill(0);
-            return;
-        }
-        // Any non-zero touch lights at least LED[0]: the `.max(0)` clamp pins
-        // low raw values (1..=5) to lit_count = 0 by design.
-        let lit_count: i32 = ((raw as i32 + 4) * 25 / 200 - 1).max(0);
-        for idx in 0i32..25 {
-            let b = if idx > lit_count {
+    /// Apply the standard slider brightness ladder over the inclusive range
+    /// `[lo, hi]` with `head` as the head LED. When `stylized`, the head is
+    /// Normal and the rest of the range is Dim; otherwise every lit LED in
+    /// the range is Normal. LEDs outside `[lo, hi]` are written Off.
+    fn render_slider_range(
+        &mut self,
+        lo: usize,
+        hi: usize,
+        head: usize,
+        color: PadColors,
+        stylized: bool,
+    ) {
+        for idx in 0..25 {
+            let b = if idx < lo || idx > hi {
                 Brightness::Off
-            } else if idx == lit_count {
+            } else if idx == head {
                 Brightness::Normal
             } else if stylized {
                 Brightness::Dim
             } else {
                 Brightness::Normal
             };
-            self.set_slider(idx as usize, color, b);
+            self.set_slider(idx, color, b);
         }
+    }
+
+    /// Render the 25-LED slider bar in "bar" mode from a raw touch reading
+    /// (0..=200 from the HID input report). When `raw == 0` (no touch), all
+    /// LEDs blank. Otherwise LEDs 0..=lit_count are lit; if `stylized` is true,
+    /// the trail (0..lit_count) renders Dim and the head (lit_count) Normal;
+    /// otherwise every lit LED renders Normal.
+    ///
+    /// Any non-zero touch lights at least LED[0]: the `.max(0)` clamp pins
+    /// low raw values (1..=5) to lit_count = 0 by design.
+    pub fn render_slider_bar(&mut self, raw: u8, color: PadColors, stylized: bool) {
+        if raw == 0 {
+            self.status[55..80].fill(0);
+            return;
+        }
+        let lit_count = (((raw as i32 + 4) * 25 / 200 - 1).max(0)) as usize;
+        let head = lit_count.min(24);
+        self.render_slider_range(0, head, head, color, stylized);
     }
 
     /// Render the slider bar in "pan" mode: LEDs from the fixed center (LED 12)
@@ -115,24 +134,12 @@ impl Lights {
         }
         let lit_count = (((raw as i32 + 4) * 25 / 200 - 1).max(0)) as usize;
         let head = lit_count.min(24);
-        let center = 12usize;
-        let (lo, hi) = if head <= center {
-            (head, center)
+        let (lo, hi) = if head <= SLIDER_CENTER_LED {
+            (head, SLIDER_CENTER_LED)
         } else {
-            (center, head)
+            (SLIDER_CENTER_LED, head)
         };
-        for idx in 0..25 {
-            let b = if idx < lo || idx > hi {
-                Brightness::Off
-            } else if idx == head {
-                Brightness::Normal
-            } else if stylized {
-                Brightness::Dim
-            } else {
-                Brightness::Normal
-            };
-            self.set_slider(idx, color, b);
-        }
+        self.render_slider_range(lo, hi, head, color, stylized);
     }
 
     pub fn set_pad(&mut self, id: usize, c: PadColors, b: Brightness) {
