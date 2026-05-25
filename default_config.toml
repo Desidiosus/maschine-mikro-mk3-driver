@@ -322,3 +322,8 @@
 
 [slider.touch]
 # type = "disabled"
+
+[slider.led]
+# mode = "bar"
+# color = "white"
+# stylized = false
