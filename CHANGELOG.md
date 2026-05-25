@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+#### Driver
+- **Soft-off mode** — press `Shift + Maschine` to blank the lights and screen and silence all output without quitting the driver; press again to restore the previous state. Useful for stepping away from the controller without unplugging it.
+- **Per-control configuration** — every pad, button, encoder, and slider action can now be customised independently in `config.toml` (note number, MIDI channel, CC number, behaviour). Pads are keyed by physical pad number (1–16); buttons by their printed names.
+- **Pad velocity curves** — shape how hard hits translate to MIDI velocity (linear, soft, hard).
+- **Pad aftertouch** — pad pressure is now sent as polyphonic aftertouch when configured.
+- **Slider touch events** — the touch strip's touch-on / touch-off can be mapped to a note or CC, independent of the position value.
+- **Hardware preferences** — device-side settings (pad sensitivity, screen brightness) can be configured.
+- **Generated reference config** — a `default_config.toml` containing every available setting is checked in and used by docs and the `-c` flag.
+
+#### Slider LED Rendering
+- New `[slider.led]` settings: choose `bar`, `pan`, or `dot` rendering, with an optional stylized trail (leading led brighter than the rest).
+- Slider LEDs auto-blank after a configurable idle delay (default is 5s).
+- Rainbow slider sweep added to the self-test.
+
+### Changed
+- **Configuration file format is new** — flat keys have been replaced by a nested per-control schema. Existing `config.toml` files from 0.4.0 will not load as-is; see `default_config.toml` for the new layout.
+- Internal restructure of the driver into smaller modules and a shared library crate; no user-visible behaviour change beyond what's listed above.
+
+### Documentation
+- README rewritten around the userspace HID driver architecture and updated for the new per-control configuration schema.
+- `example_config.toml` replaced by the generated `default_config.toml`.
+
+### Infrastructure
+- CI now builds with Node.js 24 to match `bitwig/.nvmrc` and the `engines.node` constraint (`>=24 <25`); previously `npm ci` failed under `engine-strict=true`.
+
 ## [0.4.0] - 2026-01-20
 
 ### Added
