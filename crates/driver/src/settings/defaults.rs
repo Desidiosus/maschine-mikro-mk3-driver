@@ -1,7 +1,8 @@
 use crate::settings::{
     actions::{
         ButtonConfig, ButtonPressAction, EncoderConfig, EncoderTurnAction, PadConfig, PadHitAction,
-        PadPressureAction, SliderConfig, SliderPositionAction, SliderTouchAction,
+        PadPressureAction, SliderConfig, SliderLedSettings, SliderPositionAction,
+        SliderTouchAction,
     },
     buttons_by_name::ButtonsByName,
     pads_by_index::PadsByIndex,
@@ -56,6 +57,7 @@ pub(crate) fn default_slider() -> SliderConfig {
             cc: DEFAULT_SLIDER_CC,
         },
         touch: SliderTouchAction::Disabled,
+        led: SliderLedSettings::default(),
     }
 }
 

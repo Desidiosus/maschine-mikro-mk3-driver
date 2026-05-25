@@ -10,7 +10,8 @@ pub use partial::PartialSettings;
 
 pub use actions::{
     ButtonConfig, ButtonPressAction, EncoderConfig, EncoderTurnAction, PadConfig, PadHitAction,
-    PadPressureAction, SliderConfig, SliderPositionAction, SliderTouchAction,
+    PadPressureAction, SliderConfig, SliderLedMode, SliderLedSettings, SliderPositionAction,
+    SliderTouchAction,
 };
 pub use buttons_by_name::ButtonsByName;
 pub use groups::{BridgeSettings, GlobalSettings, HardwareSettings};
