@@ -2,6 +2,7 @@ use crate::controls::Buttons;
 use crate::hid::HidIo;
 use hidapi::HidResult;
 use num_derive::FromPrimitive;
+use serde::{Deserialize, Serialize};
 
 #[derive(FromPrimitive, Debug, Clone, Copy, PartialEq)]
 pub enum Brightness {
@@ -11,7 +12,8 @@ pub enum Brightness {
     Bright = 0x7f,
 }
 
-#[derive(FromPrimitive, Debug, Clone, Copy, PartialEq)]
+#[derive(FromPrimitive, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PadColors {
     Off = 0,
     Red = 1,
@@ -30,7 +32,7 @@ pub enum PadColors {
     Purple = 14,
     Magenta = 15,
     Fuchsia = 16,
-    White = 17,
+    White = 31,
 }
 
 #[derive(Clone)]
@@ -113,5 +115,22 @@ impl Lights {
         buf[1..].copy_from_slice(&self.status);
         h.write(&buf)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PadColors;
+
+    #[test]
+    fn pad_colors_serialize_as_snake_case_string() {
+        let json = serde_json::to_string(&PadColors::LightOrange).unwrap();
+        assert_eq!(json, "\"light_orange\"");
+    }
+
+    #[test]
+    fn pad_colors_deserialize_from_snake_case_string() {
+        let parsed: PadColors = serde_json::from_str("\"warm_yellow\"").unwrap();
+        assert_eq!(parsed, PadColors::WarmYellow);
     }
 }

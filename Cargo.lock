@@ -607,6 +607,8 @@ dependencies = [
  "num",
  "num-derive",
  "num-traits",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

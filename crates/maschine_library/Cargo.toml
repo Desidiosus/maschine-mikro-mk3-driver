@@ -9,6 +9,10 @@ hidapi.workspace = true
 num.workspace = true
 num-derive.workspace = true
 num-traits.workspace = true
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1"
 
 [package.metadata.cargo-shear]
 ignored = ["num-traits"]
