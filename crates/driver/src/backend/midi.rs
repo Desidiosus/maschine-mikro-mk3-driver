@@ -110,6 +110,19 @@ fn resolve_channel(per_action: Option<MidiChannel>, global: MidiChannel) -> u8 {
     per_action.unwrap_or(global).as_u8()
 }
 
+#[allow(dead_code)]
+fn step_absolute(cur: u8, delta: i8, lo: u8, hi: u8, step: u8, wrap: bool) -> u8 {
+    let span = (hi as i32 - lo as i32) + 1;
+    let move_ = delta as i32 * step as i32;
+    let off = cur as i32 - lo as i32 + move_;
+    let new_off = if wrap {
+        off.rem_euclid(span)
+    } else {
+        off.clamp(0, span - 1)
+    };
+    (lo as i32 + new_off) as u8
+}
+
 pub fn event_to_midi_bytes(event: &ControlEvent, settings: &Settings) -> Option<[u8; 3]> {
     let global = settings.global.midi_channel;
 
@@ -481,5 +494,49 @@ mod tests {
             })
             .unwrap();
         assert_eq!(backend.sink().sent, vec![vec![0xB0, 42, 127]]);
+    }
+
+    #[test]
+    fn step_absolute_advances_within_range() {
+        let v = super::step_absolute(0, 1, 0, 127, 1, false);
+        assert_eq!(v, 1);
+        let v = super::step_absolute(v, 1, 0, 127, 1, false);
+        assert_eq!(v, 2);
+    }
+
+    #[test]
+    fn step_absolute_step3_scales_delta() {
+        let v = super::step_absolute(10, 1, 0, 127, 3, false);
+        assert_eq!(v, 13);
+    }
+
+    #[test]
+    fn step_absolute_clamps_at_hi() {
+        let v = super::step_absolute(10, 1, 0, 10, 1, false);
+        assert_eq!(v, 10);
+    }
+
+    #[test]
+    fn step_absolute_clamps_at_lo() {
+        let v = super::step_absolute(0, -1, 0, 10, 1, false);
+        assert_eq!(v, 0);
+    }
+
+    #[test]
+    fn step_absolute_wraps_at_hi() {
+        let v = super::step_absolute(10, 1, 0, 10, 1, true);
+        assert_eq!(v, 0);
+    }
+
+    #[test]
+    fn step_absolute_wraps_at_lo() {
+        let v = super::step_absolute(0, -1, 0, 10, 1, true);
+        assert_eq!(v, 10);
+    }
+
+    #[test]
+    fn step_absolute_handles_multi_detent_delta() {
+        let v = super::step_absolute(0, 2, 0, 127, 1, false);
+        assert_eq!(v, 2);
     }
 }
