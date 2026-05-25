@@ -142,6 +142,20 @@ impl Lights {
         self.render_slider_range(lo, hi, head, color, stylized);
     }
 
+    /// Render the slider bar in "dot" mode: a single LED lit at the current
+    /// position. All other LEDs blank. `raw == 0` blanks all.
+    pub fn render_slider_dot(&mut self, raw: u8, color: PadColors) {
+        if raw == 0 {
+            self.status[55..80].fill(0);
+            return;
+        }
+        let lit_count = (((raw as i32 + 4) * 25 / 200 - 1).max(0)) as usize;
+        let head = lit_count.min(24);
+        // A "dot" is a one-LED range with the single LED as its head.
+        // stylized=false is meaningless when lo == hi, so pass false.
+        self.render_slider_range(head, head, head, color, false);
+    }
+
     pub fn set_pad(&mut self, id: usize, c: PadColors, b: Brightness) {
         let val = match b {
             Brightness::Off => 0,
@@ -372,6 +386,34 @@ mod tests {
                 assert_eq!(byte, head, "head led {i}");
             } else if i >= 12 && i < lit_count {
                 assert_eq!(byte, trail, "trail led {i}");
+            } else {
+                assert_eq!(byte, 0, "off led {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn render_slider_dot_zero_raw_blanks_all() {
+        let mut lights = Lights::new();
+        lights.set_slider(7, PadColors::Red, Brightness::Normal);
+        lights.render_slider_dot(0, PadColors::White);
+        for i in 0..25 {
+            assert_eq!(lights.slider_byte(i), 0);
+        }
+    }
+
+    #[test]
+    fn render_slider_dot_lights_single_led_at_lit_count() {
+        let mut lights = Lights::new();
+        let raw = 100u8;
+        lights.render_slider_dot(raw, PadColors::Yellow);
+        let lit_count = (((raw as i32 + 4) * 25 / 200 - 1).max(0)) as usize;
+
+        let lit = ((PadColors::Yellow as u8) << 2) | (Brightness::Normal as u8 & 0b11);
+        for i in 0..25 {
+            let byte = lights.slider_byte(i);
+            if i == lit_count {
+                assert_eq!(byte, lit, "dot led {i}");
             } else {
                 assert_eq!(byte, 0, "off led {i}");
             }
