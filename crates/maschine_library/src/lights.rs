@@ -62,22 +62,43 @@ impl Lights {
         self.status[id as usize] = b as u8;
     }
 
-    pub fn set_slider(&mut self, id: usize, b: Brightness) {
-        self.status[55 + id] = b as u8;
+    pub fn set_slider(&mut self, id: usize, c: PadColors, b: Brightness) {
+        let val = match b {
+            Brightness::Off => 0,
+            _ => ((c as u8) << 2) | ((b as u8) & 0b11),
+        };
+        self.status[55 + id] = val;
     }
 
-    /// Light the 25-LED slider bar to reflect a raw touch-strip reading
-    /// (0..=200 from the HID report). The current position is shown bright;
-    /// LEDs below it are dim; LEDs above are off.
-    pub fn set_slider_bar_from_raw(&mut self, raw: u8) {
-        let lit_count = (raw as i32 - 1 + 5) * 25 / 200 - 1;
-        for idx in 0..25 {
-            let brightness = match lit_count - idx {
-                0 => Brightness::Normal,
-                1..=25 => Brightness::Dim,
-                _ => Brightness::Off,
+    /// Render the 25-LED slider bar in "bar" mode from a raw touch reading
+    /// (0..=200 from the HID input report). When `raw == 0` (no touch), all
+    /// LEDs blank. Otherwise LEDs 0..=lit_count are lit; if `stylized` is true,
+    /// the trail (0..lit_count) renders Dim and the head (lit_count) Normal;
+    /// otherwise every lit LED renders Normal.
+    pub fn render_slider_bar(&mut self, raw: u8, color: PadColors, stylized: bool) {
+        if raw == 0 {
+            for i in 0..25 {
+                self.set_slider(i, PadColors::Off, Brightness::Off);
+            }
+            return;
+        }
+        let lit_count: i32 = ((raw as i32 - 1 + 5) * 25 / 200 - 1).max(0);
+        for idx in 0i32..25 {
+            let b = if idx > lit_count {
+                Brightness::Off
+            } else if idx == lit_count {
+                Brightness::Normal
+            } else if stylized {
+                Brightness::Dim
+            } else {
+                Brightness::Normal
             };
-            self.set_slider(idx as usize, brightness);
+            let c = if matches!(b, Brightness::Off) {
+                PadColors::Off
+            } else {
+                color
+            };
+            self.set_slider(idx as usize, c, b);
         }
     }
 
@@ -120,7 +141,7 @@ impl Lights {
 
 #[cfg(test)]
 mod tests {
-    use super::PadColors;
+    use super::{Brightness, Lights, PadColors};
 
     #[test]
     fn pad_colors_serialize_as_snake_case_string() {
@@ -132,5 +153,100 @@ mod tests {
     fn pad_colors_deserialize_from_snake_case_string() {
         let parsed: PadColors = serde_json::from_str("\"warm_yellow\"").unwrap();
         assert_eq!(parsed, PadColors::WarmYellow);
+    }
+
+    #[test]
+    fn set_slider_packs_color_and_brightness_white_normal_is_0x7e() {
+        let mut lights = Lights::new();
+        lights.set_slider(0, PadColors::White, Brightness::Normal);
+        let buf = lights_status_byte(&lights, 55);
+        assert_eq!(buf, 0x7e);
+    }
+
+    #[test]
+    fn set_slider_writes_off_byte_when_brightness_off() {
+        let mut lights = Lights::new();
+        lights.set_slider(3, PadColors::Red, Brightness::Off);
+        assert_eq!(lights_status_byte(&lights, 55 + 3), 0);
+    }
+
+    #[test]
+    fn set_slider_packs_orange_normal_as_0x0a() {
+        let mut lights = Lights::new();
+        lights.set_slider(7, PadColors::Orange, Brightness::Normal);
+        assert_eq!(lights_status_byte(&lights, 55 + 7), 0x0a);
+    }
+
+    #[test]
+    fn render_slider_bar_zero_raw_blanks_all_leds() {
+        let mut lights = Lights::new();
+        lights.set_slider(5, PadColors::Red, Brightness::Normal);
+        lights.render_slider_bar(0, PadColors::White, false);
+        for i in 0..25 {
+            assert_eq!(lights_status_byte(&lights, 55 + i), 0, "led {i}");
+        }
+    }
+
+    #[test]
+    fn render_slider_bar_raw_1_lights_only_first_led_normal() {
+        let mut lights = Lights::new();
+        lights.render_slider_bar(1, PadColors::White, false);
+        let head = ((PadColors::White as u8) << 2) | (Brightness::Normal as u8 & 0b11);
+        assert_eq!(lights_status_byte(&lights, 55), head);
+        for i in 1..25 {
+            assert_eq!(lights_status_byte(&lights, 55 + i), 0, "led {i}");
+        }
+    }
+
+    #[test]
+    fn render_slider_bar_raw_200_lights_all_leds_normal() {
+        let mut lights = Lights::new();
+        lights.render_slider_bar(200, PadColors::Red, false);
+        let lit = ((PadColors::Red as u8) << 2) | (Brightness::Normal as u8 & 0b11);
+        for i in 0..25 {
+            assert_eq!(lights_status_byte(&lights, 55 + i), lit, "led {i}");
+        }
+    }
+
+    #[test]
+    fn render_slider_bar_stylized_has_dim_trail_and_normal_head() {
+        let mut lights = Lights::new();
+        let raw = 100u8;
+        lights.render_slider_bar(raw, PadColors::Blue, true);
+
+        let lit_count = (raw as i32 - 1 + 5) * 25 / 200 - 1;
+        let head_idx = lit_count as usize;
+
+        let trail = ((PadColors::Blue as u8) << 2) | (Brightness::Dim as u8 & 0b11);
+        let head = ((PadColors::Blue as u8) << 2) | (Brightness::Normal as u8 & 0b11);
+
+        for i in 0..25 {
+            let byte = lights_status_byte(&lights, 55 + i);
+            if i < head_idx {
+                assert_eq!(byte, trail, "trail led {i}");
+            } else if i == head_idx {
+                assert_eq!(byte, head, "head led {i}");
+            } else {
+                assert_eq!(byte, 0, "off led {i}");
+            }
+        }
+    }
+
+    // Helper for byte inspection during tests.
+    fn lights_status_byte(lights: &Lights, idx: usize) -> u8 {
+        use std::cell::RefCell;
+        struct Capture(RefCell<Vec<u8>>);
+        impl crate::hid::HidIo for Capture {
+            fn write(&self, buf: &[u8]) -> hidapi::HidResult<usize> {
+                self.0.borrow_mut().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn read_timeout(&self, _buf: &mut [u8], _ms: i32) -> hidapi::HidResult<usize> {
+                Ok(0)
+            }
+        }
+        let cap = Capture(RefCell::new(Vec::new()));
+        lights.write(&cap).unwrap();
+        cap.0.borrow()[idx + 1]
     }
 }

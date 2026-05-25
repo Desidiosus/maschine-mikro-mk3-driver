@@ -52,5 +52,7 @@ fn local_button_release_backlight_enabled(settings: &Settings) -> bool {
 }
 
 fn update_slider_lights(outputs: &DeviceOutputs, slider_raw: u8) {
-    outputs.with_lights_mut(|lights| lights.set_slider_bar_from_raw(slider_raw));
+    outputs.with_lights_mut(|lights| {
+        lights.render_slider_bar(slider_raw, PadColors::White, false);
+    });
 }

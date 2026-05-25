@@ -59,11 +59,11 @@ pub(crate) fn self_test(
     }
 
     for i in 0..25 {
-        lights.set_slider(i, Brightness::Bright);
+        lights.set_slider(i, PadColors::White, Brightness::Bright);
         lights.write(device)?;
-        lights.set_slider(i, Brightness::Normal);
+        lights.set_slider(i, PadColors::White, Brightness::Normal);
         lights.write(device)?;
-        lights.set_slider(i, Brightness::Dim);
+        lights.set_slider(i, PadColors::White, Brightness::Dim);
         lights.write(device)?;
     }
 
