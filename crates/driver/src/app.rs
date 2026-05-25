@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use hidapi::{HidApi, HidDevice};
@@ -18,14 +19,41 @@ use crate::hid::{ControlState, decode_packet_with_curve};
 use crate::outputs::DeviceOutputs;
 use crate::self_test::self_test;
 use crate::settings::Settings;
-use crate::soft_off::{SoftOffOutcome, SoftOffState, SoftOffSync};
+use crate::soft_off::{SoftOffOutcome, SoftOffState, SoftOffSync, blank_outputs};
+
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn handle_shutdown_signal(_: libc::c_int) {
+    SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+fn install_shutdown_signal_handlers() -> DriverResult<()> {
+    unsafe {
+        for sig in [libc::SIGINT, libc::SIGTERM] {
+            if libc::signal(
+                sig,
+                handle_shutdown_signal as *const () as libc::sighandler_t,
+            ) == libc::SIG_ERR
+            {
+                let err = std::io::Error::last_os_error();
+                return Err(DriverError::Settings(format!(
+                    "failed to install signal handler for signal {sig}: {err}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
 
 pub fn run(settings: Settings) -> DriverResult<()> {
     let api = HidApi::new()?;
     let device = api.open(USB_VID, USB_PID)?;
     device.set_blocking_mode(false)?;
     apply_startup_preferences(&device, &settings)?;
-    run_with_device(settings, &device)
+
+    install_shutdown_signal_handlers()?;
+
+    run_with_device(settings, &device, &SHUTDOWN_REQUESTED)
 }
 
 fn apply_startup_preferences(device: &HidDevice, settings: &Settings) -> DriverResult<()> {
@@ -34,7 +62,11 @@ fn apply_startup_preferences(device: &HidDevice, settings: &Settings) -> DriverR
     Ok(())
 }
 
-pub fn run_with_device<D: HidIo>(settings: Settings, device: &D) -> DriverResult<()> {
+pub fn run_with_device<D: HidIo>(
+    settings: Settings,
+    device: &D,
+    shutdown_requested: &AtomicBool,
+) -> DriverResult<()> {
     settings.validate().map_err(DriverError::Settings)?;
     let pad_velocity_curve = settings.hardware.pad_velocity_curve;
 
@@ -53,9 +85,17 @@ pub fn run_with_device<D: HidIo>(settings: Settings, device: &D) -> DriverResult
     let auto_off = settings.slider.led.auto_off_ms;
     let auto_off_color = settings.slider.led.color;
 
-    loop {
+    while !shutdown_requested.load(Ordering::Relaxed) {
         buf.fill(0);
-        let size = device.read_timeout(&mut buf, 1)?;
+        let size = match device.read_timeout(&mut buf, 1) {
+            Ok(s) => s,
+            Err(err) => {
+                if shutdown_requested.load(Ordering::Relaxed) {
+                    break;
+                }
+                return Err(err.into());
+            }
+        };
 
         if size >= 1 {
             for event in decode_packet_with_curve(&mut state, &buf, pad_velocity_curve) {
@@ -90,6 +130,10 @@ pub fn run_with_device<D: HidIo>(settings: Settings, device: &D) -> DriverResult
 
         outputs.flush(device)?;
     }
+
+    blank_outputs(&outputs);
+    outputs.flush(device)?;
+    Ok(())
 }
 
 fn run_startup_self_test(device: &impl HidIo) -> DriverResult<()> {

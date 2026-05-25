@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Configuration file format is new** — flat keys have been replaced by a nested per-control schema. Existing `config.toml` files from 0.4.0 will not load as-is; see `default_config.toml` for the new layout.
 - Internal restructure of the driver into smaller modules and a shared library crate; no user-visible behaviour change beyond what's listed above.
+- Driver now blanks the lights and screen when it exits (e.g. on `Ctrl+C`) instead of leaving the controller frozen in its last state.
 
 ### Documentation
 - README rewritten around the userspace HID driver architecture and updated for the new per-control configuration schema.

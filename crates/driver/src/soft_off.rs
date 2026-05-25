@@ -198,7 +198,7 @@ impl OutputSnapshot {
     }
 }
 
-fn blank_outputs(outputs: &DeviceOutputs) {
+pub(crate) fn blank_outputs(outputs: &DeviceOutputs) {
     outputs.with_lights_mut(Lights::reset);
     outputs.with_screen_mut(Screen::reset);
 }

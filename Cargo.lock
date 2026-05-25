@@ -357,6 +357,7 @@ dependencies = [
  "clap",
  "config",
  "hidapi",
+ "libc",
  "maschine_library",
  "midir",
  "midly",
