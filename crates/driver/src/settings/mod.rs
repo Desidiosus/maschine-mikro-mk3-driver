@@ -107,6 +107,111 @@ impl Settings {
         if self.global.port_name_in.is_empty() {
             return Err("port_name_in must not be empty".to_string());
         }
+        let EncoderTurnAction::Cc { mode, .. } = &self.encoder.turn;
+        match mode {
+            actions::CcValueMode::Absolute { lo, hi, step, .. } => {
+                if lo > hi {
+                    return Err(format!(
+                        "encoder Absolute mode: lo ({lo}) must be <= hi ({hi})"
+                    ));
+                }
+                if *step == 0 {
+                    return Err("encoder Absolute mode: step must be >= 1".to_string());
+                }
+                if *lo > 127 || *hi > 127 || *step > 127 {
+                    return Err(
+                        "encoder Absolute mode: lo, hi, step must each be <= 127".to_string()
+                    );
+                }
+            }
+            actions::CcValueMode::Relative { step } => {
+                if *step == 0 {
+                    return Err("encoder Relative mode: step must be >= 1".to_string());
+                }
+                if *step > 63 {
+                    return Err(
+                        "encoder Relative mode: step must be <= 63 (NI relative protocol range)"
+                            .to_string(),
+                    );
+                }
+            }
+            actions::CcValueMode::RelativeOffset { step } => {
+                if *step == 0 {
+                    return Err("encoder RelativeOffset mode: step must be >= 1".to_string());
+                }
+                if *step > 127 {
+                    return Err("encoder RelativeOffset mode: step must be <= 127".to_string());
+                }
+            }
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod validate_tests {
+    use super::*;
+    use crate::settings::actions::CcValueMode;
+
+    fn settings_with_encoder_mode(mode: CcValueMode) -> Settings {
+        let mut s = Settings::default();
+        s.encoder.turn = EncoderTurnAction::Cc {
+            channel: None,
+            cc: 1,
+            mode,
+        };
+        s
+    }
+
+    #[test]
+    fn validate_rejects_absolute_with_lo_greater_than_hi() {
+        let s = settings_with_encoder_mode(CcValueMode::Absolute {
+            lo: 100,
+            hi: 50,
+            step: 1,
+            wrap: false,
+        });
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_absolute_step_zero() {
+        let s = settings_with_encoder_mode(CcValueMode::Absolute {
+            lo: 0,
+            hi: 127,
+            step: 0,
+            wrap: false,
+        });
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_relative_step_zero() {
+        let s = settings_with_encoder_mode(CcValueMode::Relative { step: 0 });
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_relative_offset_step_zero() {
+        let s = settings_with_encoder_mode(CcValueMode::RelativeOffset { step: 0 });
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_default_encoder() {
+        let s = Settings::default();
+        assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_relative_step_above_63() {
+        let s = settings_with_encoder_mode(CcValueMode::Relative { step: 64 });
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_relative_offset_step_127() {
+        let s = settings_with_encoder_mode(CcValueMode::RelativeOffset { step: 127 });
+        assert!(s.validate().is_ok());
     }
 }

@@ -728,4 +728,33 @@ mod tests {
         assert_eq!(bytes, Some([0xB0, 1, 0]));
         assert_eq!(rt.encoder_value(), 0);
     }
+
+    #[test]
+    fn encoder_absolute_synced_from_midi_in() {
+        use crate::feedback::midi::apply_incoming_midi_message;
+        use crate::outputs::DeviceOutputs;
+
+        let mut s = Settings::default();
+        s.encoder.turn = EncoderTurnAction::Cc {
+            channel: None,
+            cc: 1,
+            mode: CcValueMode::Absolute {
+                lo: 0,
+                hi: 127,
+                step: 1,
+                wrap: false,
+            },
+        };
+        let rt = crate::runtime_state::RuntimeState::default();
+        let outputs = DeviceOutputs::new();
+
+        // DAW echoes CC 1 with value 64 — sync to runtime state.
+        apply_incoming_midi_message(&[0xB0, 1, 64], &outputs, &s, &rt);
+        assert_eq!(rt.encoder_value(), 64);
+
+        // Subsequent encoder turn moves relative to synced value.
+        let bytes = event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: -1 }, &s, &rt);
+        assert_eq!(bytes, Some([0xB0, 1, 63]));
+        assert_eq!(rt.encoder_value(), 63);
+    }
 }
