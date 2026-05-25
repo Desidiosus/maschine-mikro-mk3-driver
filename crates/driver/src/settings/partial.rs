@@ -95,6 +95,7 @@ pub struct PartialSliderLedSettings {
     pub mode: Option<SliderLedMode>,
     pub color: Option<PadColors>,
     pub stylized: Option<bool>,
+    pub auto_off_ms: Option<u64>,
 }
 
 fn deserialize_partial_pads<'de, D>(
@@ -271,6 +272,9 @@ impl Settings {
                 if let Some(v) = led.stylized {
                     self.slider.led.stylized = v;
                 }
+                if let Some(v) = led.auto_off_ms {
+                    self.slider.led.auto_off_ms = v;
+                }
             }
         }
         self
@@ -389,6 +393,9 @@ impl Settings {
         }
         if self.slider.led.stylized != defaults.slider.led.stylized {
             led.stylized = Some(self.slider.led.stylized);
+        }
+        if self.slider.led.auto_off_ms != defaults.slider.led.auto_off_ms {
+            led.auto_off_ms = Some(self.slider.led.auto_off_ms);
         }
         if led != PartialSliderLedSettings::default() {
             s.led = Some(led);
@@ -562,5 +569,21 @@ stylized = true
         let partial = s.diff_from_defaults();
         let round_tripped = Settings::default().merge_overrides(partial);
         assert_eq!(round_tripped, s);
+    }
+
+    #[test]
+    fn partial_overrides_slider_led_auto_off_ms() {
+        let toml_str = r#"
+[slider.led]
+auto_off_ms = 0
+"#;
+        let partial: PartialSettings = toml::from_str(toml_str).unwrap();
+        let merged = Settings::default().merge_overrides(partial);
+
+        assert_eq!(merged.slider.led.auto_off_ms, 0);
+        assert_eq!(
+            merged.slider.led.mode,
+            crate::settings::actions::SliderLedMode::Bar
+        );
     }
 }

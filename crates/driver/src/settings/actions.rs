@@ -105,6 +105,8 @@ pub struct SliderLedSettings {
     pub mode: SliderLedMode,
     pub color: PadColors,
     pub stylized: bool,
+    /// Milliseconds after slider release before LEDs blank. `0` disables.
+    pub auto_off_ms: u64,
 }
 
 impl Default for SliderLedSettings {
@@ -113,6 +115,7 @@ impl Default for SliderLedSettings {
             mode: SliderLedMode::Bar,
             color: PadColors::White,
             stylized: false,
+            auto_off_ms: 5000,
         }
     }
 }
@@ -143,10 +146,12 @@ mod tests {
             mode: SliderLedMode::Pan,
             color: maschine_library::lights::PadColors::Cyan,
             stylized: true,
+            auto_off_ms: 1234,
         };
         let s = toml::to_string(&led).unwrap();
         assert!(s.contains("mode = \"pan\""), "got: {s}");
         assert!(s.contains("color = \"cyan\""), "got: {s}");
+        assert!(s.contains("auto_off_ms = 1234"), "got: {s}");
         let back: SliderLedSettings = toml::from_str(&s).unwrap();
         assert_eq!(back, led);
     }

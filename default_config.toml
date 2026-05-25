@@ -327,3 +327,4 @@
 # mode = "bar"
 # color = "white"
 # stylized = false
+# auto_off_ms = 5000

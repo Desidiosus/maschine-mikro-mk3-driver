@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use hidapi::{HidApi, HidDevice};
 use maschine_library::controls::Buttons;
 use maschine_library::hid::HidIo;
@@ -10,6 +12,7 @@ use num::FromPrimitive;
 
 use crate::backend::midi::MidiBackend;
 use crate::error::{DriverError, DriverResult};
+use crate::events::ControlEvent;
 use crate::feedback::local::apply_local_output_feedback;
 use crate::hid::{ControlState, decode_packet_with_curve};
 use crate::outputs::DeviceOutputs;
@@ -42,25 +45,47 @@ pub fn run_with_device<D: HidIo>(settings: Settings, device: &D) -> DriverResult
     outputs.flush(device)?;
 
     let mut soft_off = SoftOffState::new(SoftOffSync::new());
+    let soft_off_sync = soft_off.sync();
     let mut backend = MidiBackend::new(&settings, &outputs, soft_off.sync())?;
     let mut state = ControlState::new();
     let mut buf = [0u8; 64];
+    let mut slider_released_at: Option<Instant> = None;
+    let auto_off = settings.slider.led.auto_off_ms;
+    let auto_off_color = settings.slider.led.color;
 
     loop {
         buf.fill(0);
         let size = device.read_timeout(&mut buf, 1)?;
 
-        if size < 1 {
-            outputs.flush(device)?;
-            continue;
+        if size >= 1 {
+            for event in decode_packet_with_curve(&mut state, &buf, pad_velocity_curve) {
+                if soft_off.observe_event(&outputs, &event) == SoftOffOutcome::Swallow {
+                    continue;
+                }
+                match &event {
+                    ControlEvent::SliderTouch { pressed: false } => {
+                        slider_released_at = Some(Instant::now());
+                    }
+                    ControlEvent::SliderTouch { pressed: true }
+                    | ControlEvent::SliderMoved { .. } => {
+                        slider_released_at = None;
+                    }
+                    _ => {}
+                }
+                apply_local_output_feedback(&outputs, &settings, &event)?;
+                backend.handle_event(&event)?;
+            }
         }
 
-        for event in decode_packet_with_curve(&mut state, &buf, pad_velocity_curve) {
-            if soft_off.observe_event(&outputs, &event) == SoftOffOutcome::Swallow {
-                continue;
-            }
-            apply_local_output_feedback(&outputs, &settings, &event)?;
-            backend.handle_event(&event)?;
+        if let Some(released_at) = slider_released_at
+            && auto_off > 0
+            && released_at.elapsed() >= Duration::from_millis(auto_off)
+            && !soft_off_sync.is_active()
+        {
+            outputs.with_lights_mut(|lights| {
+                lights.render_slider_bar(0, auto_off_color, false);
+            });
+            slider_released_at = None;
         }
 
         outputs.flush(device)?;
