@@ -1,7 +1,7 @@
 use crate::settings::{
     actions::{
-        ButtonConfig, ButtonPressAction, EncoderConfig, EncoderTurnAction, PadConfig, PadHitAction,
-        PadPressureAction, SliderConfig, SliderLedSettings, SliderPositionAction,
+        ButtonConfig, ButtonPressAction, CcValueMode, EncoderConfig, EncoderTurnAction, PadConfig,
+        PadHitAction, PadPressureAction, SliderConfig, SliderLedSettings, SliderPositionAction,
         SliderTouchAction,
     },
     buttons_by_name::ButtonsByName,
@@ -46,6 +46,7 @@ pub(crate) fn default_encoder() -> EncoderConfig {
         turn: EncoderTurnAction::Cc {
             channel: None,
             cc: DEFAULT_ENCODER_CC,
+            mode: CcValueMode::Relative { step: 1 },
         },
     }
 }

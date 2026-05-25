@@ -317,6 +317,10 @@
 # type = "cc"
 # cc = 1
 
+[encoder.turn.mode]
+# kind = "relative"
+# step = 1
+
 [slider.position]
 # type = "cc"
 # cc = 9

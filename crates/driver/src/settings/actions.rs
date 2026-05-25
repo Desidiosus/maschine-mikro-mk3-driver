@@ -92,6 +92,8 @@ pub enum EncoderTurnAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         channel: Option<MidiChannel>,
         cc: u8,
+        #[serde(default)]
+        mode: CcValueMode,
     },
 }
 
@@ -242,5 +244,39 @@ kind = "absolute"
                 wrap: false,
             }
         );
+    }
+
+    #[test]
+    fn encoder_turn_without_mode_field_defaults_to_relative() {
+        let toml_str = r#"
+type = "cc"
+cc = 1
+"#;
+        let action: EncoderTurnAction = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            action,
+            EncoderTurnAction::Cc {
+                channel: None,
+                cc: 1,
+                mode: CcValueMode::Relative { step: 1 },
+            }
+        );
+    }
+
+    #[test]
+    fn encoder_turn_with_absolute_mode_round_trips() {
+        let action = EncoderTurnAction::Cc {
+            channel: None,
+            cc: 1,
+            mode: CcValueMode::Absolute {
+                lo: 0,
+                hi: 127,
+                step: 1,
+                wrap: false,
+            },
+        };
+        let s = toml::to_string(&action).unwrap();
+        let back: EncoderTurnAction = toml::from_str(&s).unwrap();
+        assert_eq!(back, action);
     }
 }

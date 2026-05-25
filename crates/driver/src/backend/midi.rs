@@ -146,7 +146,11 @@ pub fn event_to_midi_bytes(
             }
         }
         ControlEvent::EncoderTurn { cc_value, .. } => {
-            let EncoderTurnAction::Cc { channel, cc } = &settings.encoder.turn;
+            let EncoderTurnAction::Cc {
+                channel,
+                cc,
+                mode: _,
+            } = &settings.encoder.turn;
             Some([0xB0 | resolve_channel(*channel, global), *cc, *cc_value])
         }
         ControlEvent::SliderMoved { cc_value, .. } => {
@@ -372,8 +376,7 @@ mod tests {
         };
 
         let press = event_to_midi_bytes(&ControlEvent::SliderTouch { pressed: true }, &s, &rt());
-        let release =
-            event_to_midi_bytes(&ControlEvent::SliderTouch { pressed: false }, &s, &rt());
+        let release = event_to_midi_bytes(&ControlEvent::SliderTouch { pressed: false }, &s, &rt());
         assert_eq!(press, Some([0x90, 60, 100]));
         assert_eq!(release, Some([0x80, 60, 10]));
     }
@@ -389,8 +392,7 @@ mod tests {
         };
 
         let press = event_to_midi_bytes(&ControlEvent::SliderTouch { pressed: true }, &s, &rt());
-        let release =
-            event_to_midi_bytes(&ControlEvent::SliderTouch { pressed: false }, &s, &rt());
+        let release = event_to_midi_bytes(&ControlEvent::SliderTouch { pressed: false }, &s, &rt());
         assert_eq!(press, Some([0xB0, 70, 127]));
         assert_eq!(release, Some([0xB0, 70, 0]));
     }
