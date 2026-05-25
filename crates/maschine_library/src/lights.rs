@@ -72,6 +72,9 @@ impl Lights {
         self.status[55 + id] = val;
     }
 
+    /// Test/debug accessor for the raw slider LED byte at `idx`. Not part of
+    /// the stable API.
+    #[doc(hidden)]
     pub fn slider_byte(&self, idx: usize) -> u8 {
         self.status[55 + idx]
     }
