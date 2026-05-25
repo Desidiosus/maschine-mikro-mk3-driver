@@ -17,7 +17,13 @@ fn runtime_constructor_creates_midi_backend_when_seq_available() {
 
     let outputs = driver::outputs::DeviceOutputs::new();
     let soft_off = driver::soft_off::SoftOffSync::new();
-    driver::backend::midi::MidiBackend::new(&test_settings(), &outputs, soft_off).unwrap();
+    driver::backend::midi::MidiBackend::new(
+        &test_settings(),
+        &outputs,
+        soft_off,
+        driver::runtime_state::RuntimeState::default(),
+    )
+    .unwrap();
 }
 
 use driver::backend::midi::{MidiBackend, MidiSink};

@@ -37,6 +37,7 @@ impl MidiBackend {
         settings: &Settings,
         outputs: &DeviceOutputs,
         soft_off: SoftOffSync,
+        runtime_state: crate::runtime_state::RuntimeState,
     ) -> DriverResult<Self> {
         let sink = MidiOutput::new(&settings.global.client_name)
             .map_err(|err| DriverError::Midi(format!("couldn't open MIDI output: {err}")))?
@@ -45,7 +46,7 @@ impl MidiBackend {
                 DriverError::Midi(format!("couldn't create virtual output port: {err}"))
             })?;
 
-        let input = create_midi_input(settings, outputs.clone(), soft_off)?;
+        let input = create_midi_input(settings, outputs.clone(), soft_off, runtime_state)?;
 
         if settings.bridge.midi_bridge_virmidi && settings.bridge.autoconnect_virmidi {
             try_autoconnect_virmidi(settings)?;
@@ -90,8 +91,10 @@ fn create_midi_input(
     settings: &Settings,
     outputs: DeviceOutputs,
     soft_off: SoftOffSync,
+    runtime_state: crate::runtime_state::RuntimeState,
 ) -> DriverResult<MidiInputConnection<DeviceOutputs>> {
     let settings_clone = settings.clone();
+    let runtime_state_clone = runtime_state.clone();
     let client_name = format!("{} In", settings.global.client_name);
 
     MidiInput::new(&client_name)
@@ -103,7 +106,12 @@ fn create_midi_input(
                 if soft_off.is_active() {
                     return;
                 }
-                apply_incoming_midi_message(message, outputs, &settings_clone);
+                apply_incoming_midi_message(
+                    message,
+                    outputs,
+                    &settings_clone,
+                    &runtime_state_clone,
+                );
             },
             outputs,
         )
