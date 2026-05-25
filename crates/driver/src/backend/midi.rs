@@ -579,10 +579,7 @@ mod tests {
     #[test]
     fn encoder_relative_default_cw_emits_1() {
         let bytes = event_to_midi_bytes(
-            &ControlEvent::EncoderTurn {
-                delta: 1,
-                cc_value: 0,
-            },
+            &ControlEvent::EncoderTurn { delta: 1 },
             &Settings::default(),
             &rt(),
         );
@@ -592,10 +589,7 @@ mod tests {
     #[test]
     fn encoder_relative_default_ccw_emits_127() {
         let bytes = event_to_midi_bytes(
-            &ControlEvent::EncoderTurn {
-                delta: -1,
-                cc_value: 0,
-            },
+            &ControlEvent::EncoderTurn { delta: -1 },
             &Settings::default(),
             &rt(),
         );
@@ -610,14 +604,7 @@ mod tests {
             cc: 1,
             mode: CcValueMode::Relative { step: 3 },
         };
-        let bytes = event_to_midi_bytes(
-            &ControlEvent::EncoderTurn {
-                delta: 1,
-                cc_value: 0,
-            },
-            &s,
-            &rt(),
-        );
+        let bytes = event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: 1 }, &s, &rt());
         assert_eq!(bytes, Some([0xB0, 1, 3]));
     }
 
@@ -629,24 +616,14 @@ mod tests {
             cc: 1,
             mode: CcValueMode::Relative { step: 3 },
         };
-        let bytes = event_to_midi_bytes(
-            &ControlEvent::EncoderTurn {
-                delta: -1,
-                cc_value: 0,
-            },
-            &s,
-            &rt(),
-        );
+        let bytes = event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: -1 }, &s, &rt());
         assert_eq!(bytes, Some([0xB0, 1, 125]));
     }
 
     #[test]
     fn encoder_relative_multi_detent_scales() {
         let bytes = event_to_midi_bytes(
-            &ControlEvent::EncoderTurn {
-                delta: 2,
-                cc_value: 0,
-            },
+            &ControlEvent::EncoderTurn { delta: 2 },
             &Settings::default(),
             &rt(),
         );
@@ -661,14 +638,7 @@ mod tests {
             cc: 1,
             mode: CcValueMode::RelativeOffset { step: 1 },
         };
-        let bytes = event_to_midi_bytes(
-            &ControlEvent::EncoderTurn {
-                delta: 1,
-                cc_value: 0,
-            },
-            &s,
-            &rt(),
-        );
+        let bytes = event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: 1 }, &s, &rt());
         assert_eq!(bytes, Some([0xB0, 1, 65]));
     }
 
@@ -680,14 +650,7 @@ mod tests {
             cc: 1,
             mode: CcValueMode::RelativeOffset { step: 1 },
         };
-        let bytes = event_to_midi_bytes(
-            &ControlEvent::EncoderTurn {
-                delta: -1,
-                cc_value: 0,
-            },
-            &s,
-            &rt(),
-        );
+        let bytes = event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: -1 }, &s, &rt());
         assert_eq!(bytes, Some([0xB0, 1, 63]));
     }
 
@@ -699,14 +662,7 @@ mod tests {
             cc: 1,
             mode: CcValueMode::RelativeOffset { step: 5 },
         };
-        let bytes = event_to_midi_bytes(
-            &ControlEvent::EncoderTurn {
-                delta: 20,
-                cc_value: 0,
-            },
-            &s,
-            &rt(),
-        );
+        let bytes = event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: 20 }, &s, &rt());
         assert_eq!(bytes, Some([0xB0, 1, 127]));
     }
 
@@ -724,30 +680,9 @@ mod tests {
             },
         };
         let rt = crate::runtime_state::RuntimeState::default();
-        let b1 = event_to_midi_bytes(
-            &ControlEvent::EncoderTurn {
-                delta: 1,
-                cc_value: 0,
-            },
-            &s,
-            &rt,
-        );
-        let b2 = event_to_midi_bytes(
-            &ControlEvent::EncoderTurn {
-                delta: 1,
-                cc_value: 0,
-            },
-            &s,
-            &rt,
-        );
-        let b3 = event_to_midi_bytes(
-            &ControlEvent::EncoderTurn {
-                delta: 1,
-                cc_value: 0,
-            },
-            &s,
-            &rt,
-        );
+        let b1 = event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: 1 }, &s, &rt);
+        let b2 = event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: 1 }, &s, &rt);
+        let b3 = event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: 1 }, &s, &rt);
         assert_eq!(b1, Some([0xB0, 1, 1]));
         assert_eq!(b2, Some([0xB0, 1, 2]));
         assert_eq!(b3, Some([0xB0, 1, 3]));
@@ -769,14 +704,7 @@ mod tests {
         };
         let rt = crate::runtime_state::RuntimeState::default();
         rt.set_encoder_value(10);
-        let bytes = event_to_midi_bytes(
-            &ControlEvent::EncoderTurn {
-                delta: 1,
-                cc_value: 0,
-            },
-            &s,
-            &rt,
-        );
+        let bytes = event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: 1 }, &s, &rt);
         assert_eq!(bytes, Some([0xB0, 1, 10]));
         assert_eq!(rt.encoder_value(), 10);
     }
@@ -796,14 +724,7 @@ mod tests {
         };
         let rt = crate::runtime_state::RuntimeState::default();
         rt.set_encoder_value(10);
-        let bytes = event_to_midi_bytes(
-            &ControlEvent::EncoderTurn {
-                delta: 1,
-                cc_value: 0,
-            },
-            &s,
-            &rt,
-        );
+        let bytes = event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: 1 }, &s, &rt);
         assert_eq!(bytes, Some([0xB0, 1, 0]));
         assert_eq!(rt.encoder_value(), 0);
     }

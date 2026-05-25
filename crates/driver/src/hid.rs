@@ -86,8 +86,7 @@ pub(crate) fn decode_packet_with_curve(
                     diff as i8 - 16
                 };
                 if delta != 0 {
-                    let cc_value = (64i16 + delta as i16).clamp(0, 127) as u8;
-                    events.push(ControlEvent::EncoderTurn { delta, cc_value });
+                    events.push(ControlEvent::EncoderTurn { delta });
                 }
                 state.encoder_pos = Some(cur_pos);
             } else {
@@ -301,10 +300,7 @@ mod tests {
         assert!(decode_packet(&mut state, &suppressed_next).is_empty());
         assert_eq!(
             decode_packet(&mut state, &normal_turn),
-            vec![ControlEvent::EncoderTurn {
-                delta: 1,
-                cc_value: 65
-            }]
+            vec![ControlEvent::EncoderTurn { delta: 1 }]
         );
     }
 
@@ -388,10 +384,7 @@ mod tests {
         assert!(decode_packet(&mut state, &initial).is_empty());
         assert_eq!(
             decode_packet(&mut state, &wrapped),
-            vec![ControlEvent::EncoderTurn {
-                delta: 1,
-                cc_value: 65
-            }]
+            vec![ControlEvent::EncoderTurn { delta: 1 }]
         );
     }
 
