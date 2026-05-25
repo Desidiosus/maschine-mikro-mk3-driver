@@ -3,6 +3,45 @@ use serde::{Deserialize, Serialize};
 
 use crate::settings::MidiChannel;
 
+fn default_lo() -> u8 {
+    0
+}
+fn default_hi() -> u8 {
+    127
+}
+fn default_step() -> u8 {
+    1
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CcValueMode {
+    Absolute {
+        #[serde(default = "default_lo")]
+        lo: u8,
+        #[serde(default = "default_hi")]
+        hi: u8,
+        #[serde(default = "default_step")]
+        step: u8,
+        #[serde(default)]
+        wrap: bool,
+    },
+    Relative {
+        #[serde(default = "default_step")]
+        step: u8,
+    },
+    RelativeOffset {
+        #[serde(default = "default_step")]
+        step: u8,
+    },
+}
+
+impl Default for CcValueMode {
+    fn default() -> Self {
+        Self::Relative { step: 1 }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum PadHitAction {
@@ -154,5 +193,54 @@ mod tests {
         assert!(s.contains("auto_off_ms = 1234"), "got: {s}");
         let back: SliderLedSettings = toml::from_str(&s).unwrap();
         assert_eq!(back, led);
+    }
+
+    #[test]
+    fn cc_value_mode_relative_round_trips_lowercase_kind() {
+        let m = CcValueMode::Relative { step: 1 };
+        let s = toml::to_string(&m).unwrap();
+        assert!(s.contains("kind = \"relative\""), "got: {s}");
+        let back: CcValueMode = toml::from_str(&s).unwrap();
+        assert_eq!(back, m);
+    }
+
+    #[test]
+    fn cc_value_mode_relative_offset_round_trips() {
+        let m = CcValueMode::RelativeOffset { step: 2 };
+        let s = toml::to_string(&m).unwrap();
+        assert!(s.contains("kind = \"relative_offset\""), "got: {s}");
+        let back: CcValueMode = toml::from_str(&s).unwrap();
+        assert_eq!(back, m);
+    }
+
+    #[test]
+    fn cc_value_mode_absolute_round_trips_with_explicit_fields() {
+        let m = CcValueMode::Absolute {
+            lo: 10,
+            hi: 100,
+            step: 3,
+            wrap: true,
+        };
+        let s = toml::to_string(&m).unwrap();
+        assert!(s.contains("kind = \"absolute\""), "got: {s}");
+        let back: CcValueMode = toml::from_str(&s).unwrap();
+        assert_eq!(back, m);
+    }
+
+    #[test]
+    fn cc_value_mode_absolute_fills_defaults_when_fields_omitted() {
+        let toml_str = r#"
+kind = "absolute"
+"#;
+        let m: CcValueMode = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            m,
+            CcValueMode::Absolute {
+                lo: 0,
+                hi: 127,
+                step: 1,
+                wrap: false,
+            }
+        );
     }
 }
