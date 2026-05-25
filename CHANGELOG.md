@@ -23,8 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Slider LEDs auto-blank after a configurable idle delay (default is 5s).
 - Rainbow slider sweep added to the self-test.
 
+#### Encoder Value Modes
+- `[encoder.turn.mode]` selects one of three NI-style modes:
+  - `kind = "relative", step = 1` — NI standard: `step` for CW, `128 - step` for CCW. **New default.**
+  - `kind = "relative_offset", step = 1` — previous default: `64 + delta * step` clamped to `[0, 127]`.
+  - `kind = "absolute", lo = 0, hi = 127, step = 1, wrap = false` — accumulated counter, optional wrap. Counter syncs from incoming CC echoes (runtime-only, not persisted across driver restarts).
+
 ### Changed
 - **Configuration file format is new** — flat keys have been replaced by a nested per-control schema. Existing `config.toml` files from 0.4.0 will not load as-is; see `default_config.toml` for the new layout.
+- **Encoder wire format default changed** — configs omitting `[encoder.turn.mode]` now deserialize to `Relative { step: 1 }`, which sends `1` CW / `127` CCW instead of the previous `65` / `63`. To keep the previous behaviour, set `mode = { kind = "relative_offset", step = 1 }` under `[encoder.turn]`.
 - Internal restructure of the driver into smaller modules and a shared library crate; no user-visible behaviour change beyond what's listed above.
 - Driver now blanks the lights and screen when it exits (e.g. on `Ctrl+C`) instead of leaving the controller frozen in its last state.
 
