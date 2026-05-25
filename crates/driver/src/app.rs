@@ -79,6 +79,7 @@ pub fn run_with_device<D: HidIo>(
     let mut soft_off = SoftOffState::new(SoftOffSync::new());
     let soft_off_sync = soft_off.sync();
     let mut backend = MidiBackend::new(&settings, &outputs, soft_off.sync())?;
+    let runtime_state = crate::runtime_state::RuntimeState::default();
     let mut state = ControlState::new();
     let mut buf = [0u8; 64];
     let mut slider_released_at: Option<Instant> = None;
@@ -113,7 +114,7 @@ pub fn run_with_device<D: HidIo>(
                     _ => {}
                 }
                 apply_local_output_feedback(&outputs, &settings, &event)?;
-                backend.handle_event(&event)?;
+                backend.handle_event(&event, &runtime_state)?;
             }
         }
 

@@ -74,8 +74,12 @@ impl<S: MidiSink> MidiBackend<S> {
         &self.sink
     }
 
-    pub fn handle_event(&mut self, event: &ControlEvent) -> DriverResult<()> {
-        match event_to_midi_bytes(event, &self.settings) {
+    pub fn handle_event(
+        &mut self,
+        event: &ControlEvent,
+        rt: &crate::runtime_state::RuntimeState,
+    ) -> DriverResult<()> {
+        match event_to_midi_bytes(event, &self.settings, rt) {
             Some(bytes) => self.sink.send(&bytes),
             None => Ok(()),
         }
@@ -123,7 +127,11 @@ fn step_absolute(cur: u8, delta: i8, lo: u8, hi: u8, step: u8, wrap: bool) -> u8
     (lo as i32 + new_off) as u8
 }
 
-pub fn event_to_midi_bytes(event: &ControlEvent, settings: &Settings) -> Option<[u8; 3]> {
+pub fn event_to_midi_bytes(
+    event: &ControlEvent,
+    settings: &Settings,
+    _rt: &crate::runtime_state::RuntimeState,
+) -> Option<[u8; 3]> {
     let global = settings.global.midi_channel;
 
     match event {
@@ -266,6 +274,10 @@ mod tests {
     };
     use crate::settings::{MidiChannel, Settings};
 
+    fn rt() -> crate::runtime_state::RuntimeState {
+        crate::runtime_state::RuntimeState::default()
+    }
+
     #[derive(Default)]
     struct CapturingSink {
         sent: Vec<Vec<u8>>,
@@ -295,6 +307,7 @@ mod tests {
                 pressed: true,
             },
             &Settings::default(),
+            &rt(),
         );
         assert_eq!(bytes, Some([0xB0, 42, 127]));
     }
@@ -307,6 +320,7 @@ mod tests {
                 pressed: false,
             },
             &Settings::default(),
+            &rt(),
         );
         assert_eq!(bytes, Some([0xB0, 42, 0]));
     }
@@ -319,6 +333,7 @@ mod tests {
                 cc_value: 65,
             },
             &Settings::default(),
+            &rt(),
         );
         assert_eq!(bytes, Some([0xB0, 1, 65]));
     }
@@ -331,6 +346,7 @@ mod tests {
                 cc_value: 63,
             },
             &Settings::default(),
+            &rt(),
         );
         assert_eq!(bytes, Some([0xB0, 9, 63]));
     }
@@ -340,6 +356,7 @@ mod tests {
         let bytes = event_to_midi_bytes(
             &ControlEvent::SliderTouch { pressed: true },
             &Settings::default(),
+            &rt(),
         );
         assert_eq!(bytes, None);
     }
@@ -354,8 +371,9 @@ mod tests {
             off_value: 10,
         };
 
-        let press = event_to_midi_bytes(&ControlEvent::SliderTouch { pressed: true }, &s);
-        let release = event_to_midi_bytes(&ControlEvent::SliderTouch { pressed: false }, &s);
+        let press = event_to_midi_bytes(&ControlEvent::SliderTouch { pressed: true }, &s, &rt());
+        let release =
+            event_to_midi_bytes(&ControlEvent::SliderTouch { pressed: false }, &s, &rt());
         assert_eq!(press, Some([0x90, 60, 100]));
         assert_eq!(release, Some([0x80, 60, 10]));
     }
@@ -370,8 +388,9 @@ mod tests {
             off_value: 0,
         };
 
-        let press = event_to_midi_bytes(&ControlEvent::SliderTouch { pressed: true }, &s);
-        let release = event_to_midi_bytes(&ControlEvent::SliderTouch { pressed: false }, &s);
+        let press = event_to_midi_bytes(&ControlEvent::SliderTouch { pressed: true }, &s, &rt());
+        let release =
+            event_to_midi_bytes(&ControlEvent::SliderTouch { pressed: false }, &s, &rt());
         assert_eq!(press, Some([0xB0, 70, 127]));
         assert_eq!(release, Some([0xB0, 70, 0]));
     }
@@ -384,6 +403,7 @@ mod tests {
                 pressure: 50,
             },
             &Settings::default(),
+            &rt(),
         );
         assert_eq!(bytes, None);
     }
@@ -397,6 +417,7 @@ mod tests {
                 pressure: 100,
             },
             &s,
+            &rt(),
         );
         // pads[0].hit.note default = 48
         assert_eq!(bytes, Some([0xA0, 48, 100]));
@@ -411,6 +432,7 @@ mod tests {
                 pressure: 100,
             },
             &s,
+            &rt(),
         );
         assert_eq!(bytes, Some([0xA2, 60, 100]));
     }
@@ -425,6 +447,7 @@ mod tests {
                 pressed: true,
             },
             &s,
+            &rt(),
         );
         assert_eq!(bytes, Some([0xB5, 42, 127]));
     }
@@ -438,6 +461,7 @@ mod tests {
                 velocity: 64,
             },
             &s,
+            &rt(),
         );
         let off = event_to_midi_bytes(
             &ControlEvent::PadNoteOff {
@@ -445,6 +469,7 @@ mod tests {
                 velocity: 0,
             },
             &s,
+            &rt(),
         );
         assert_eq!(on, Some([0x90, 48, 64]));
         assert_eq!(off, Some([0x80, 48, 0]));
@@ -468,13 +493,16 @@ mod tests {
         let mut backend = MidiBackend::with_sink(Settings::default(), CapturingSink::default());
 
         backend
-            .handle_event(&ControlEvent::SliderTouch { pressed: true })
+            .handle_event(&ControlEvent::SliderTouch { pressed: true }, &rt())
             .unwrap();
         backend
-            .handle_event(&ControlEvent::PadAftertouch {
-                index: 0,
-                pressure: 100,
-            })
+            .handle_event(
+                &ControlEvent::PadAftertouch {
+                    index: 0,
+                    pressure: 100,
+                },
+                &rt(),
+            )
             .unwrap();
 
         assert!(
@@ -488,10 +516,13 @@ mod tests {
     fn handle_event_sends_button_press_under_default_settings() {
         let mut backend = MidiBackend::with_sink(Settings::default(), CapturingSink::default());
         backend
-            .handle_event(&ControlEvent::ButtonChanged {
-                index: 22,
-                pressed: true,
-            })
+            .handle_event(
+                &ControlEvent::ButtonChanged {
+                    index: 22,
+                    pressed: true,
+                },
+                &rt(),
+            )
             .unwrap();
         assert_eq!(backend.sink().sent, vec![vec![0xB0, 42, 127]]);
     }

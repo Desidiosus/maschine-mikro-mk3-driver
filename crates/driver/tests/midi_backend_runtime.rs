@@ -23,6 +23,7 @@ fn runtime_constructor_creates_midi_backend_when_seq_available() {
 use driver::backend::midi::{MidiBackend, MidiSink};
 use driver::error::DriverResult;
 use driver::events::ControlEvent;
+use driver::runtime_state::RuntimeState;
 use driver::settings::actions::{PadPressureAction, SliderTouchAction};
 use driver::settings::{MidiChannel, Settings};
 
@@ -42,10 +43,13 @@ impl MidiSink for CapturingSink {
 fn pad_aftertouch_event_does_not_emit_when_pressure_disabled() {
     let mut backend = MidiBackend::with_sink(Settings::default(), CapturingSink::default());
     backend
-        .handle_event(&ControlEvent::PadAftertouch {
-            index: 0,
-            pressure: 100,
-        })
+        .handle_event(
+            &ControlEvent::PadAftertouch {
+                index: 0,
+                pressure: 100,
+            },
+            &RuntimeState::default(),
+        )
         .unwrap();
     assert!(backend.sink().sent.is_empty());
 }
@@ -59,10 +63,13 @@ fn pad_aftertouch_event_emits_poly_pressure_when_enabled() {
     };
     let mut backend = MidiBackend::with_sink(settings, CapturingSink::default());
     backend
-        .handle_event(&ControlEvent::PadAftertouch {
-            index: 3,
-            pressure: 99,
-        })
+        .handle_event(
+            &ControlEvent::PadAftertouch {
+                index: 3,
+                pressure: 99,
+            },
+            &RuntimeState::default(),
+        )
         .unwrap();
     assert_eq!(backend.sink().sent, vec![vec![0xA1, 60, 99]]);
 }
@@ -71,7 +78,7 @@ fn pad_aftertouch_event_emits_poly_pressure_when_enabled() {
 fn slider_touch_event_does_not_emit_when_disabled() {
     let mut backend = MidiBackend::with_sink(Settings::default(), CapturingSink::default());
     backend
-        .handle_event(&ControlEvent::SliderTouch { pressed: true })
+        .handle_event(&ControlEvent::SliderTouch { pressed: true }, &RuntimeState::default())
         .unwrap();
     assert!(backend.sink().sent.is_empty());
 }
@@ -87,10 +94,10 @@ fn slider_touch_event_emits_note_on_and_off_when_enabled() {
     };
     let mut backend = MidiBackend::with_sink(settings, CapturingSink::default());
     backend
-        .handle_event(&ControlEvent::SliderTouch { pressed: true })
+        .handle_event(&ControlEvent::SliderTouch { pressed: true }, &RuntimeState::default())
         .unwrap();
     backend
-        .handle_event(&ControlEvent::SliderTouch { pressed: false })
+        .handle_event(&ControlEvent::SliderTouch { pressed: false }, &RuntimeState::default())
         .unwrap();
     assert_eq!(
         backend.sink().sent,
