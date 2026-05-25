@@ -8,6 +8,17 @@ use crate::settings::actions::PadConfig;
 
 const PAD_COUNT: usize = 16;
 
+/// TOML key for `[pads.N]` is the physical pad number labelled on the device
+/// (1 = bottom-right, 16 = top-left). Internal indexing keeps the device's
+/// native byte ordering (0..=15). Map between the two.
+pub(crate) const fn config_key_to_internal(toml_key: usize) -> usize {
+    PAD_COUNT - toml_key
+}
+
+pub(crate) const fn internal_to_config_key(internal: usize) -> usize {
+    PAD_COUNT - internal
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PadsByIndex(pub [PadConfig; PAD_COUNT]);
 
@@ -45,10 +56,8 @@ impl IndexMut<usize> for PadsByIndex {
 impl Serialize for PadsByIndex {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = BTreeMap::new();
-        for (idx, pad) in self.0.iter().enumerate() {
-            // Stringify the key so TOML emits "0", "1", ... style sections
-            // matching what PartialSettings::deserialize_partial_pads expects.
-            map.insert(idx.to_string(), pad);
+        for (internal, pad) in self.0.iter().enumerate() {
+            map.insert(internal_to_config_key(internal).to_string(), pad);
         }
         map.serialize(serializer)
     }
@@ -67,15 +76,15 @@ impl<'de> Deserialize<'de> for PadsByIndex {
 
         let mut out: [Option<PadConfig>; PAD_COUNT] = std::array::from_fn(|_| None);
         for (key, cfg) in map {
-            let idx: usize = key.parse().map_err(|_| {
-                DeError::custom(format!("pad key must be an integer 0..=15, got {key:?}"))
+            let config_key: usize = key.parse().map_err(|_| {
+                DeError::custom(format!("pad key must be an integer 1..=16, got {key:?}"))
             })?;
-            if idx >= PAD_COUNT {
+            if !(1..=PAD_COUNT).contains(&config_key) {
                 return Err(DeError::custom(format!(
-                    "pad index {idx} out of range 0..=15"
+                    "pad index {config_key} out of range 1..=16"
                 )));
             }
-            out[idx] = Some(cfg);
+            out[config_key_to_internal(config_key)] = Some(cfg);
         }
         let collected: [PadConfig; PAD_COUNT] = std::array::from_fn(|i| {
             out[i]
@@ -119,8 +128,59 @@ mod tests {
         let s = toml::to_string(&pads).unwrap();
         // toml-rs may quote string keys that start with a digit
         assert!(
-            s.contains("[0.hit]") || s.contains("[\"0\".hit]") || s.contains("[0]"),
+            s.contains("[1.hit]") || s.contains("[\"1\".hit]") || s.contains("[1]"),
             "got:\n{s}"
+        );
+    }
+
+    #[test]
+    fn config_key_round_trip_through_internal() {
+        for toml_key in 1..=PAD_COUNT {
+            let internal = config_key_to_internal(toml_key);
+            assert!(internal < PAD_COUNT);
+            assert_eq!(internal_to_config_key(internal), toml_key);
+        }
+    }
+
+    #[test]
+    fn toml_key_1_deserializes_to_internal_index_15() {
+        let mut full: BTreeMap<String, PadConfig> = BTreeMap::new();
+        full.insert("1".to_string(), make_pad(99));
+        for n in 2..=PAD_COUNT {
+            full.insert(n.to_string(), make_pad(48));
+        }
+        let pads: PadsByIndex = toml::from_str(&toml::to_string(&full).unwrap()).unwrap();
+        match &pads[15].hit {
+            PadHitAction::Note { note, .. } => assert_eq!(*note, 99),
+        }
+    }
+
+    #[test]
+    fn internal_index_zero_serializes_as_toml_key_16() {
+        let mut pads = make_pads();
+        pads.0[0] = make_pad(99);
+        let s = toml::to_string(&pads).unwrap();
+        // Internal index 0 carries note=99 → emitted under TOML key 16.
+        assert!(
+            s.contains("[16.hit]") || s.contains("[\"16\".hit]"),
+            "expected pad at TOML key 16 to carry note=99\ngot:\n{s}"
+        );
+        let parsed: PadsByIndex = toml::from_str(&s).unwrap();
+        assert_eq!(parsed, pads);
+    }
+
+    #[test]
+    fn deserialize_rejects_toml_key_zero() {
+        let mut full: BTreeMap<String, PadConfig> = BTreeMap::new();
+        full.insert("0".to_string(), make_pad(99));
+        for n in 1..PAD_COUNT {
+            full.insert(n.to_string(), make_pad(48));
+        }
+        let serialized = toml::to_string(&full).unwrap();
+        let err = toml::from_str::<PadsByIndex>(&serialized).unwrap_err();
+        assert!(
+            err.to_string().contains("out of range 1..=16"),
+            "got: {err}"
         );
     }
 }

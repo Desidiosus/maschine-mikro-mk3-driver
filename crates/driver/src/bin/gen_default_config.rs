@@ -12,7 +12,8 @@ const HEADER: &str = "# default_config.toml
 # `~/.config/maschine-mikro-mk3-driver/config.toml` instead (once roadmap \u{00a7}1
 # ships) or by passing `-c <path>` on the CLI today.
 #
-# Pads keyed 0..15 (top-left to bottom-right).
+# Pads keyed 1..16, matching the physical pad numbers labelled on the device:
+# 1 = bottom-right, 16 = top-left.
 # Buttons keyed by snake_case names from the `Buttons` enum:
 #   maschine, star, browse, volume, swing, tempo, plugin, sampling,
 #   left, right, pitch, mod, perform, notes, group, auto,
@@ -101,8 +102,8 @@ mod tests {
         }
 
         // Parse as Settings directly: both Settings and PartialSettings now use
-        // the same integer-keyed map format for pads ([pads.0], [pads.1], …),
-        // so the generated TOML is compatible with both paths.
+        // the same integer-keyed map format for pads ([pads.1], [pads.2], …,
+        // [pads.16]), so the generated TOML is compatible with both paths.
         let parsed: Settings =
             toml::from_str(&stripped).expect("uncommented config must parse as Settings");
         assert_eq!(parsed, Settings::default());

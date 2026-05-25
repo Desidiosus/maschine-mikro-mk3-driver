@@ -18,8 +18,9 @@ type = "poly"
 "#,
     );
 
+    // TOML key 5 maps to internal logical pad 11 (16 - 5).
     assert_eq!(
-        merged.pads[5].pressure,
+        merged.pads[11].pressure,
         PadPressureAction::Poly {
             channel: None,
             note: None
@@ -77,7 +78,7 @@ fn per_action_channel_override_does_not_disturb_global() {
 [global]
 midi_channel = 3
 
-[pads.0.hit]
+[pads.1.hit]
 type = "note"
 note = 48
 channel = 1
@@ -88,7 +89,8 @@ channel = 1
         merged.global.midi_channel,
         MidiChannel::try_from(3).unwrap()
     );
-    match &merged.pads[0].hit {
+    // TOML key 1 maps to internal logical pad 15.
+    match &merged.pads[15].hit {
         PadHitAction::Note { channel, note } => {
             assert_eq!(*note, 48);
             assert_eq!(*channel, MidiChannel::try_from(1).ok());

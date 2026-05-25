@@ -110,15 +110,15 @@ where
     };
     let mut out: [Option<PartialPadConfig>; 16] = std::array::from_fn(|_| None);
     for (key, cfg) in map {
-        let idx: usize = key
+        let config_key: usize = key
             .parse()
             .map_err(|_| DeError::custom(format!("pad index must be an integer, got: {key}")))?;
-        if idx >= 16 {
+        if !(1..=16).contains(&config_key) {
             return Err(DeError::custom(format!(
-                "pad index {idx} out of range 0..=15"
+                "pad index {config_key} out of range 1..=16"
             )));
         }
-        out[idx] = Some(cfg);
+        out[crate::settings::pads_by_index::config_key_to_internal(config_key)] = Some(cfg);
     }
     Ok(Some(out))
 }
@@ -136,9 +136,10 @@ where
     };
     let count = pads.iter().filter(|p| p.is_some()).count();
     let mut map = serializer.serialize_map(Some(count))?;
-    for (idx, pad) in pads.iter().enumerate() {
+    for (internal, pad) in pads.iter().enumerate() {
         if let Some(pad) = pad {
-            map.serialize_entry(&idx, pad)?;
+            let config_key = crate::settings::pads_by_index::internal_to_config_key(internal);
+            map.serialize_entry(&config_key, pad)?;
         }
     }
     map.end()
@@ -449,14 +450,15 @@ type = "poly"
         let partial: PartialSettings = toml::from_str(toml_str).unwrap();
         let merged = Settings::default().merge_overrides(partial);
 
+        // TOML key 5 maps to internal logical pad 11 (16 - 5).
         assert_eq!(
-            merged.pads[5].pressure,
+            merged.pads[11].pressure,
             PadPressureAction::Poly {
                 channel: None,
                 note: None
             }
         );
-        assert_eq!(merged.pads[0].pressure, PadPressureAction::Disabled);
+        assert_eq!(merged.pads[5].pressure, PadPressureAction::Disabled);
     }
 
     #[test]
