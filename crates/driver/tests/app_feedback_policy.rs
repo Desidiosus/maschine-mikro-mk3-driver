@@ -98,3 +98,47 @@ fn pad_note_off_clears_local_pad_feedback() {
         (PadColors::Off, Brightness::Off)
     );
 }
+
+#[test]
+fn slider_move_renders_bar_mode_with_default_color() {
+    let settings = test_settings(false);
+    let outputs = driver::outputs::DeviceOutputs::new();
+    let event = driver::events::ControlEvent::SliderMoved {
+        raw: 200,
+        cc_value: 127,
+    };
+
+    driver::feedback::local::apply_local_output_feedback(&outputs, &settings, &event).unwrap();
+
+    assert!(outputs.lights_dirty());
+    outputs.with_lights(|lights| {
+        for i in 0..25 {
+            assert_eq!(lights.slider_byte(i), 0x7e, "led {i} should be 0x7e");
+        }
+    });
+}
+
+#[test]
+fn slider_move_with_pan_mode_lights_around_center() {
+    let mut settings = test_settings(false);
+    settings.slider.led.mode = driver::settings::SliderLedMode::Pan;
+    settings.slider.led.color = maschine_library::lights::PadColors::Cyan;
+
+    let outputs = driver::outputs::DeviceOutputs::new();
+    let event = driver::events::ControlEvent::SliderMoved {
+        raw: 150,
+        cc_value: 90,
+    };
+
+    driver::feedback::local::apply_local_output_feedback(&outputs, &settings, &event).unwrap();
+
+    let lit = ((maschine_library::lights::PadColors::Cyan as u8) << 2)
+        | (Brightness::Normal as u8 & 0b11);
+
+    outputs.with_lights(|lights| {
+        for i in 0..12 {
+            assert_eq!(lights.slider_byte(i), 0, "led {i} below center");
+        }
+        assert_eq!(lights.slider_byte(12), lit, "center");
+    });
+}

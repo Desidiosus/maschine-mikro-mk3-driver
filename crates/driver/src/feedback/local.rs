@@ -6,6 +6,7 @@ use num::FromPrimitive;
 use crate::events::ControlEvent;
 use crate::outputs::DeviceOutputs;
 use crate::settings::Settings;
+use crate::settings::actions::{SliderLedMode, SliderLedSettings};
 
 pub fn apply_local_output_feedback(
     outputs: &DeviceOutputs,
@@ -14,7 +15,7 @@ pub fn apply_local_output_feedback(
 ) -> HidResult<()> {
     match event {
         ControlEvent::SliderMoved { raw, .. } => {
-            update_slider_lights(outputs, *raw);
+            update_slider_lights(outputs, *raw, &settings.slider.led);
         }
         ControlEvent::PadNoteOn { index, .. } => {
             outputs.with_lights_mut(|lights| {
@@ -51,8 +52,10 @@ fn local_button_release_backlight_enabled(settings: &Settings) -> bool {
     !settings.bridge.midi_bridge_virmidi
 }
 
-fn update_slider_lights(outputs: &DeviceOutputs, slider_raw: u8) {
-    outputs.with_lights_mut(|lights| {
-        lights.render_slider_bar(slider_raw, PadColors::White, false);
+fn update_slider_lights(outputs: &DeviceOutputs, slider_raw: u8, led: &SliderLedSettings) {
+    outputs.with_lights_mut(|lights| match led.mode {
+        SliderLedMode::Bar => lights.render_slider_bar(slider_raw, led.color, led.stylized),
+        SliderLedMode::Pan => lights.render_slider_pan(slider_raw, led.color, led.stylized),
+        SliderLedMode::Dot => lights.render_slider_dot(slider_raw, led.color),
     });
 }

@@ -72,8 +72,7 @@ impl Lights {
         self.status[55 + id] = val;
     }
 
-    #[cfg(test)]
-    pub(crate) fn slider_byte(&self, idx: usize) -> u8 {
+    pub fn slider_byte(&self, idx: usize) -> u8 {
         self.status[55 + idx]
     }
 
