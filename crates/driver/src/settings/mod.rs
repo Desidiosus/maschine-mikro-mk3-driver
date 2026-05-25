@@ -9,9 +9,9 @@ pub mod partial;
 pub use partial::PartialSettings;
 
 pub use actions::{
-    ButtonConfig, ButtonPressAction, EncoderConfig, EncoderTurnAction, PadConfig, PadHitAction,
-    PadPressureAction, SliderConfig, SliderLedMode, SliderLedSettings, SliderPositionAction,
-    SliderTouchAction,
+    ButtonConfig, ButtonPressAction, CcValueMode, EncoderConfig, EncoderTurnAction, PadConfig,
+    PadHitAction, PadPressureAction, SliderConfig, SliderLedMode, SliderLedSettings,
+    SliderPositionAction, SliderTouchAction,
 };
 pub use buttons_by_name::ButtonsByName;
 pub use groups::{BridgeSettings, GlobalSettings, HardwareSettings};

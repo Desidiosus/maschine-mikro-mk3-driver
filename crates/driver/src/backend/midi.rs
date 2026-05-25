@@ -7,8 +7,8 @@ use crate::events::ControlEvent;
 use crate::feedback::midi::apply_incoming_midi_message;
 use crate::outputs::DeviceOutputs;
 use crate::settings::actions::{
-    ButtonPressAction, EncoderTurnAction, PadHitAction, PadPressureAction, SliderPositionAction,
-    SliderTouchAction,
+    ButtonPressAction, CcValueMode, EncoderTurnAction, PadHitAction, PadPressureAction,
+    SliderPositionAction, SliderTouchAction,
 };
 use crate::settings::{MidiChannel, Settings};
 use crate::soft_off::SoftOffSync;
@@ -114,7 +114,6 @@ fn resolve_channel(per_action: Option<MidiChannel>, global: MidiChannel) -> u8 {
     per_action.unwrap_or(global).as_u8()
 }
 
-#[allow(dead_code)]
 fn step_absolute(cur: u8, delta: i8, lo: u8, hi: u8, step: u8, wrap: bool) -> u8 {
     let span = (hi as i32 - lo as i32) + 1;
     let move_ = delta as i32 * step as i32;
@@ -130,7 +129,7 @@ fn step_absolute(cur: u8, delta: i8, lo: u8, hi: u8, step: u8, wrap: bool) -> u8
 pub fn event_to_midi_bytes(
     event: &ControlEvent,
     settings: &Settings,
-    _rt: &crate::runtime_state::RuntimeState,
+    rt: &crate::runtime_state::RuntimeState,
 ) -> Option<[u8; 3]> {
     let global = settings.global.midi_channel;
 
@@ -145,13 +144,29 @@ pub fn event_to_midi_bytes(
                 ]),
             }
         }
-        ControlEvent::EncoderTurn { cc_value, .. } => {
-            let EncoderTurnAction::Cc {
-                channel,
-                cc,
-                mode: _,
-            } = &settings.encoder.turn;
-            Some([0xB0 | resolve_channel(*channel, global), *cc, *cc_value])
+        ControlEvent::EncoderTurn { delta, .. } => {
+            let EncoderTurnAction::Cc { channel, cc, mode } = &settings.encoder.turn;
+            let value = match mode {
+                CcValueMode::Absolute { lo, hi, step, wrap } => {
+                    let cur = rt.encoder_value();
+                    let next = step_absolute(cur, *delta, *lo, *hi, *step, *wrap);
+                    rt.set_encoder_value(next);
+                    next
+                }
+                CcValueMode::Relative { step } => {
+                    let mag = (delta.unsigned_abs() as u16 * *step as u16).min(63) as u8;
+                    if *delta >= 0 {
+                        mag
+                    } else {
+                        128u8.wrapping_sub(mag)
+                    }
+                }
+                CcValueMode::RelativeOffset { step } => {
+                    let off = *delta as i16 * *step as i16;
+                    (64i16 + off).clamp(0, 127) as u8
+                }
+            };
+            Some([0xB0 | resolve_channel(*channel, global), *cc, value])
         }
         ControlEvent::SliderMoved { cc_value, .. } => {
             let SliderPositionAction::Cc { channel, cc } = &settings.slider.position;
@@ -274,7 +289,8 @@ mod tests {
     use super::*;
     use crate::events::ControlEvent;
     use crate::settings::actions::{
-        ButtonPressAction, PadHitAction, PadPressureAction, SliderTouchAction,
+        ButtonPressAction, CcValueMode, EncoderTurnAction, PadHitAction, PadPressureAction,
+        SliderTouchAction,
     };
     use crate::settings::{MidiChannel, Settings};
 
@@ -327,19 +343,6 @@ mod tests {
             &rt(),
         );
         assert_eq!(bytes, Some([0xB0, 42, 0]));
-    }
-
-    #[test]
-    fn encoder_emits_cc_with_relative_offset_value() {
-        let bytes = event_to_midi_bytes(
-            &ControlEvent::EncoderTurn {
-                delta: 1,
-                cc_value: 65,
-            },
-            &Settings::default(),
-            &rt(),
-        );
-        assert_eq!(bytes, Some([0xB0, 1, 65]));
     }
 
     #[test]
@@ -571,5 +574,237 @@ mod tests {
     fn step_absolute_handles_multi_detent_delta() {
         let v = super::step_absolute(0, 2, 0, 127, 1, false);
         assert_eq!(v, 2);
+    }
+
+    #[test]
+    fn encoder_relative_default_cw_emits_1() {
+        let bytes = event_to_midi_bytes(
+            &ControlEvent::EncoderTurn {
+                delta: 1,
+                cc_value: 0,
+            },
+            &Settings::default(),
+            &rt(),
+        );
+        assert_eq!(bytes, Some([0xB0, 1, 1]));
+    }
+
+    #[test]
+    fn encoder_relative_default_ccw_emits_127() {
+        let bytes = event_to_midi_bytes(
+            &ControlEvent::EncoderTurn {
+                delta: -1,
+                cc_value: 0,
+            },
+            &Settings::default(),
+            &rt(),
+        );
+        assert_eq!(bytes, Some([0xB0, 1, 127]));
+    }
+
+    #[test]
+    fn encoder_relative_step3_cw_emits_3() {
+        let mut s = Settings::default();
+        s.encoder.turn = EncoderTurnAction::Cc {
+            channel: None,
+            cc: 1,
+            mode: CcValueMode::Relative { step: 3 },
+        };
+        let bytes = event_to_midi_bytes(
+            &ControlEvent::EncoderTurn {
+                delta: 1,
+                cc_value: 0,
+            },
+            &s,
+            &rt(),
+        );
+        assert_eq!(bytes, Some([0xB0, 1, 3]));
+    }
+
+    #[test]
+    fn encoder_relative_step3_ccw_emits_125() {
+        let mut s = Settings::default();
+        s.encoder.turn = EncoderTurnAction::Cc {
+            channel: None,
+            cc: 1,
+            mode: CcValueMode::Relative { step: 3 },
+        };
+        let bytes = event_to_midi_bytes(
+            &ControlEvent::EncoderTurn {
+                delta: -1,
+                cc_value: 0,
+            },
+            &s,
+            &rt(),
+        );
+        assert_eq!(bytes, Some([0xB0, 1, 125]));
+    }
+
+    #[test]
+    fn encoder_relative_multi_detent_scales() {
+        let bytes = event_to_midi_bytes(
+            &ControlEvent::EncoderTurn {
+                delta: 2,
+                cc_value: 0,
+            },
+            &Settings::default(),
+            &rt(),
+        );
+        assert_eq!(bytes, Some([0xB0, 1, 2]));
+    }
+
+    #[test]
+    fn encoder_relative_offset_cw_emits_65() {
+        let mut s = Settings::default();
+        s.encoder.turn = EncoderTurnAction::Cc {
+            channel: None,
+            cc: 1,
+            mode: CcValueMode::RelativeOffset { step: 1 },
+        };
+        let bytes = event_to_midi_bytes(
+            &ControlEvent::EncoderTurn {
+                delta: 1,
+                cc_value: 0,
+            },
+            &s,
+            &rt(),
+        );
+        assert_eq!(bytes, Some([0xB0, 1, 65]));
+    }
+
+    #[test]
+    fn encoder_relative_offset_ccw_emits_63() {
+        let mut s = Settings::default();
+        s.encoder.turn = EncoderTurnAction::Cc {
+            channel: None,
+            cc: 1,
+            mode: CcValueMode::RelativeOffset { step: 1 },
+        };
+        let bytes = event_to_midi_bytes(
+            &ControlEvent::EncoderTurn {
+                delta: -1,
+                cc_value: 0,
+            },
+            &s,
+            &rt(),
+        );
+        assert_eq!(bytes, Some([0xB0, 1, 63]));
+    }
+
+    #[test]
+    fn encoder_relative_offset_step5_clamps_at_127() {
+        let mut s = Settings::default();
+        s.encoder.turn = EncoderTurnAction::Cc {
+            channel: None,
+            cc: 1,
+            mode: CcValueMode::RelativeOffset { step: 5 },
+        };
+        let bytes = event_to_midi_bytes(
+            &ControlEvent::EncoderTurn {
+                delta: 20,
+                cc_value: 0,
+            },
+            &s,
+            &rt(),
+        );
+        assert_eq!(bytes, Some([0xB0, 1, 127]));
+    }
+
+    #[test]
+    fn encoder_absolute_advances_counter_and_emits_value() {
+        let mut s = Settings::default();
+        s.encoder.turn = EncoderTurnAction::Cc {
+            channel: None,
+            cc: 1,
+            mode: CcValueMode::Absolute {
+                lo: 0,
+                hi: 127,
+                step: 1,
+                wrap: false,
+            },
+        };
+        let rt = crate::runtime_state::RuntimeState::default();
+        let b1 = event_to_midi_bytes(
+            &ControlEvent::EncoderTurn {
+                delta: 1,
+                cc_value: 0,
+            },
+            &s,
+            &rt,
+        );
+        let b2 = event_to_midi_bytes(
+            &ControlEvent::EncoderTurn {
+                delta: 1,
+                cc_value: 0,
+            },
+            &s,
+            &rt,
+        );
+        let b3 = event_to_midi_bytes(
+            &ControlEvent::EncoderTurn {
+                delta: 1,
+                cc_value: 0,
+            },
+            &s,
+            &rt,
+        );
+        assert_eq!(b1, Some([0xB0, 1, 1]));
+        assert_eq!(b2, Some([0xB0, 1, 2]));
+        assert_eq!(b3, Some([0xB0, 1, 3]));
+        assert_eq!(rt.encoder_value(), 3);
+    }
+
+    #[test]
+    fn encoder_absolute_clamps_at_hi() {
+        let mut s = Settings::default();
+        s.encoder.turn = EncoderTurnAction::Cc {
+            channel: None,
+            cc: 1,
+            mode: CcValueMode::Absolute {
+                lo: 0,
+                hi: 10,
+                step: 1,
+                wrap: false,
+            },
+        };
+        let rt = crate::runtime_state::RuntimeState::default();
+        rt.set_encoder_value(10);
+        let bytes = event_to_midi_bytes(
+            &ControlEvent::EncoderTurn {
+                delta: 1,
+                cc_value: 0,
+            },
+            &s,
+            &rt,
+        );
+        assert_eq!(bytes, Some([0xB0, 1, 10]));
+        assert_eq!(rt.encoder_value(), 10);
+    }
+
+    #[test]
+    fn encoder_absolute_wraps_at_hi() {
+        let mut s = Settings::default();
+        s.encoder.turn = EncoderTurnAction::Cc {
+            channel: None,
+            cc: 1,
+            mode: CcValueMode::Absolute {
+                lo: 0,
+                hi: 10,
+                step: 1,
+                wrap: true,
+            },
+        };
+        let rt = crate::runtime_state::RuntimeState::default();
+        rt.set_encoder_value(10);
+        let bytes = event_to_midi_bytes(
+            &ControlEvent::EncoderTurn {
+                delta: 1,
+                cc_value: 0,
+            },
+            &s,
+            &rt,
+        );
+        assert_eq!(bytes, Some([0xB0, 1, 0]));
+        assert_eq!(rt.encoder_value(), 0);
     }
 }
