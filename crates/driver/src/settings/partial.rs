@@ -5,11 +5,12 @@ use serde::de::Error as DeError;
 use serde::{Deserialize, Serialize};
 
 use crate::settings::actions::{
-    ButtonPressAction, EncoderTurnAction, PadHitAction, PadPressureAction, SliderPositionAction,
-    SliderTouchAction,
+    ButtonPressAction, EncoderTurnAction, PadHitAction, PadPressureAction, SliderLedMode,
+    SliderPositionAction, SliderTouchAction,
 };
 use crate::settings::{BacklightBrightness, MidiChannel, Settings};
 use crate::velocity::PadVelocityCurve;
+use maschine_library::lights::PadColors;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -85,6 +86,15 @@ pub struct PartialEncoderConfig {
 pub struct PartialSliderConfig {
     pub position: Option<SliderPositionAction>,
     pub touch: Option<SliderTouchAction>,
+    pub led: Option<PartialSliderLedSettings>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PartialSliderLedSettings {
+    pub mode: Option<SliderLedMode>,
+    pub color: Option<PadColors>,
+    pub stylized: Option<bool>,
 }
 
 fn deserialize_partial_pads<'de, D>(
@@ -251,6 +261,17 @@ impl Settings {
             if let Some(v) = s.touch {
                 self.slider.touch = v;
             }
+            if let Some(led) = s.led {
+                if let Some(v) = led.mode {
+                    self.slider.led.mode = v;
+                }
+                if let Some(v) = led.color {
+                    self.slider.led.color = v;
+                }
+                if let Some(v) = led.stylized {
+                    self.slider.led.stylized = v;
+                }
+            }
         }
         self
     }
@@ -358,6 +379,19 @@ impl Settings {
         }
         if self.slider.touch != defaults.slider.touch {
             s.touch = Some(self.slider.touch.clone());
+        }
+        let mut led = PartialSliderLedSettings::default();
+        if self.slider.led.mode != defaults.slider.led.mode {
+            led.mode = Some(self.slider.led.mode);
+        }
+        if self.slider.led.color != defaults.slider.led.color {
+            led.color = Some(self.slider.led.color);
+        }
+        if self.slider.led.stylized != defaults.slider.led.stylized {
+            led.stylized = Some(self.slider.led.stylized);
+        }
+        if led != PartialSliderLedSettings::default() {
+            s.led = Some(led);
         }
         if s != PartialSliderConfig::default() {
             out.slider = Some(s);
@@ -471,6 +505,59 @@ midi_channel = 5
             on_value: 100,
             off_value: 10,
         };
+
+        let partial = s.diff_from_defaults();
+        let round_tripped = Settings::default().merge_overrides(partial);
+        assert_eq!(round_tripped, s);
+    }
+
+    #[test]
+    fn partial_overrides_slider_led_mode_only() {
+        let toml_str = r#"
+[slider.led]
+mode = "pan"
+"#;
+        let partial: PartialSettings = toml::from_str(toml_str).unwrap();
+        let merged = Settings::default().merge_overrides(partial);
+
+        assert_eq!(
+            merged.slider.led.mode,
+            crate::settings::actions::SliderLedMode::Pan
+        );
+        assert_eq!(
+            merged.slider.led.color,
+            maschine_library::lights::PadColors::White
+        );
+        assert!(!merged.slider.led.stylized);
+    }
+
+    #[test]
+    fn partial_overrides_slider_led_color_and_stylized() {
+        let toml_str = r#"
+[slider.led]
+color = "cyan"
+stylized = true
+"#;
+        let partial: PartialSettings = toml::from_str(toml_str).unwrap();
+        let merged = Settings::default().merge_overrides(partial);
+
+        assert_eq!(
+            merged.slider.led.color,
+            maschine_library::lights::PadColors::Cyan
+        );
+        assert!(merged.slider.led.stylized);
+        assert_eq!(
+            merged.slider.led.mode,
+            crate::settings::actions::SliderLedMode::Bar
+        );
+    }
+
+    #[test]
+    fn diff_from_defaults_emits_slider_led_overrides() {
+        use crate::settings::actions::SliderLedMode;
+        let mut s = Settings::default();
+        s.slider.led.mode = SliderLedMode::Dot;
+        s.slider.led.stylized = true;
 
         let partial = s.diff_from_defaults();
         let round_tripped = Settings::default().merge_overrides(partial);
