@@ -70,6 +70,11 @@ impl Lights {
         self.status[55 + id] = val;
     }
 
+    #[cfg(test)]
+    pub(crate) fn slider_byte(&self, idx: usize) -> u8 {
+        self.status[55 + idx]
+    }
+
     /// Render the 25-LED slider bar in "bar" mode from a raw touch reading
     /// (0..=200 from the HID input report). When `raw == 0` (no touch), all
     /// LEDs blank. Otherwise LEDs 0..=lit_count are lit; if `stylized` is true,
@@ -77,12 +82,12 @@ impl Lights {
     /// otherwise every lit LED renders Normal.
     pub fn render_slider_bar(&mut self, raw: u8, color: PadColors, stylized: bool) {
         if raw == 0 {
-            for i in 0..25 {
-                self.set_slider(i, PadColors::Off, Brightness::Off);
-            }
+            self.status[55..80].fill(0);
             return;
         }
-        let lit_count: i32 = ((raw as i32 - 1 + 5) * 25 / 200 - 1).max(0);
+        // Any non-zero touch lights at least LED[0]: the `.max(0)` clamp pins
+        // low raw values (1..=5) to lit_count = 0 by design.
+        let lit_count: i32 = ((raw as i32 + 4) * 25 / 200 - 1).max(0);
         for idx in 0i32..25 {
             let b = if idx > lit_count {
                 Brightness::Off
@@ -93,12 +98,7 @@ impl Lights {
             } else {
                 Brightness::Normal
             };
-            let c = if matches!(b, Brightness::Off) {
-                PadColors::Off
-            } else {
-                color
-            };
-            self.set_slider(idx as usize, c, b);
+            self.set_slider(idx as usize, color, b);
         }
     }
 
@@ -159,7 +159,9 @@ mod tests {
     fn set_slider_packs_color_and_brightness_white_normal_is_0x7e() {
         let mut lights = Lights::new();
         lights.set_slider(0, PadColors::White, Brightness::Normal);
-        let buf = lights_status_byte(&lights, 55);
+        // Wire-level check: this test pins the 0x80 report-id offset and the
+        // 55-byte slider region offset via the actual write path.
+        let buf = lights_capture_byte(&lights, 55);
         assert_eq!(buf, 0x7e);
     }
 
@@ -167,14 +169,14 @@ mod tests {
     fn set_slider_writes_off_byte_when_brightness_off() {
         let mut lights = Lights::new();
         lights.set_slider(3, PadColors::Red, Brightness::Off);
-        assert_eq!(lights_status_byte(&lights, 55 + 3), 0);
+        assert_eq!(lights.slider_byte(3), 0);
     }
 
     #[test]
     fn set_slider_packs_orange_normal_as_0x0a() {
         let mut lights = Lights::new();
         lights.set_slider(7, PadColors::Orange, Brightness::Normal);
-        assert_eq!(lights_status_byte(&lights, 55 + 7), 0x0a);
+        assert_eq!(lights.slider_byte(7), 0x0a);
     }
 
     #[test]
@@ -183,7 +185,7 @@ mod tests {
         lights.set_slider(5, PadColors::Red, Brightness::Normal);
         lights.render_slider_bar(0, PadColors::White, false);
         for i in 0..25 {
-            assert_eq!(lights_status_byte(&lights, 55 + i), 0, "led {i}");
+            assert_eq!(lights.slider_byte(i), 0, "led {i}");
         }
     }
 
@@ -192,9 +194,24 @@ mod tests {
         let mut lights = Lights::new();
         lights.render_slider_bar(1, PadColors::White, false);
         let head = ((PadColors::White as u8) << 2) | (Brightness::Normal as u8 & 0b11);
-        assert_eq!(lights_status_byte(&lights, 55), head);
+        assert_eq!(lights.slider_byte(0), head);
         for i in 1..25 {
-            assert_eq!(lights_status_byte(&lights, 55 + i), 0, "led {i}");
+            assert_eq!(lights.slider_byte(i), 0, "led {i}");
+        }
+    }
+
+    #[test]
+    fn render_slider_bar_low_raw_values_light_only_led_0() {
+        // Design contract: any non-zero touch lights at least LED[0] (Normal,
+        // default color). For raw in 1..=5 only LED[0] should be lit.
+        let head = ((PadColors::White as u8) << 2) | (Brightness::Normal as u8 & 0b11);
+        for raw in 1u8..=5 {
+            let mut lights = Lights::new();
+            lights.render_slider_bar(raw, PadColors::White, false);
+            assert_eq!(lights.slider_byte(0), head, "raw={raw} led 0");
+            for i in 1..25 {
+                assert_eq!(lights.slider_byte(i), 0, "raw={raw} led {i}");
+            }
         }
     }
 
@@ -204,7 +221,7 @@ mod tests {
         lights.render_slider_bar(200, PadColors::Red, false);
         let lit = ((PadColors::Red as u8) << 2) | (Brightness::Normal as u8 & 0b11);
         for i in 0..25 {
-            assert_eq!(lights_status_byte(&lights, 55 + i), lit, "led {i}");
+            assert_eq!(lights.slider_byte(i), lit, "led {i}");
         }
     }
 
@@ -214,14 +231,14 @@ mod tests {
         let raw = 100u8;
         lights.render_slider_bar(raw, PadColors::Blue, true);
 
-        let lit_count = (raw as i32 - 1 + 5) * 25 / 200 - 1;
+        let lit_count = (raw as i32 + 4) * 25 / 200 - 1;
         let head_idx = lit_count as usize;
 
         let trail = ((PadColors::Blue as u8) << 2) | (Brightness::Dim as u8 & 0b11);
         let head = ((PadColors::Blue as u8) << 2) | (Brightness::Normal as u8 & 0b11);
 
         for i in 0..25 {
-            let byte = lights_status_byte(&lights, 55 + i);
+            let byte = lights.slider_byte(i);
             if i < head_idx {
                 assert_eq!(byte, trail, "trail led {i}");
             } else if i == head_idx {
@@ -232,8 +249,9 @@ mod tests {
         }
     }
 
-    // Helper for byte inspection during tests.
-    fn lights_status_byte(lights: &Lights, idx: usize) -> u8 {
+    // Helper for wire-level byte inspection (kept for the one test that pins
+    // the 0x80 report-id offset and the 55-byte slider region offset).
+    fn lights_capture_byte(lights: &Lights, idx: usize) -> u8 {
         use std::cell::RefCell;
         struct Capture(RefCell<Vec<u8>>);
         impl crate::hid::HidIo for Capture {
