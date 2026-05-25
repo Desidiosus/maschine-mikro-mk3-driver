@@ -102,6 +102,39 @@ impl Lights {
         }
     }
 
+    /// Render the slider bar in "pan" mode: LEDs from the fixed center (LED 12)
+    /// outward to the current position lit. When `raw == 0`, all 25 LEDs blank.
+    /// Any non-zero touch lights at least LED[12]. When `stylized`, the LED at
+    /// `lit_count` (the head, farthest from center) renders Normal and the
+    /// remaining lit LEDs render Dim; if `lit_count == 12`, the single lit LED
+    /// is the head.
+    pub fn render_slider_pan(&mut self, raw: u8, color: PadColors, stylized: bool) {
+        if raw == 0 {
+            self.status[55..80].fill(0);
+            return;
+        }
+        let lit_count = (((raw as i32 + 4) * 25 / 200 - 1).max(0)) as usize;
+        let head = lit_count.min(24);
+        let center = 12usize;
+        let (lo, hi) = if head <= center {
+            (head, center)
+        } else {
+            (center, head)
+        };
+        for idx in 0..25 {
+            let b = if idx < lo || idx > hi {
+                Brightness::Off
+            } else if idx == head {
+                Brightness::Normal
+            } else if stylized {
+                Brightness::Dim
+            } else {
+                Brightness::Normal
+            };
+            self.set_slider(idx, color, b);
+        }
+    }
+
     pub fn set_pad(&mut self, id: usize, c: PadColors, b: Brightness) {
         let val = match b {
             Brightness::Off => 0,
@@ -243,6 +276,95 @@ mod tests {
                 assert_eq!(byte, trail, "trail led {i}");
             } else if i == head_idx {
                 assert_eq!(byte, head, "head led {i}");
+            } else {
+                assert_eq!(byte, 0, "off led {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn render_slider_pan_zero_raw_blanks_all() {
+        let mut lights = Lights::new();
+        lights.set_slider(0, PadColors::Red, Brightness::Normal);
+        lights.render_slider_pan(0, PadColors::White, false);
+        for i in 0..25 {
+            assert_eq!(lights.slider_byte(i), 0);
+        }
+    }
+
+    #[test]
+    fn render_slider_pan_at_center_lights_only_led_12() {
+        let mut lights = Lights::new();
+        // raw value yielding lit_count == 12 with the formula ((raw+4)*25/200-1).max(0):
+        // (raw+4)*25/200 == 13 → raw+4 in [104, 112) → raw in [100, 108).
+        lights.render_slider_pan(104, PadColors::Green, false);
+        let lit = ((PadColors::Green as u8) << 2) | (Brightness::Normal as u8 & 0b11);
+        for i in 0..25 {
+            let byte = lights.slider_byte(i);
+            if i == 12 {
+                assert_eq!(byte, lit, "center led");
+            } else {
+                assert_eq!(byte, 0, "led {i} should be off");
+            }
+        }
+    }
+
+    #[test]
+    fn render_slider_pan_above_center_lights_12_to_lit_count() {
+        let mut lights = Lights::new();
+        let raw = 150u8;
+        lights.render_slider_pan(raw, PadColors::Magenta, false);
+
+        let lit_count = (((raw as i32 + 4) * 25 / 200 - 1).max(0)) as usize;
+        assert!(lit_count > 12, "test precondition: pick a raw above center");
+
+        let lit = ((PadColors::Magenta as u8) << 2) | (Brightness::Normal as u8 & 0b11);
+        for i in 0..25 {
+            let byte = lights.slider_byte(i);
+            if i >= 12 && i <= lit_count {
+                assert_eq!(byte, lit, "led {i} should be lit");
+            } else {
+                assert_eq!(byte, 0, "led {i} should be off");
+            }
+        }
+    }
+
+    #[test]
+    fn render_slider_pan_below_center_lights_lit_count_to_12() {
+        let mut lights = Lights::new();
+        let raw = 50u8;
+        lights.render_slider_pan(raw, PadColors::Cyan, false);
+
+        let lit_count = (((raw as i32 + 4) * 25 / 200 - 1).max(0)) as usize;
+        assert!(lit_count < 12, "test precondition: pick a raw below center");
+
+        let lit = ((PadColors::Cyan as u8) << 2) | (Brightness::Normal as u8 & 0b11);
+        for i in 0..25 {
+            let byte = lights.slider_byte(i);
+            if i >= lit_count && i <= 12 {
+                assert_eq!(byte, lit, "led {i} should be lit");
+            } else {
+                assert_eq!(byte, 0, "led {i} should be off");
+            }
+        }
+    }
+
+    #[test]
+    fn render_slider_pan_stylized_endpoint_is_head() {
+        let mut lights = Lights::new();
+        let raw = 150u8;
+        lights.render_slider_pan(raw, PadColors::Plum, true);
+        let lit_count = (((raw as i32 + 4) * 25 / 200 - 1).max(0)) as usize;
+
+        let head = ((PadColors::Plum as u8) << 2) | (Brightness::Normal as u8 & 0b11);
+        let trail = ((PadColors::Plum as u8) << 2) | (Brightness::Dim as u8 & 0b11);
+
+        for i in 0..25 {
+            let byte = lights.slider_byte(i);
+            if i == lit_count {
+                assert_eq!(byte, head, "head led {i}");
+            } else if i >= 12 && i < lit_count {
+                assert_eq!(byte, trail, "trail led {i}");
             } else {
                 assert_eq!(byte, 0, "off led {i}");
             }
