@@ -134,6 +134,36 @@ fn step_absolute(cur: u8, delta: i8, lo: u8, hi: u8, step: u8, wrap: bool) -> u8
     (lo as i32 + new_off) as u8
 }
 
+/// Translate an encoder `delta` (turn ticks, signed) into the CC value byte to
+/// emit, per the configured `CcValueMode`. In `Absolute` mode the next value is
+/// also written back into `rt` so subsequent turns continue from the current
+/// position.
+fn encode_encoder_value(
+    mode: &CcValueMode,
+    delta: i8,
+    rt: &crate::runtime_state::RuntimeState,
+) -> u8 {
+    match mode {
+        CcValueMode::Absolute { lo, hi, step, wrap } => {
+            let next = step_absolute(rt.encoder_value(), delta, *lo, *hi, *step, *wrap);
+            rt.set_encoder_value(next);
+            next
+        }
+        CcValueMode::Relative { step } => {
+            let mag = (delta.unsigned_abs() as u16 * *step as u16).min(63) as u8;
+            if delta >= 0 {
+                mag
+            } else {
+                128u8.wrapping_sub(mag)
+            }
+        }
+        CcValueMode::RelativeOffset { step } => {
+            let off = delta as i16 * *step as i16;
+            (64i16 + off).clamp(0, 127) as u8
+        }
+    }
+}
+
 pub fn event_to_midi_bytes(
     event: &ControlEvent,
     settings: &Settings,
@@ -154,26 +184,7 @@ pub fn event_to_midi_bytes(
         }
         ControlEvent::EncoderTurn { delta, .. } => {
             let EncoderTurnAction::Cc { channel, cc, mode } = &settings.encoder.turn;
-            let value = match mode {
-                CcValueMode::Absolute { lo, hi, step, wrap } => {
-                    let cur = rt.encoder_value();
-                    let next = step_absolute(cur, *delta, *lo, *hi, *step, *wrap);
-                    rt.set_encoder_value(next);
-                    next
-                }
-                CcValueMode::Relative { step } => {
-                    let mag = (delta.unsigned_abs() as u16 * *step as u16).min(63) as u8;
-                    if *delta >= 0 {
-                        mag
-                    } else {
-                        128u8.wrapping_sub(mag)
-                    }
-                }
-                CcValueMode::RelativeOffset { step } => {
-                    let off = *delta as i16 * *step as i16;
-                    (64i16 + off).clamp(0, 127) as u8
-                }
-            };
+            let value = encode_encoder_value(mode, *delta, rt);
             Some([0xB0 | resolve_channel(*channel, global), *cc, value])
         }
         ControlEvent::SliderMoved { cc_value, .. } => {
