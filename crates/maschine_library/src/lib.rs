@@ -2,6 +2,7 @@ pub mod controls;
 pub mod font;
 pub mod hid;
 pub mod lights;
+pub mod preferences;
 pub mod screen;
 
 /// USB Vendor ID for the Native Instruments Maschine Mikro MK3.

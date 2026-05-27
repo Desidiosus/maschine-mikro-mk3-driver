@@ -112,6 +112,8 @@ pub struct Settings {
     pub virmidi_client_name: String,
     /// Port number on the virmidi client (usually 0).
     pub virmidi_port: usize,
+    pub pad_sensitivity: u8,
+    pub display_contrast: u8,
     pub pad_velocity_curve: String,
 }
 
@@ -128,6 +130,8 @@ impl Default for Settings {
             autoconnect_virmidi: true,
             virmidi_client_name: "".to_string(),
             virmidi_port: 0,
+            pad_sensitivity: 50,
+            display_contrast: 50,
             pad_velocity_curve: "linear".to_string(),
         }
     }
@@ -161,6 +165,14 @@ impl Settings {
 
         if self.port_name_in.is_empty() {
             return Err("Input port name must not be empty".to_string());
+        }
+
+        if self.pad_sensitivity > 100 {
+            return Err("pad_sensitivity must be in range 0..=100".to_string());
+        }
+
+        if self.display_contrast > 100 {
+            return Err("display_contrast must be in range 0..=100".to_string());
         }
 
         self.pad_velocity_curve()?;
@@ -231,6 +243,34 @@ notemaps = [36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
             .try_deserialize::<crate::settings::Settings>()
             .unwrap_err();
         assert!(err.to_string().contains("button CC mappings"));
+    }
+
+    #[test]
+    fn rejects_pad_sensitivity_above_100() {
+        let settings = Settings {
+            pad_sensitivity: 101,
+            ..Settings::default()
+        };
+
+        let err = settings
+            .validate()
+            .expect_err("pad_sensitivity should be rejected");
+
+        assert!(err.contains("pad_sensitivity"));
+    }
+
+    #[test]
+    fn rejects_display_contrast_above_100() {
+        let settings = Settings {
+            display_contrast: 101,
+            ..Settings::default()
+        };
+
+        let err = settings
+            .validate()
+            .expect_err("display_contrast should be rejected");
+
+        assert!(err.contains("display_contrast"));
     }
 
     #[test]

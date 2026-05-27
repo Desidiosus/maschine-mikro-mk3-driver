@@ -1,8 +1,9 @@
-use hidapi::HidApi;
+use hidapi::{HidApi, HidDevice};
 use maschine_library::controls::Buttons;
 use maschine_library::hid::HidIo;
 use maschine_library::lights::Brightness;
 use maschine_library::lights::Lights;
+use maschine_library::preferences::{set_display_contrast, set_pad_sensitivity};
 use maschine_library::screen::{Screen, render_centered_text};
 use maschine_library::{USB_PID, USB_VID};
 use num::FromPrimitive;
@@ -19,7 +20,14 @@ pub fn run(settings: Settings) -> DriverResult<()> {
     let api = HidApi::new()?;
     let device = api.open(USB_VID, USB_PID)?;
     device.set_blocking_mode(false)?;
+    apply_startup_preferences(&device, &settings)?;
     run_with_device(settings, &device)
+}
+
+fn apply_startup_preferences(device: &HidDevice, settings: &Settings) -> DriverResult<()> {
+    set_pad_sensitivity(device, settings.pad_sensitivity)?;
+    set_display_contrast(device, settings.display_contrast)?;
+    Ok(())
 }
 
 pub fn run_with_device<D: HidIo>(settings: Settings, device: &D) -> DriverResult<()> {
