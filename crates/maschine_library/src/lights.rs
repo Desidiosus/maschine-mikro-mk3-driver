@@ -105,37 +105,42 @@ impl Lights {
         }
     }
 
+    fn blank_slider_leds(&mut self) {
+        self.status[55..80].fill(0);
+    }
+
+    /// Map a raw touch reading (0..=200) to the head LED index (0..=24).
+    /// Any non-zero raw value <= 5 pins to 0 by the `.max(0)` clamp, so a touch
+    /// at the very bottom of the strip lights at least LED[0].
+    fn head_from_raw(raw: u8) -> usize {
+        (((raw as i32 + 4) * 25 / 200 - 1).clamp(0, 24)) as usize
+    }
+
     /// Render the 25-LED slider bar in "bar" mode from a raw touch reading
     /// (0..=200 from the HID input report). When `raw == 0` (no touch), all
-    /// LEDs blank. Otherwise LEDs 0..=lit_count are lit; if `stylized` is true,
-    /// the trail (0..lit_count) renders Dim and the head (lit_count) Normal;
-    /// otherwise every lit LED renders Normal.
-    ///
-    /// Any non-zero touch lights at least LED[0]: the `.max(0)` clamp pins
-    /// low raw values (1..=5) to lit_count = 0 by design.
+    /// LEDs blank. Otherwise LEDs 0..=head are lit; if `stylized` is true,
+    /// the trail renders Dim and the head Normal; otherwise every lit LED is
+    /// Normal.
     pub fn render_slider_bar(&mut self, raw: u8, color: PadColors, stylized: bool) {
         if raw == 0 {
-            self.status[55..80].fill(0);
+            self.blank_slider_leds();
             return;
         }
-        let lit_count = (((raw as i32 + 4) * 25 / 200 - 1).max(0)) as usize;
-        let head = lit_count.min(24);
+        let head = Self::head_from_raw(raw);
         self.render_slider_range(0, head, head, color, stylized);
     }
 
     /// Render the slider bar in "pan" mode: LEDs from the fixed center (LED 12)
     /// outward to the current position lit. When `raw == 0`, all 25 LEDs blank.
-    /// Any non-zero touch lights at least LED[12]. When `stylized`, the LED at
-    /// `lit_count` (the head, farthest from center) renders Normal and the
-    /// remaining lit LEDs render Dim; if `lit_count == 12`, the single lit LED
-    /// is the head.
+    /// Any non-zero touch lights at least LED[12]. When `stylized`, the head
+    /// (farthest from center) renders Normal and the remaining lit LEDs Dim;
+    /// if head == 12, the single lit LED is the head.
     pub fn render_slider_pan(&mut self, raw: u8, color: PadColors, stylized: bool) {
         if raw == 0 {
-            self.status[55..80].fill(0);
+            self.blank_slider_leds();
             return;
         }
-        let lit_count = (((raw as i32 + 4) * 25 / 200 - 1).max(0)) as usize;
-        let head = lit_count.min(24);
+        let head = Self::head_from_raw(raw);
         let (lo, hi) = if head <= SLIDER_CENTER_LED {
             (head, SLIDER_CENTER_LED)
         } else {
@@ -148,13 +153,12 @@ impl Lights {
     /// position. All other LEDs blank. `raw == 0` blanks all.
     pub fn render_slider_dot(&mut self, raw: u8, color: PadColors) {
         if raw == 0 {
-            self.status[55..80].fill(0);
+            self.blank_slider_leds();
             return;
         }
-        let lit_count = (((raw as i32 + 4) * 25 / 200 - 1).max(0)) as usize;
-        let head = lit_count.min(24);
+        let head = Self::head_from_raw(raw);
         // A "dot" is a one-LED range with the single LED as its head.
-        // stylized=false is meaningless when lo == hi, so pass false.
+        // stylized has no effect when lo == hi, so pass false.
         self.render_slider_range(head, head, head, color, false);
     }
 
