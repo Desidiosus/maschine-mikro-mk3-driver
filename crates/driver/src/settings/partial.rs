@@ -185,97 +185,82 @@ where
     Ok(Some(out))
 }
 
+/// For each named field, assign `partial.field` into `target.field` when set.
+macro_rules! apply_overrides {
+    ($target:expr, $partial:expr; $($field:ident),+ $(,)?) => {
+        $(
+            if let Some(v) = $partial.$field {
+                $target.$field = v;
+            }
+        )+
+    };
+}
+
+/// Compare each named field of `cur` against `def`; for any that differ, store
+/// `Some(cur.field.clone())` (or `Some(cur.field)` for Copy types) into `out`.
+/// Two arms split Copy vs Clone fields to avoid `clippy::clone_on_copy` noise.
+macro_rules! diff_section {
+    (
+        $cur:expr, $def:expr, $out:expr;
+        copy: { $($cf:ident),* $(,)? } $(;)?
+        clone: { $($lf:ident),* $(,)? } $(;)?
+    ) => {
+        $(
+            if $cur.$cf != $def.$cf {
+                $out.$cf = Some($cur.$cf);
+            }
+        )*
+        $(
+            if $cur.$lf != $def.$lf {
+                $out.$lf = Some($cur.$lf.clone());
+            }
+        )*
+    };
+}
+
 impl Settings {
     pub fn merge_overrides(mut self, partial: PartialSettings) -> Self {
         if let Some(g) = partial.global {
-            if let Some(v) = g.midi_channel {
-                self.global.midi_channel = v;
-            }
-            if let Some(v) = g.client_name {
-                self.global.client_name = v;
-            }
-            if let Some(v) = g.port_name {
-                self.global.port_name = v;
-            }
-            if let Some(v) = g.port_name_in {
-                self.global.port_name_in = v;
-            }
+            apply_overrides!(self.global, g; midi_channel, client_name, port_name, port_name_in);
         }
         if let Some(h) = partial.hardware {
-            if let Some(v) = h.pad_sensitivity {
-                self.hardware.pad_sensitivity = v;
-            }
-            if let Some(v) = h.display_contrast {
-                self.hardware.display_contrast = v;
-            }
-            if let Some(v) = h.pad_velocity_curve {
-                self.hardware.pad_velocity_curve = v;
-            }
-            if let Some(v) = h.backlight_buttons {
-                self.hardware.backlight_buttons = v;
-            }
-            if let Some(v) = h.backlight_brightness {
-                self.hardware.backlight_brightness = v;
-            }
+            apply_overrides!(
+                self.hardware, h;
+                pad_sensitivity,
+                display_contrast,
+                pad_velocity_curve,
+                backlight_buttons,
+                backlight_brightness,
+            );
         }
         if let Some(b) = partial.bridge {
-            if let Some(v) = b.midi_bridge_virmidi {
-                self.bridge.midi_bridge_virmidi = v;
-            }
-            if let Some(v) = b.autoconnect_virmidi {
-                self.bridge.autoconnect_virmidi = v;
-            }
-            if let Some(v) = b.virmidi_client_name {
-                self.bridge.virmidi_client_name = v;
-            }
-            if let Some(v) = b.virmidi_port {
-                self.bridge.virmidi_port = v;
-            }
+            apply_overrides!(
+                self.bridge, b;
+                midi_bridge_virmidi,
+                autoconnect_virmidi,
+                virmidi_client_name,
+                virmidi_port,
+            );
         }
         if let Some(pads) = partial.pads {
             for (idx, cfg) in pads.into_iter().enumerate() {
                 let Some(cfg) = cfg else { continue };
-                if let Some(hit) = cfg.hit {
-                    self.pads[idx].hit = hit;
-                }
-                if let Some(pressure) = cfg.pressure {
-                    self.pads[idx].pressure = pressure;
-                }
+                apply_overrides!(self.pads[idx], cfg; hit, pressure);
             }
         }
         if let Some(buttons) = partial.buttons {
             for (idx, cfg) in buttons.into_iter().enumerate() {
                 let Some(cfg) = cfg else { continue };
-                if let Some(press) = cfg.press {
-                    self.buttons[idx].press = press;
-                }
+                apply_overrides!(self.buttons[idx], cfg; press);
             }
         }
-        if let Some(e) = partial.encoder
-            && let Some(v) = e.turn
-        {
-            self.encoder.turn = v;
+        if let Some(e) = partial.encoder {
+            apply_overrides!(self.encoder, e; turn);
         }
         if let Some(s) = partial.slider {
-            if let Some(v) = s.position {
-                self.slider.position = v;
-            }
-            if let Some(v) = s.touch {
-                self.slider.touch = v;
-            }
+            apply_overrides!(self.slider, s; position, touch);
             if let Some(led) = s.led {
-                if let Some(v) = led.mode {
-                    self.slider.led.mode = v;
-                }
-                if let Some(v) = led.color {
-                    self.slider.led.color = v;
-                }
-                if let Some(v) = led.stylized {
-                    self.slider.led.stylized = v;
-                }
-                if let Some(v) = led.auto_off_ms {
-                    self.slider.led.auto_off_ms = v;
-                }
+                apply_overrides!(self.slider.led, led; mode, color, stylized, auto_off_ms);
             }
         }
         self
@@ -286,55 +271,37 @@ impl Settings {
         let mut out = PartialSettings::default();
 
         let mut g = PartialGlobalSettings::default();
-        if self.global.midi_channel != defaults.global.midi_channel {
-            g.midi_channel = Some(self.global.midi_channel);
-        }
-        if self.global.client_name != defaults.global.client_name {
-            g.client_name = Some(self.global.client_name.clone());
-        }
-        if self.global.port_name != defaults.global.port_name {
-            g.port_name = Some(self.global.port_name.clone());
-        }
-        if self.global.port_name_in != defaults.global.port_name_in {
-            g.port_name_in = Some(self.global.port_name_in.clone());
-        }
+        diff_section!(
+            self.global, defaults.global, g;
+            copy: { midi_channel };
+            clone: { client_name, port_name, port_name_in };
+        );
         if g != PartialGlobalSettings::default() {
             out.global = Some(g);
         }
 
         let mut h = PartialHardwareSettings::default();
-        if self.hardware.pad_sensitivity != defaults.hardware.pad_sensitivity {
-            h.pad_sensitivity = Some(self.hardware.pad_sensitivity);
-        }
-        if self.hardware.display_contrast != defaults.hardware.display_contrast {
-            h.display_contrast = Some(self.hardware.display_contrast);
-        }
-        if self.hardware.pad_velocity_curve != defaults.hardware.pad_velocity_curve {
-            h.pad_velocity_curve = Some(self.hardware.pad_velocity_curve);
-        }
-        if self.hardware.backlight_buttons != defaults.hardware.backlight_buttons {
-            h.backlight_buttons = Some(self.hardware.backlight_buttons);
-        }
-        if self.hardware.backlight_brightness != defaults.hardware.backlight_brightness {
-            h.backlight_brightness = Some(self.hardware.backlight_brightness);
-        }
+        diff_section!(
+            self.hardware, defaults.hardware, h;
+            copy: {
+                pad_sensitivity,
+                display_contrast,
+                pad_velocity_curve,
+                backlight_buttons,
+                backlight_brightness,
+            };
+            clone: {};
+        );
         if h != PartialHardwareSettings::default() {
             out.hardware = Some(h);
         }
 
         let mut b = PartialBridgeSettings::default();
-        if self.bridge.midi_bridge_virmidi != defaults.bridge.midi_bridge_virmidi {
-            b.midi_bridge_virmidi = Some(self.bridge.midi_bridge_virmidi);
-        }
-        if self.bridge.autoconnect_virmidi != defaults.bridge.autoconnect_virmidi {
-            b.autoconnect_virmidi = Some(self.bridge.autoconnect_virmidi);
-        }
-        if self.bridge.virmidi_client_name != defaults.bridge.virmidi_client_name {
-            b.virmidi_client_name = Some(self.bridge.virmidi_client_name.clone());
-        }
-        if self.bridge.virmidi_port != defaults.bridge.virmidi_port {
-            b.virmidi_port = Some(self.bridge.virmidi_port);
-        }
+        diff_section!(
+            self.bridge, defaults.bridge, b;
+            copy: { midi_bridge_virmidi, autoconnect_virmidi, virmidi_port };
+            clone: { virmidi_client_name };
+        );
         if b != PartialBridgeSettings::default() {
             out.bridge = Some(b);
         }
@@ -343,12 +310,11 @@ impl Settings {
         let mut any_pad = false;
         for (idx, pad) in self.pads.iter().enumerate() {
             let mut p = PartialPadConfig::default();
-            if pad.hit != defaults.pads[idx].hit {
-                p.hit = Some(pad.hit.clone());
-            }
-            if pad.pressure != defaults.pads[idx].pressure {
-                p.pressure = Some(pad.pressure.clone());
-            }
+            diff_section!(
+                pad, defaults.pads[idx], p;
+                copy: {};
+                clone: { hit, pressure };
+            );
             if p != PartialPadConfig::default() {
                 pads[idx] = Some(p);
                 any_pad = true;
@@ -379,25 +345,17 @@ impl Settings {
         }
 
         let mut s = PartialSliderConfig::default();
-        if self.slider.position != defaults.slider.position {
-            s.position = Some(self.slider.position.clone());
-        }
-        if self.slider.touch != defaults.slider.touch {
-            s.touch = Some(self.slider.touch.clone());
-        }
+        diff_section!(
+            self.slider, defaults.slider, s;
+            copy: {};
+            clone: { position, touch };
+        );
         let mut led = PartialSliderLedSettings::default();
-        if self.slider.led.mode != defaults.slider.led.mode {
-            led.mode = Some(self.slider.led.mode);
-        }
-        if self.slider.led.color != defaults.slider.led.color {
-            led.color = Some(self.slider.led.color);
-        }
-        if self.slider.led.stylized != defaults.slider.led.stylized {
-            led.stylized = Some(self.slider.led.stylized);
-        }
-        if self.slider.led.auto_off_ms != defaults.slider.led.auto_off_ms {
-            led.auto_off_ms = Some(self.slider.led.auto_off_ms);
-        }
+        diff_section!(
+            self.slider.led, defaults.slider.led, led;
+            copy: { mode, color, stylized, auto_off_ms };
+            clone: {};
+        );
         if led != PartialSliderLedSettings::default() {
             s.led = Some(led);
         }
