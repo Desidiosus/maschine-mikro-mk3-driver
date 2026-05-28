@@ -9,14 +9,14 @@ authors = ["Viktor Rudnev <me@vrudnev.xyz>"]
 
 [workspace.dependencies]
 maschine_library = { path = "crates/maschine_library" }
-hidapi = { version = "2.6.3" }
+hidapi = { version = "2.6.5" }
 num = { version = "0.4.3" }
 num-derive = { version = "0.4.2" }
 num-traits = { version = "0.2.19" }
 midly = { version = "0.5.3" }
-clap = { version = "4.5.47", features = ["derive"] }
-config = { version = "0.15.16" }
-serde = { version = "1.0.225", features = ["derive"] }
+clap = { version = "4.6.1", features = ["derive"] }
+config = { version = "0.15.22" }
+serde = { version = "1.0.228", features = ["derive"] }
 
 [workspace.metadata.cargo-shear]
 ignored = ["num-traits"]

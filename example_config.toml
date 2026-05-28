@@ -1,6 +1,9 @@
 # Maschine Mikro MK3 Linux Driver Configuration
 # See README.md for full documentation
 
+# MIDI channel for notes/CC messages (0-15)
+midi_channel = 0
+
 # Pad note mappings (16 pads, MIDI notes 0-127)
 # Default: Standard chromatic drum machine layout (C1 to D#2)
 # 
@@ -19,7 +22,7 @@
 #
 # This matches typical drum pad controllers and General MIDI drum kits where:
 #   C1(36) = Kick, D1(38) = Snare, F#1(42) = Closed Hi-Hat, etc.
-notemaps = [48, 49, 50, 51, 44, 45, 46, 47, 40, 41, 42, 43, 36, 37, 38, 39]
+pad_notes = [48, 49, 50, 51, 44, 45, 46, 47, 40, 41, 42, 43, 36, 37, 38, 39]
 
 # ALSA/Jack client name
 client_name = "Maschine Mikro MK3"
@@ -30,13 +33,26 @@ port_name = "Maschine Mikro MK3 MIDI Out"
 # MIDI input port name (DAW -> LEDs)
 port_name_in = "Maschine Mikro MK3 MIDI In"
 
+# Runtime backend:
+#   "midi" = unified MIDI backend with virtual output and input ports
+backend = "midi"
+
+# ALSA raw-MIDI bridge for host integrations such as Bitwig via snd-virmidi.
+# Leave this false for the normal virtual-port workflow.
+midi_bridge_virmidi = false
+
+# Bridge settings only matter when midi_bridge_virmidi = true
+autoconnect_virmidi = true
+virmidi_client_name = ""
+virmidi_port = 0
+
 # ============================================
-# MIDI CC Mapping (fixed, not configurable):
+# MIDI mapping
 # ============================================
-# Buttons:  CC 20-60 (127 = press, 0 = release)
-# Encoder:  CC 1 (relative: 65+ = CW, <64 = CCW)
-# Slider:   CC 9 (0-127 absolute position)
-# Pads:     Note On/Off (notes from notemaps above)
+# Buttons:  CC values below (127 = press, 0 = release)
+# Encoder:  relative CC value (65+ = CW, <64 = CCW)
+# Slider:   absolute CC value (0-127)
+# Pads:     Note On/Off (notes from pad_notes above)
 #
 # Button CC assignments:
 #   CC 20: Maschine    CC 30: Pitch       CC 40: Tap
@@ -54,8 +70,9 @@ port_name_in = "Maschine Mikro MK3 MIDI In"
 #   CC 52: Pattern     CC 56: Select      CC 60: Encoder Touch
 #   CC 53: Events      CC 57: Solo
 #   CC 54: Variation   CC 58: Mute
-
-autoconnect_virmidi = true
+button_ccs = [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60]
+encoder_cc = 1
+slider_cc = 9
 
 # ============================================
 # Backlight / Night mode

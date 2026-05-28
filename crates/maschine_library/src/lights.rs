@@ -1,5 +1,6 @@
 use crate::controls::Buttons;
-use hidapi::{HidDevice, HidResult};
+use crate::hid::HidIo;
+use hidapi::HidResult;
 use num_derive::FromPrimitive;
 
 #[derive(FromPrimitive, Debug, Clone, Copy, PartialEq)]
@@ -62,6 +63,21 @@ impl Lights {
         self.status[55 + id] = b as u8;
     }
 
+    /// Light the 25-LED slider bar to reflect a raw touch-strip reading
+    /// (0..=200 from the HID report). The current position is shown bright;
+    /// LEDs below it are dim; LEDs above are off.
+    pub fn set_slider_bar_from_raw(&mut self, raw: u8) {
+        let lit_count = (raw as i32 - 1 + 5) * 25 / 200 - 1;
+        for idx in 0..25 {
+            let brightness = match lit_count - idx {
+                0 => Brightness::Normal,
+                1..=25 => Brightness::Dim,
+                _ => Brightness::Off,
+            };
+            self.set_slider(idx as usize, brightness);
+        }
+    }
+
     pub fn set_pad(&mut self, id: usize, c: PadColors, b: Brightness) {
         let val = match b {
             Brightness::Off => 0,
@@ -90,7 +106,7 @@ impl Lights {
         (color, b)
     }
 
-    pub fn write(&self, h: &HidDevice) -> HidResult<()> {
+    pub fn write(&self, h: &impl HidIo) -> HidResult<()> {
         let mut buf = [0u8; 81];
         buf[0] = 0x80;
         buf[1..].copy_from_slice(&self.status);

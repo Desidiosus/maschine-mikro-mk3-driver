@@ -28,16 +28,31 @@ sudo udevadm control --reload && sudo udevadm trigger
 cargo run --release
 ```
 
-This will init the controller and create two MIDI ports:
-- `Maschine Mikro MK3 MIDI Out` - receives pad notes from the controller
-- `Maschine Mikro MK3 MIDI In` - send notes here to control pad LEDs (for DAW integration)
+This will init the controller in the default `backend = "midi"` mode.
+The MIDI backend always exposes virtual MIDI output and input ports. For raw-MIDI bridge setups such as Bitwig, enable `midi_bridge_virmidi = true` in your config and start the driver with that config.
 
 Pads have been tested to work with Hydrogen, EZdrummer 2/3, Addictive Drums 2 as plugins via REAPER+LinVst and standalone via Wine.
 
-Note that you can use your custom config with own notemappings and other settings like this:
+Note that you can use your custom config with your own MIDI mappings and other settings like this:
 ```shell
 cargo run --release -- -c example_config.toml
 ```
+
+## Backend Configuration
+
+The runtime config now uses a single MIDI backend:
+
+```toml
+backend = "midi"
+midi_bridge_virmidi = false
+autoconnect_virmidi = true
+virmidi_client_name = ""
+virmidi_port = 0
+```
+
+The MIDI backend always creates both virtual MIDI output and virtual MIDI input ports for the controller.
+Leave `midi_bridge_virmidi = false` for the normal sequencer-port workflow.
+Set `midi_bridge_virmidi = true` when you need an ALSA raw-MIDI bridge, such as Bitwig integration through `snd-virmidi`.
 
 ## Backlight / Night mode (dimly lit buttons)
 
@@ -50,9 +65,9 @@ backlight_buttons = true
 backlight_brightness = "dim" # "dim" | "normal" | "bright"
 ```
 
-When enabled, any incoming "Off" state for **button LEDs** (including from your DAW over MIDI) is treated as the configured backlight level. Brighter states still work normally.
+When enabled, any incoming "Off" state for **button LEDs** is treated as the configured backlight level. DAW-driven LED input is available through the MIDI backend's virtual input port. Brighter states still work normally.
 
-**Important note about MIDI backends:** By default, ALSA backend is used to create virtual MIDI port. If you need Jack backend, please use this command instead:
+**Build-time MIDI API note:** This is separate from `backend = "midi"` above. By default the project builds against ALSA via `midir`. If you need the JACK `midir` backend instead, use:
 ```shell
 cargo run --release --features jack
 ```
@@ -67,8 +82,8 @@ What works:
  - All 39 Buttons (MIDI CC)
  - Encoder (MIDI CC, relative mode)
  - Slider/Touch Strip (MIDI CC)
- - All LEDs (controllable via MIDI input)
- - Screen (with DAW integration via SysEx)
+ - All LEDs (DAW-driven LED input via the MIDI backend virtual input)
+ - Screen (DAW integration via SysEx with the MIDI backend virtual input)
  - Mode System (Play, Step, Clip, Mixer)
  - Note Repeat
  - Fixed Velocity
@@ -88,15 +103,27 @@ The OLED screen displays contextual information based on the current mode:
 - **Note name** when changing step sequencer note
 - **Feature status** when toggling Note Repeat or Fixed Velocity
 
-The screen is controlled via SysEx messages from the Bitwig controller script, allowing for real-time feedback without additional configuration.
+The screen is controlled via SysEx messages from the Bitwig controller script through the MIDI backend virtual input, allowing for real-time feedback without additional configuration.
 
 ## MIDI Mapping
 
-### Pads (MIDI Notes)
-Pads send Note On/Off messages. Notes are configurable via `notemaps` in config.
+All outgoing notes and CC messages are configurable:
 
-### Buttons (MIDI CC 20-60)
-All buttons send CC messages on press (value 127) and release (value 0):
+```toml
+midi_channel = 0
+pad_notes = [48, 49, 50, 51, 44, 45, 46, 47, 40, 41, 42, 43, 36, 37, 38, 39]
+button_ccs = [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60]
+encoder_cc = 1
+slider_cc = 9
+```
+
+`notemaps` still works as legacy alias for `pad_notes`.
+
+### Pads (MIDI Notes)
+Pads send Note On/Off messages. Notes are configurable via `pad_notes` in config.
+
+### Buttons (MIDI CC)
+All buttons send configured CC messages on press (value 127) and release (value 0). Default map:
 
 | Button | CC | Button | CC | Button | CC |
 |--------|----:|--------|----:|--------|----:|
@@ -116,16 +143,18 @@ All buttons send CC messages on press (value 127) and release (value 0):
 | Solo | 57 | Encoder Touch | 60 | | |
 | Mute | 58 | | | | |
 
-### Encoder (CC 1)
-Encoder sends relative values: 65+ for clockwise, <64 for counter-clockwise.
+### Encoder
+Encoder sends relative values: 65+ for clockwise, <64 for counter-clockwise. Default CC is `1`.
 
-### Slider/Touch Strip (CC 9)
-Slider sends absolute position (0-127).
+### Slider/Touch Strip
+Slider sends absolute position (0-127). Default CC is `9`.
 
 ## Controlling LEDs via MIDI Input
 
+This DAW-to-driver MIDI input path is always available with `backend = "midi"`.
+
 ### Pad LEDs (Note On/Off)
-Send Note On/Off to the same notes configured in `notemaps`. Velocity determines color:
+Send Note On/Off to the same notes configured in `pad_notes`. Velocity determines color:
 
 | Velocity | Color | Velocity | Color |
 |----------|-------|----------|-------|
@@ -139,8 +168,8 @@ Send Note On/Off to the same notes configured in `notemaps`. Velocity determines
 | 50-56 | Mint | 113-127 | White |
 | 57-63 | Cyan | 0 | Off |
 
-### Button LEDs (CC 20-60)
-Send CC to control button brightness:
+### Button LEDs (CC)
+Send CC to the same configured button CC numbers to control button brightness:
 - 0: Off
 - 1-42: Dim
 - 43-84: Normal
@@ -155,14 +184,33 @@ mkdir -p ~/Bitwig\ Studio/Controller\ Scripts/MaschineMikroMK3
 cp bitwig/MaschineMikroMK3.control.js ~/Bitwig\ Studio/Controller\ Scripts/MaschineMikroMK3/
 ```
 
+If you want to rebuild the Bitwig script from source, use Node.js 24 LTS. The `bitwig/` directory includes `.nvmrc` and `engine-strict=true`, so `nvm use` inside `bitwig/` is expected before running `npm install`, `npm update`, or `npm run build`.
+
+```shell
+cd bitwig
+nvm use
+npm install
+npm run build
+```
+
 ### Connecting to Bitwig (PipeWire/ALSA)
 
 Since Bitwig uses ALSA **Raw MIDI** devices directly (not ALSA sequencer), you need to route through Virtual Raw MIDI.
-The driver will now try to auto-connect to virmidi on startup (enabled by default).
+Bitwig setup uses `backend = "midi"` with `midi_bridge_virmidi = true` in your config. The driver can then auto-connect to `snd-virmidi` on startup.
+
+Use a config like:
+
+```toml
+backend = "midi"
+midi_bridge_virmidi = true
+autoconnect_virmidi = true
+virmidi_client_name = ""
+virmidi_port = 0
+```
 
 ```shell
 # Start the driver
-cargo run --release
+cargo run --release -- -c example_config.toml
 ```
 
 Then in Bitwig:
