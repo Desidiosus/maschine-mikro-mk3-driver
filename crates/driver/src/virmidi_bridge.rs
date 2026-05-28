@@ -103,7 +103,8 @@ pub fn try_autoconnect_virmidi(settings: &Settings) -> DriverResult<()> {
         let driver_out = match ports
             .iter()
             .find(|port| {
-                port.client_name == settings.client_name && port.port_name == settings.port_name
+                port.client_name == settings.global.client_name
+                    && port.port_name == settings.global.port_name
             })
             .cloned()
         {
@@ -111,18 +112,19 @@ pub fn try_autoconnect_virmidi(settings: &Settings) -> DriverResult<()> {
             None => {
                 last_err = Some(format!(
                     "could not find driver output port \"{}\" / \"{}\" in `aconnect -l`",
-                    settings.client_name, settings.port_name
+                    settings.global.client_name, settings.global.port_name
                 ));
                 thread::sleep(Duration::from_millis(50));
                 continue;
             }
         };
 
-        let driver_in_client = format!("{} In", settings.client_name);
+        let driver_in_client = format!("{} In", settings.global.client_name);
         let driver_in = match ports
             .iter()
             .find(|port| {
-                port.client_name == driver_in_client && port.port_name == settings.port_name_in
+                port.client_name == driver_in_client
+                    && port.port_name == settings.global.port_name_in
             })
             .cloned()
         {
@@ -130,26 +132,27 @@ pub fn try_autoconnect_virmidi(settings: &Settings) -> DriverResult<()> {
             None => {
                 last_err = Some(format!(
                     "could not find driver input port \"{}\" / \"{}\" in `aconnect -l`",
-                    driver_in_client, settings.port_name_in
+                    driver_in_client, settings.global.port_name_in
                 ));
                 thread::sleep(Duration::from_millis(50));
                 continue;
             }
         };
 
-        let virmidi_candidates: Vec<SeqPort> = if settings.virmidi_client_name.trim().is_empty() {
-            ports
-                .iter()
-                .filter(|port| port.client_name.starts_with("Virtual Raw MIDI"))
-                .cloned()
-                .collect()
-        } else {
-            ports
-                .iter()
-                .filter(|port| port.client_name == settings.virmidi_client_name)
-                .cloned()
-                .collect()
-        };
+        let virmidi_candidates: Vec<SeqPort> =
+            if settings.bridge.virmidi_client_name.trim().is_empty() {
+                ports
+                    .iter()
+                    .filter(|port| port.client_name.starts_with("Virtual Raw MIDI"))
+                    .cloned()
+                    .collect()
+            } else {
+                ports
+                    .iter()
+                    .filter(|port| port.client_name == settings.bridge.virmidi_client_name)
+                    .cloned()
+                    .collect()
+            };
 
         if virmidi_candidates.is_empty() {
             last_err = Some(
@@ -162,11 +165,11 @@ pub fn try_autoconnect_virmidi(settings: &Settings) -> DriverResult<()> {
 
         let Some(virmidi_port) = virmidi_candidates
             .into_iter()
-            .find(|port| port.port_id as usize == settings.virmidi_port)
+            .find(|port| port.port_id as usize == settings.bridge.virmidi_port)
         else {
             last_err = Some(format!(
                 "virmidi client found, but no port {} exists",
-                settings.virmidi_port
+                settings.bridge.virmidi_port
             ));
             thread::sleep(Duration::from_millis(50));
             continue;

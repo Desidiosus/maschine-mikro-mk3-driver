@@ -58,12 +58,14 @@ pub(crate) fn self_test(
         lights.write(device)?;
     }
 
+    let rainbow = self_test_pad_colors();
     for i in 0..25 {
-        lights.set_slider(i, Brightness::Bright);
+        let color = rainbow[i * rainbow.len() / 25];
+        lights.set_slider(i, color, Brightness::Bright);
         lights.write(device)?;
-        lights.set_slider(i, Brightness::Normal);
+        lights.set_slider(i, color, Brightness::Normal);
         lights.write(device)?;
-        lights.set_slider(i, Brightness::Dim);
+        lights.set_slider(i, color, Brightness::Dim);
         lights.write(device)?;
     }
 

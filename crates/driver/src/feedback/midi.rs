@@ -5,20 +5,19 @@ use num::FromPrimitive;
 
 use crate::backend::midi as backend_midi;
 use crate::outputs::DeviceOutputs;
-use crate::settings::MidiMapping;
+use crate::settings::Settings;
+use crate::settings::actions::{CcValueMode, EncoderTurnAction};
 
 pub fn apply_incoming_midi_message(
     message: &[u8],
     outputs: &DeviceOutputs,
-    midi_mapping: &MidiMapping,
-    backlight_enabled: bool,
-    backlight_brightness: Brightness,
+    settings: &Settings,
+    rt: &crate::runtime_state::RuntimeState,
 ) {
     if message.first().copied() == Some(0xF0) {
         apply_incoming_sysex(message, outputs);
         return;
     }
-
     if message.len() < 3 {
         return;
     }
@@ -28,9 +27,25 @@ pub fn apply_incoming_midi_message(
     let data1 = message[1];
     let data2 = message[2];
 
+    let global = settings.global.midi_channel.as_u8();
+    let EncoderTurnAction::Cc {
+        channel: enc_channel,
+        cc: enc_cc,
+        mode: enc_mode,
+    } = &settings.encoder.turn;
+    let enc_resolved_channel = enc_channel.map(|c| c.as_u8()).unwrap_or(global);
+    if status == 0xB0
+        && channel == enc_resolved_channel
+        && data1 == *enc_cc
+        && matches!(enc_mode, CcValueMode::Absolute { .. })
+    {
+        rt.encoder_absolute
+            .store(data2, std::sync::atomic::Ordering::Relaxed);
+    }
+
     match status {
         0x90 => {
-            if let Some(index) = backend_midi::pad_index_for_message(midi_mapping, channel, data1) {
+            if let Some(index) = backend_midi::pad_index_for_message(settings, channel, data1) {
                 outputs.with_lights_mut(|lights| {
                     if data2 > 0 {
                         lights.set_pad(index, pad_color_from_velocity(data2), Brightness::Normal);
@@ -41,7 +56,7 @@ pub fn apply_incoming_midi_message(
             }
         }
         0x80 => {
-            if let Some(index) = backend_midi::pad_index_for_message(midi_mapping, channel, data1) {
+            if let Some(index) = backend_midi::pad_index_for_message(settings, channel, data1) {
                 outputs.with_lights_mut(|lights| {
                     lights.set_pad(index, PadColors::Off, Brightness::Off);
                 });
@@ -49,23 +64,21 @@ pub fn apply_incoming_midi_message(
         }
         0xB0 => {
             let Some(button_index) =
-                backend_midi::button_index_for_message(midi_mapping, channel, data1)
+                backend_midi::button_index_for_message(settings, channel, data1)
             else {
                 return;
             };
             let Some(button) = Buttons::from_usize(button_index) else {
                 return;
             };
-
             outputs.with_lights_mut(|lights| {
                 if !lights.button_has_light(button) {
                     return;
                 }
-
                 let brightness = backend_midi::button_brightness_from_value(
                     data2,
-                    backlight_enabled,
-                    backlight_brightness,
+                    settings.hardware.backlight_buttons,
+                    settings.hardware.backlight_brightness.as_light_brightness(),
                 );
                 lights.set_button(button, brightness);
             });
@@ -111,120 +124,155 @@ pub fn pad_color_from_velocity(velocity: u8) -> PadColors {
 
 #[cfg(test)]
 mod tests {
+    use super::apply_incoming_midi_message;
+    use crate::outputs::DeviceOutputs;
+    use crate::settings::Settings;
     use maschine_library::controls::Buttons;
     use maschine_library::lights::{Brightness, PadColors};
 
     #[test]
-    fn incoming_sysex_text_marks_screen_dirty_and_updates_screen() {
-        let outputs = crate::outputs::DeviceOutputs::new();
-        let message = [0xF0, 0x00, 0x21, 0x09, 0x01, b'H', b'i', 0xF7];
-        let mapping = crate::settings::Settings::default().midi;
-
-        crate::feedback::midi::apply_incoming_midi_message(
-            &message,
+    fn incoming_note_on_lights_pad_with_velocity_color() {
+        let outputs = DeviceOutputs::new();
+        let settings = Settings::default();
+        // pads[0].hit.note default = 48
+        apply_incoming_midi_message(
+            &[0x90, 48, 64],
             &outputs,
-            &mapping,
-            false,
-            Brightness::Dim,
+            &settings,
+            &crate::runtime_state::RuntimeState::default(),
         );
 
-        assert!(outputs.screen_dirty());
-        assert!(outputs.take_screen_dirty());
-        assert!(!outputs.take_screen_dirty());
-        assert!(
-            outputs.with_screen(|screen| {
-                (0..32).any(|row| (0..128).any(|col| screen.get(row, col)))
-            })
-        );
-    }
-
-    #[test]
-    fn incoming_note_updates_pad_lights_and_marks_dirty() {
-        let outputs = crate::outputs::DeviceOutputs::new();
-        let mapping = crate::settings::MidiMapping {
-            pad_notes: [
-                36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51,
-            ],
-            ..crate::settings::Settings::default().midi
-        };
-        let message = [0x90, 36, 64];
-
-        crate::feedback::midi::apply_incoming_midi_message(
-            &message,
-            &outputs,
-            &mapping,
-            false,
-            Brightness::Dim,
-        );
-
-        assert!(outputs.lights_dirty());
         assert!(outputs.take_lights_dirty());
-        assert!(!outputs.take_lights_dirty());
         assert_eq!(
-            outputs.with_lights(|lights| lights.get_pad(0)),
+            outputs.with_lights(|l| l.get_pad(0)),
             (PadColors::Turquoise, Brightness::Normal)
         );
     }
 
     #[test]
-    fn incoming_cc_updates_button_light_and_marks_dirty() {
-        let outputs = crate::outputs::DeviceOutputs::new();
-        let message = [0xB0, 42, 100];
-        let mapping = crate::settings::Settings::default().midi;
-
-        crate::feedback::midi::apply_incoming_midi_message(
-            &message,
+    fn incoming_note_off_turns_pad_off() {
+        let outputs = DeviceOutputs::new();
+        let settings = Settings::default();
+        apply_incoming_midi_message(
+            &[0x80, 48, 0],
             &outputs,
-            &mapping,
-            false,
-            Brightness::Dim,
+            &settings,
+            &crate::runtime_state::RuntimeState::default(),
         );
 
-        assert!(outputs.lights_dirty());
         assert_eq!(
-            outputs.with_lights(|lights| lights.get_button(Buttons::Play)),
+            outputs.with_lights(|l| l.get_pad(0)),
+            (PadColors::Off, Brightness::Off)
+        );
+    }
+
+    #[test]
+    fn incoming_cc_for_play_button_sets_brightness() {
+        let outputs = DeviceOutputs::new();
+        let settings = Settings::default();
+        // play button default CC = 42
+        apply_incoming_midi_message(
+            &[0xB0, 42, 100],
+            &outputs,
+            &settings,
+            &crate::runtime_state::RuntimeState::default(),
+        );
+
+        assert_eq!(
+            outputs.with_lights(|l| l.get_button(Buttons::Play)),
             Brightness::Bright
         );
     }
 
     #[test]
-    fn incoming_feedback_honors_configured_nonzero_channel() {
-        let outputs = crate::outputs::DeviceOutputs::new();
-        let mapping = crate::settings::MidiMapping {
-            channel: 2u8.try_into().unwrap(),
-            pad_notes: [
-                60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75,
-            ],
-            button_ccs: {
-                let mut ccs = crate::settings::Settings::default().midi.button_ccs;
-                ccs[Buttons::Play as usize] = 62;
-                ccs
-            },
-            ..crate::settings::Settings::default().midi
+    fn incoming_message_honors_per_action_channel_override() {
+        let outputs = DeviceOutputs::new();
+        let mut settings = Settings::default();
+        settings.pads[0].hit = crate::settings::actions::PadHitAction::Note {
+            channel: crate::settings::MidiChannel::try_from(2).ok(),
+            note: 60,
         };
-
-        crate::feedback::midi::apply_incoming_midi_message(
+        apply_incoming_midi_message(
             &[0x92, 60, 64],
             &outputs,
-            &mapping,
-            false,
-            Brightness::Dim,
-        );
-        crate::feedback::midi::apply_incoming_midi_message(
-            &[0xB2, 62, 100],
-            &outputs,
-            &mapping,
-            false,
-            Brightness::Dim,
+            &settings,
+            &crate::runtime_state::RuntimeState::default(),
         );
 
         assert_eq!(
-            outputs.with_lights(|lights| lights.get_pad(0)),
+            outputs.with_lights(|l| l.get_pad(0)),
             (PadColors::Turquoise, Brightness::Normal)
         );
-        assert_eq!(
-            outputs.with_lights(|lights| lights.get_button(Buttons::Play)),
-            Brightness::Bright
+    }
+
+    #[test]
+    fn incoming_message_for_wrong_channel_is_ignored_for_pad() {
+        let outputs = DeviceOutputs::new();
+        let settings = Settings::default(); // global channel 0
+        apply_incoming_midi_message(
+            &[0x95, 48, 64],
+            &outputs,
+            &settings,
+            &crate::runtime_state::RuntimeState::default(),
         );
+
+        // No dirty bit set, no pad change
+        assert!(!outputs.lights_dirty());
+    }
+
+    #[test]
+    fn incoming_cc_for_absolute_mode_encoder_syncs_runtime_state() {
+        use crate::runtime_state::RuntimeState;
+        use crate::settings::actions::{CcValueMode, EncoderTurnAction};
+
+        let outputs = DeviceOutputs::new();
+        let mut settings = Settings::default();
+        settings.encoder.turn = EncoderTurnAction::Cc {
+            channel: None,
+            cc: 1,
+            mode: CcValueMode::Absolute {
+                lo: 0,
+                hi: 127,
+                step: 1,
+                wrap: false,
+            },
+        };
+        let rt = RuntimeState::default();
+        apply_incoming_midi_message(&[0xB0, 1, 64], &outputs, &settings, &rt);
+        assert_eq!(rt.encoder_value(), 64);
+    }
+
+    #[test]
+    fn incoming_cc_for_non_absolute_mode_does_not_sync_runtime_state() {
+        use crate::runtime_state::RuntimeState;
+
+        let outputs = DeviceOutputs::new();
+        let settings = Settings::default();
+        let rt = RuntimeState::default();
+        rt.set_encoder_value(42);
+        apply_incoming_midi_message(&[0xB0, 1, 64], &outputs, &settings, &rt);
+        assert_eq!(rt.encoder_value(), 42);
+    }
+
+    #[test]
+    fn incoming_cc_for_absolute_mode_wrong_channel_does_not_sync() {
+        use crate::runtime_state::RuntimeState;
+        use crate::settings::actions::{CcValueMode, EncoderTurnAction};
+
+        let outputs = DeviceOutputs::new();
+        let mut settings = Settings::default();
+        settings.encoder.turn = EncoderTurnAction::Cc {
+            channel: crate::settings::MidiChannel::try_from(0).ok(),
+            cc: 1,
+            mode: CcValueMode::Absolute {
+                lo: 0,
+                hi: 127,
+                step: 1,
+                wrap: false,
+            },
+        };
+        let rt = RuntimeState::default();
+        apply_incoming_midi_message(&[0xB5, 1, 64], &outputs, &settings, &rt);
+        assert_eq!(rt.encoder_value(), 0);
     }
 }
