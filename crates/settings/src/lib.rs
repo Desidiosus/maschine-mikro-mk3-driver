@@ -18,6 +18,7 @@ pub use actions::{
 };
 pub use buttons_by_name::ButtonsByName;
 pub use groups::{BridgeSettings, GlobalSettings, HardwareSettings};
+pub use maschine_library::lights::PadColors;
 pub use pads_by_index::PadsByIndex;
 
 #[derive(Default, Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
