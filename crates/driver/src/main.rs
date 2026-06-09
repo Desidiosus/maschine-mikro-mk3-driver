@@ -87,6 +87,8 @@ fn run() -> DriverResult<()> {
         return Ok(());
     }
 
+    let config_path = driver::settings::persist::active_config_path(args.config.as_deref())
+        .map_err(driver::error::DriverError::Settings)?;
     let settings = driver::settings::resolve_and_load_settings(args.config.as_deref())
         .map_err(driver::error::DriverError::Settings)?;
     settings
@@ -96,7 +98,7 @@ fn run() -> DriverResult<()> {
     println!("Running with settings:");
     println!("{settings:?}");
 
-    app::run(settings)
+    app::run(settings, config_path)
 }
 
 fn main() -> ExitCode {

@@ -76,6 +76,15 @@ fn merge_from_source(
     Ok(Settings::default().merge_overrides(partial))
 }
 
+/// Resolve the config path the driver reads/writes: the CLI `-c` file if given,
+/// else the XDG config path.
+pub fn active_config_path(cli_config: Option<&str>) -> Result<PathBuf, String> {
+    match cli_config {
+        Some(file) => Ok(PathBuf::from(file)),
+        None => xdg_config_path(),
+    }
+}
+
 pub fn resolve_and_load_settings(cli_config: Option<&str>) -> Result<Settings, String> {
     if let Some(file) = cli_config {
         return merge_from_source(config::File::with_name(file));

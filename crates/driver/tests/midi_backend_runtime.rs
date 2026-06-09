@@ -22,6 +22,7 @@ fn runtime_constructor_creates_midi_backend_when_seq_available() {
         &outputs,
         soft_off,
         driver::runtime_state::RuntimeState::default(),
+        driver::ipc::new_subscriber(),
     )
     .unwrap();
 }

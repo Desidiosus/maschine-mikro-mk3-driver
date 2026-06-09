@@ -78,7 +78,16 @@ fn run_with_device_blanks_lights_on_shutdown() {
     let hid = CapturingHid::default();
     let shutdown = AtomicBool::new(true);
 
-    driver::app::run_with_device(new_shared(test_settings()), &hid, &shutdown).unwrap();
+    let (_effects_tx, effects_rx) = std::sync::mpsc::channel();
+    let subscriber = driver::ipc::new_subscriber();
+    driver::app::run_with_device(
+        new_shared(test_settings()),
+        &hid,
+        &shutdown,
+        effects_rx,
+        subscriber,
+    )
+    .unwrap();
 
     assert_last_lights_report_blank(&hid.writes.lock().unwrap());
 }
@@ -95,11 +104,19 @@ fn run_with_device_treats_read_error_as_graceful_exit_when_shutdown_requested() 
     };
     let shutdown = AtomicBool::new(false);
 
+    let (_effects_tx, effects_rx) = std::sync::mpsc::channel();
+    let subscriber = driver::ipc::new_subscriber();
     let result = std::thread::scope(|s| {
         let shutdown_ref = &shutdown;
         let hid_ref = &hid;
         let handle = s.spawn(move || {
-            driver::app::run_with_device(new_shared(test_settings()), hid_ref, shutdown_ref)
+            driver::app::run_with_device(
+                new_shared(test_settings()),
+                hid_ref,
+                shutdown_ref,
+                effects_rx,
+                subscriber,
+            )
         });
         shutdown_ref.store(true, Ordering::Relaxed);
         handle.join().unwrap()

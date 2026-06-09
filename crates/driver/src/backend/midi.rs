@@ -3,10 +3,12 @@ use std::sync::Arc;
 use maschine_library::lights::Brightness;
 use midir::os::unix::{VirtualInput, VirtualOutput};
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
+use protocol::{DriverToGui, MidiDir};
 
 use crate::error::{DriverError, DriverResult};
 use crate::events::ControlEvent;
 use crate::feedback::midi::apply_incoming_midi_message;
+use crate::ipc::{EventSubscriber, emit_event};
 use crate::outputs::DeviceOutputs;
 use crate::settings::actions::{
     ButtonPressAction, CcValueMode, EncoderTurnAction, PadHitAction, PadPressureAction,
@@ -41,6 +43,7 @@ impl MidiBackend {
         outputs: &DeviceOutputs,
         soft_off: SoftOffSync,
         runtime_state: crate::runtime_state::RuntimeState,
+        subscriber: EventSubscriber,
     ) -> DriverResult<Self> {
         let snapshot = settings.load();
         let sink = MidiOutput::new(&snapshot.global.client_name)
@@ -50,7 +53,13 @@ impl MidiBackend {
                 DriverError::Midi(format!("couldn't create virtual output port: {err}"))
             })?;
 
-        let input = create_midi_input(settings, outputs.clone(), soft_off, runtime_state)?;
+        let input = create_midi_input(
+            settings,
+            outputs.clone(),
+            soft_off,
+            runtime_state,
+            subscriber,
+        )?;
 
         if snapshot.bridge.midi_bridge_virmidi && snapshot.bridge.autoconnect_virmidi {
             try_autoconnect_virmidi(&snapshot)?;
@@ -83,11 +92,14 @@ impl<S: MidiSink> MidiBackend<S> {
         &mut self,
         event: &ControlEvent,
         rt: &crate::runtime_state::RuntimeState,
-    ) -> DriverResult<()> {
+    ) -> DriverResult<bool> {
         let snapshot = self.settings.load();
         match event_to_midi_bytes(event, &snapshot, rt) {
-            Some(bytes) => self.sink.send(&bytes),
-            None => Ok(()),
+            Some(bytes) => {
+                self.sink.send(&bytes)?;
+                Ok(true)
+            }
+            None => Ok(false),
         }
     }
 }
@@ -97,6 +109,7 @@ fn create_midi_input(
     outputs: DeviceOutputs,
     soft_off: SoftOffSync,
     runtime_state: crate::runtime_state::RuntimeState,
+    subscriber: EventSubscriber,
 ) -> DriverResult<MidiInputConnection<DeviceOutputs>> {
     let settings_handle = Arc::clone(settings);
     let runtime_state_clone = runtime_state.clone();
@@ -120,6 +133,7 @@ fn create_midi_input(
                     &settings_handle.load(),
                     &runtime_state_clone,
                 );
+                emit_event(&subscriber, DriverToGui::MidiActivity { dir: MidiDir::In });
             },
             outputs,
         )

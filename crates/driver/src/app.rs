@@ -1,4 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use hidapi::HidApi;
@@ -10,12 +12,15 @@ use maschine_library::preferences::{set_display_contrast, set_pad_sensitivity};
 use maschine_library::screen::{Screen, render_centered_text};
 use maschine_library::{USB_PID, USB_VID};
 use num::FromPrimitive;
+use protocol::{ControlRef, DriverToGui, MidiDir};
 
+use crate::apply::{SideEffects, apply_side_effects};
 use crate::backend::midi::MidiBackend;
 use crate::error::{DriverError, DriverResult};
 use crate::events::ControlEvent;
 use crate::feedback::local::apply_local_output_feedback;
 use crate::hid::{ControlState, decode_packet_with_curve};
+use crate::ipc::{EventSubscriber, emit_event};
 use crate::outputs::DeviceOutputs;
 use crate::self_test::self_test;
 use crate::settings::Settings;
@@ -46,16 +51,27 @@ fn install_shutdown_signal_handlers() -> DriverResult<()> {
     Ok(())
 }
 
-pub fn run(settings: Settings) -> DriverResult<()> {
+pub fn run(settings: Settings, config_path: std::path::PathBuf) -> DriverResult<()> {
     let api = HidApi::new()?;
     let device = api.open(USB_VID, USB_PID)?;
     device.set_blocking_mode(false)?;
     let shared = new_shared(settings);
     apply_startup_preferences(&device, &shared.load())?;
 
+    let socket_path = crate::ipc::default_socket_path().map_err(DriverError::Ipc)?;
+    let (effects_tx, effects_rx) = mpsc::channel();
+    let subscriber = crate::ipc::new_subscriber();
+    let _ipc = crate::ipc::IpcServer::start(
+        shared.clone(),
+        config_path,
+        effects_tx,
+        subscriber.clone(),
+        socket_path,
+    )?;
+
     install_shutdown_signal_handlers()?;
 
-    run_with_device(shared, &device, &SHUTDOWN_REQUESTED)
+    run_with_device(shared, &device, &SHUTDOWN_REQUESTED, effects_rx, subscriber)
 }
 
 fn apply_startup_preferences<D: HidIo>(device: &D, settings: &Settings) -> DriverResult<()> {
@@ -68,6 +84,8 @@ pub fn run_with_device<D: HidIo>(
     settings: SharedSettings,
     device: &D,
     shutdown_requested: &AtomicBool,
+    effects_rx: Receiver<SideEffects>,
+    subscriber: EventSubscriber,
 ) -> DriverResult<()> {
     settings.load().validate().map_err(DriverError::Settings)?;
 
@@ -80,14 +98,26 @@ pub fn run_with_device<D: HidIo>(
     let mut soft_off = SoftOffState::new(SoftOffSync::new());
     let soft_off_sync = soft_off.sync();
     let runtime_state = crate::runtime_state::RuntimeState::default();
-    let mut backend =
-        MidiBackend::new(&settings, &outputs, soft_off.sync(), runtime_state.clone())?;
+    let mut backend = MidiBackend::new(
+        &settings,
+        &outputs,
+        soft_off.sync(),
+        runtime_state.clone(),
+        subscriber.clone(),
+    )?;
     let mut state = ControlState::new();
     let mut buf = [0u8; 64];
     let mut slider_released_at: Option<Instant> = None;
 
     while !shutdown_requested.load(Ordering::Relaxed) {
         let snapshot = settings.load();
+
+        // Apply any pending hardware side effects from IPC applies (HID is
+        // owned by this thread).
+        while let Ok(effects) = effects_rx.try_recv() {
+            apply_side_effects(&effects, &snapshot, device, &outputs)?;
+        }
+
         let pad_velocity_curve = snapshot.hardware.pad_velocity_curve;
         let auto_off = snapshot.slider.led.auto_off_ms;
         let auto_off_color = snapshot.slider.led.color;
@@ -108,6 +138,9 @@ pub fn run_with_device<D: HidIo>(
                 if soft_off.observe_event(&outputs, &event) == SoftOffOutcome::Swallow {
                     continue;
                 }
+                if let Some(control) = control_ref_for(&event) {
+                    emit_event(&subscriber, DriverToGui::ControlActuated { control });
+                }
                 match &event {
                     ControlEvent::SliderTouch { pressed: false } => {
                         slider_released_at = Some(Instant::now());
@@ -119,7 +152,9 @@ pub fn run_with_device<D: HidIo>(
                     _ => {}
                 }
                 apply_local_output_feedback(&outputs, &snapshot, &event)?;
-                backend.handle_event(&event, &runtime_state)?;
+                if backend.handle_event(&event, &runtime_state)? {
+                    emit_event(&subscriber, DriverToGui::MidiActivity { dir: MidiDir::Out });
+                }
             }
         }
 
@@ -140,6 +175,19 @@ pub fn run_with_device<D: HidIo>(
     blank_outputs(&outputs);
     outputs.flush(device)?;
     Ok(())
+}
+
+fn control_ref_for(event: &ControlEvent) -> Option<ControlRef> {
+    match event {
+        ControlEvent::ButtonChanged {
+            index,
+            pressed: true,
+        } => Some(ControlRef::Button(*index as u8)),
+        ControlEvent::PadNoteOn { index, .. } => Some(ControlRef::Pad(*index as u8)),
+        ControlEvent::EncoderTurn { .. } => Some(ControlRef::Encoder),
+        ControlEvent::SliderTouch { pressed: true } => Some(ControlRef::Slider),
+        _ => None,
+    }
 }
 
 fn run_startup_self_test(device: &impl HidIo) -> DriverResult<()> {
