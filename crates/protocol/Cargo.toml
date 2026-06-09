@@ -1,13 +1,10 @@
 [package]
-name = "settings"
+name = "protocol"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 
 [dependencies]
-maschine_library.workspace = true
+settings.workspace = true
 serde.workspace = true
-
-[dev-dependencies]
-toml.workspace = true
 ciborium.workspace = true
