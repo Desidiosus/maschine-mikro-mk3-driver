@@ -233,7 +233,12 @@ fn run_device_loop<D: HidIo>(
         let size = match device.read_timeout(&mut buf, 1) {
             Ok(s) => s,
             Err(_) => {
+                // A signal (SIGTERM/SIGINT) interrupts the read as EINTR → Err.
+                // On shutdown, still blank the device before exiting (the device
+                // is fine; only the read was interrupted).
                 if shutdown_requested.load(Ordering::Relaxed) {
+                    blank_outputs(outputs);
+                    let _ = outputs.flush(device);
                     return SessionEnd::Shutdown;
                 }
                 return SessionEnd::DeviceLost; // unplugged → re-acquire
