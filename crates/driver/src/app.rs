@@ -3,7 +3,7 @@ use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-use hidapi::HidApi;
+use hidapi::{HidApi, HidDevice};
 use maschine_library::controls::Buttons;
 use maschine_library::hid::HidIo;
 use maschine_library::lights::Brightness;
@@ -52,13 +52,12 @@ fn install_shutdown_signal_handlers() -> DriverResult<()> {
 }
 
 pub fn run(settings: Settings, config_path: std::path::PathBuf) -> DriverResult<()> {
-    let api = HidApi::new()?;
-    let device = api.open(USB_VID, USB_PID)?;
-    device.set_blocking_mode(false)?;
     let shared = new_shared(settings);
-    apply_startup_preferences(&device, &shared.load())?;
 
-    let socket_path = crate::ipc::default_socket_path().map_err(DriverError::Ipc)?;
+    // Bind the IPC socket FIRST so the GUI can always connect and edit config,
+    // even before/without a device. Settings applies + persistence work without
+    // HID; only the runtime loop and hardware side effects need the device.
+    let socket_path = protocol::socket_path().map_err(DriverError::Ipc)?;
     let (effects_tx, effects_rx) = mpsc::channel();
     let subscriber = crate::ipc::new_subscriber();
     let _ipc = crate::ipc::IpcServer::start(
@@ -71,7 +70,42 @@ pub fn run(settings: Settings, config_path: std::path::PathBuf) -> DriverResult<
 
     install_shutdown_signal_handlers()?;
 
-    run_with_device(shared, &device, &SHUTDOWN_REQUESTED, effects_rx, subscriber)
+    // Acquire the device, retrying so a later hotplug starts the runtime loop.
+    // While waiting, the IPC server keeps serving config edits.
+    loop {
+        if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        match open_device() {
+            Ok(device) => {
+                apply_startup_preferences(&device, &shared.load())?;
+                // Discard any side effects queued by IPC applies while there was
+                // no device — startup preferences above already pushed the
+                // current settings to the freshly opened device.
+                while effects_rx.try_recv().is_ok() {}
+                return run_with_device(
+                    shared,
+                    &device,
+                    &SHUTDOWN_REQUESTED,
+                    effects_rx,
+                    subscriber,
+                );
+            }
+            Err(err) => {
+                eprintln!(
+                    "Maschine Mikro MK3 not available ({err}); IPC serving config, retrying…"
+                );
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        }
+    }
+}
+
+fn open_device() -> DriverResult<HidDevice> {
+    let api = HidApi::new()?;
+    let device = api.open(USB_VID, USB_PID)?;
+    device.set_blocking_mode(false)?;
+    Ok(device)
 }
 
 fn apply_startup_preferences<D: HidIo>(device: &D, settings: &Settings) -> DriverResult<()> {

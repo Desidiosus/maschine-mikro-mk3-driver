@@ -31,21 +31,6 @@ pub fn emit_event(subscriber: &EventSubscriber, msg: DriverToGui) {
     }
 }
 
-/// Resolve the socket path: `$MMK3_DRIVER_SOCKET` override, else
-/// `$XDG_RUNTIME_DIR/maschine-mikro-mk3-driver/driver.sock`.
-pub fn default_socket_path() -> Result<PathBuf, String> {
-    if let Ok(p) = std::env::var("MMK3_DRIVER_SOCKET")
-        && !p.is_empty()
-    {
-        return Ok(PathBuf::from(p));
-    }
-    let runtime = std::env::var("XDG_RUNTIME_DIR")
-        .map_err(|_| "XDG_RUNTIME_DIR not set; set MMK3_DRIVER_SOCKET".to_string())?;
-    Ok(PathBuf::from(runtime)
-        .join("maschine-mikro-mk3-driver")
-        .join("driver.sock"))
-}
-
 fn bind_singleton(path: &Path) -> DriverResult<UnixListener> {
     if path.exists() {
         // A live server answering on the path means another instance is running.
