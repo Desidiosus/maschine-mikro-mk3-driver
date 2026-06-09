@@ -139,7 +139,7 @@ where
     for (internal, pad) in pads.iter().enumerate() {
         if let Some(pad) = pad {
             let config_key = crate::pads_by_index::internal_to_config_key(internal);
-            map.serialize_entry(&config_key, pad)?;
+            map.serialize_entry(&config_key.to_string(), pad)?;
         }
     }
     map.end()
@@ -536,5 +536,28 @@ auto_off_ms = 0
 
         assert_eq!(merged.slider.led.auto_off_ms, 0);
         assert_eq!(merged.slider.led.mode, crate::actions::SliderLedMode::Bar);
+    }
+
+    #[test]
+    fn partial_pads_round_trip_through_self_describing_codec() {
+        use crate::PadPressureAction;
+
+        let mut pads: [Option<PartialPadConfig>; 16] = std::array::from_fn(|_| None);
+        pads[2] = Some(PartialPadConfig {
+            hit: None,
+            pressure: Some(PadPressureAction::Poly {
+                channel: None,
+                note: Some(60),
+            }),
+        });
+        let original = PartialSettings {
+            pads: Some(pads),
+            ..Default::default()
+        };
+
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&original, &mut bytes).expect("serialize");
+        let back: PartialSettings = ciborium::from_reader(&bytes[..]).expect("deserialize");
+        assert_eq!(back, original);
     }
 }

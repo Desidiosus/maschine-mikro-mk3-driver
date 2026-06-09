@@ -10,3 +10,4 @@ serde.workspace = true
 
 [dev-dependencies]
 toml.workspace = true
+ciborium = "0.2"
