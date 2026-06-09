@@ -19,7 +19,7 @@ pub const fn config_key_to_internal(toml_key: usize) -> usize {
     (3 - z / 4) * 4 + z % 4
 }
 
-pub(crate) const fn internal_to_config_key(internal: usize) -> usize {
+pub const fn internal_to_config_key(internal: usize) -> usize {
     let r = (3 - internal / 4) * 4 + internal % 4;
     r + 1
 }
