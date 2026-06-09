@@ -1,7 +1,7 @@
 use maschine_library::lights::PadColors;
 use serde::{Deserialize, Serialize};
 
-use crate::settings::MidiChannel;
+use crate::MidiChannel;
 
 fn default_lo() -> u8 {
     0

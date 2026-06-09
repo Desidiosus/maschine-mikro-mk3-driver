@@ -1,4 +1,4 @@
-use crate::settings::{
+use crate::{
     actions::{
         ButtonConfig, ButtonPressAction, CcValueMode, EncoderConfig, EncoderTurnAction, PadConfig,
         PadHitAction, PadPressureAction, SliderConfig, SliderLedSettings, SliderPositionAction,
@@ -65,7 +65,7 @@ pub(crate) fn default_slider() -> SliderConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::Settings;
+    use crate::Settings;
 
     #[test]
     fn settings_default_pads_have_expected_notes() {

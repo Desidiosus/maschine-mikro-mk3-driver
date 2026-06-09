@@ -5,7 +5,7 @@ use maschine_library::controls::{BUTTON_NAMES, button_index_from_name};
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::settings::actions::ButtonConfig;
+use crate::actions::ButtonConfig;
 
 const BUTTON_COUNT: usize = 41;
 
@@ -78,7 +78,7 @@ impl<'de> Deserialize<'de> for ButtonsByName {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::actions::{ButtonConfig, ButtonPressAction};
+    use crate::actions::{ButtonConfig, ButtonPressAction};
 
     #[test]
     fn serializes_to_table_with_snake_case_keys() {

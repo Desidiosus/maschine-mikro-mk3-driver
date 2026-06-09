@@ -4,7 +4,7 @@ use std::ops::{Index, IndexMut};
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::settings::actions::PadConfig;
+use crate::actions::PadConfig;
 
 const PAD_COUNT: usize = 16;
 
@@ -98,7 +98,7 @@ impl<'de> Deserialize<'de> for PadsByIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::actions::{PadHitAction, PadPressureAction};
+    use crate::actions::{PadHitAction, PadPressureAction};
 
     fn make_pad(note: u8) -> PadConfig {
         PadConfig {

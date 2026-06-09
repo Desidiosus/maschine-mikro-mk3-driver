@@ -4,12 +4,12 @@ use maschine_library::controls::{BUTTON_NAMES, button_index_from_name};
 use serde::de::Error as DeError;
 use serde::{Deserialize, Serialize};
 
-use crate::settings::actions::{
+use crate::actions::{
     ButtonPressAction, EncoderTurnAction, PadHitAction, PadPressureAction, SliderLedMode,
     SliderPositionAction, SliderTouchAction,
 };
-use crate::settings::{BacklightBrightness, MidiChannel, Settings};
-use crate::velocity::PadVelocityCurve;
+use crate::velocity_curve::PadVelocityCurve;
+use crate::{BacklightBrightness, MidiChannel, Settings};
 use maschine_library::lights::PadColors;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -118,7 +118,7 @@ where
                 "pad index {config_key} out of range 1..=16"
             )));
         }
-        out[crate::settings::pads_by_index::config_key_to_internal(config_key)] = Some(cfg);
+        out[crate::pads_by_index::config_key_to_internal(config_key)] = Some(cfg);
     }
     Ok(Some(out))
 }
@@ -138,7 +138,7 @@ where
     let mut map = serializer.serialize_map(Some(count))?;
     for (internal, pad) in pads.iter().enumerate() {
         if let Some(pad) = pad {
-            let config_key = crate::settings::pads_by_index::internal_to_config_key(internal);
+            let config_key = crate::pads_by_index::internal_to_config_key(internal);
             map.serialize_entry(&config_key, pad)?;
         }
     }
@@ -370,8 +370,8 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::actions::{ButtonPressAction, PadPressureAction, SliderTouchAction};
-    use crate::settings::{MidiChannel, Settings};
+    use crate::actions::{ButtonPressAction, PadPressureAction, SliderTouchAction};
+    use crate::{MidiChannel, Settings};
 
     #[test]
     fn empty_partial_merges_to_default() {
@@ -487,10 +487,7 @@ mode = "pan"
         let partial: PartialSettings = toml::from_str(toml_str).unwrap();
         let merged = Settings::default().merge_overrides(partial);
 
-        assert_eq!(
-            merged.slider.led.mode,
-            crate::settings::actions::SliderLedMode::Pan
-        );
+        assert_eq!(merged.slider.led.mode, crate::actions::SliderLedMode::Pan);
         assert_eq!(
             merged.slider.led.color,
             maschine_library::lights::PadColors::White
@@ -513,15 +510,12 @@ stylized = true
             maschine_library::lights::PadColors::Cyan
         );
         assert!(merged.slider.led.stylized);
-        assert_eq!(
-            merged.slider.led.mode,
-            crate::settings::actions::SliderLedMode::Bar
-        );
+        assert_eq!(merged.slider.led.mode, crate::actions::SliderLedMode::Bar);
     }
 
     #[test]
     fn diff_from_defaults_emits_slider_led_overrides() {
-        use crate::settings::actions::SliderLedMode;
+        use crate::actions::SliderLedMode;
         let mut s = Settings::default();
         s.slider.led.mode = SliderLedMode::Dot;
         s.slider.led.stylized = true;
@@ -541,9 +535,6 @@ auto_off_ms = 0
         let merged = Settings::default().merge_overrides(partial);
 
         assert_eq!(merged.slider.led.auto_off_ms, 0);
-        assert_eq!(
-            merged.slider.led.mode,
-            crate::settings::actions::SliderLedMode::Bar
-        );
+        assert_eq!(merged.slider.led.mode, crate::actions::SliderLedMode::Bar);
     }
 }

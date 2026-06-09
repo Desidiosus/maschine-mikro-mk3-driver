@@ -1,21 +1,9 @@
-use serde::{Deserialize, Serialize};
-
 #[allow(dead_code)]
 const VALID_PAD_VELOCITY_CURVE_NAMES: &[&str] = &[
     "soft3", "soft2", "soft1", "linear", "hard1", "hard2", "hard3",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PadVelocityCurve {
-    Soft3,
-    Soft2,
-    Soft1,
-    Linear,
-    Hard1,
-    Hard2,
-    Hard3,
-}
+pub use ::settings::PadVelocityCurve;
 
 #[allow(dead_code)]
 pub(crate) fn parse_pad_velocity_curve(value: &str) -> Option<PadVelocityCurve> {

@@ -1,0 +1,12 @@
+[package]
+name = "settings"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+maschine_library.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+toml.workspace = true

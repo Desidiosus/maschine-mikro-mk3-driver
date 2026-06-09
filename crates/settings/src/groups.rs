@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::settings::{BacklightBrightness, MidiChannel};
-use crate::velocity::PadVelocityCurve;
+use crate::velocity_curve::PadVelocityCurve;
+use crate::{BacklightBrightness, MidiChannel};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GlobalSettings {

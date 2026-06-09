@@ -9,6 +9,7 @@ authors = ["Viktor Rudnev <me@vrudnev.xyz>"]
 
 [workspace.dependencies]
 maschine_library = { path = "crates/maschine_library" }
+settings = { path = "crates/settings" }
 hidapi = { version = "2.6.5" }
 num = { version = "0.4.3" }
 num-derive = { version = "0.4.2" }
