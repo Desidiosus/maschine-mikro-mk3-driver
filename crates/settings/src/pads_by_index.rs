@@ -89,13 +89,30 @@ impl<'de> Deserialize<'de> for PadsByIndex {
                     "pad index {config_key} out of range 1..=16"
                 )));
             }
-            out[config_key_to_internal(config_key)] = Some(cfg);
+            let internal = config_key_to_internal(config_key);
+            // Distinct string keys can normalize to the same number (e.g. "1"
+            // and "01"); reject the collision instead of leaving a slot unfilled
+            // and panicking below.
+            if out[internal].is_some() {
+                return Err(DeError::custom(format!("duplicate pad key {config_key}")));
+            }
+            out[internal] = Some(cfg);
         }
-        let collected: [PadConfig; PAD_COUNT] = std::array::from_fn(|i| {
-            out[i]
-                .clone()
-                .expect("len check guarantees all slots filled")
-        });
+        let collected: Vec<PadConfig> = out
+            .into_iter()
+            .enumerate()
+            .map(|(i, slot)| {
+                slot.ok_or_else(|| {
+                    DeError::custom(format!(
+                        "missing pad entry for internal index {i} (config key {})",
+                        internal_to_config_key(i)
+                    ))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        let collected: [PadConfig; PAD_COUNT] = collected
+            .try_into()
+            .map_err(|_| DeError::custom("pad entry count mismatch"))?;
         Ok(PadsByIndex(collected))
     }
 }
@@ -174,6 +191,19 @@ mod tests {
         );
         let parsed: PadsByIndex = toml::from_str(&s).unwrap();
         assert_eq!(parsed, pads);
+    }
+
+    #[test]
+    fn deserialize_rejects_duplicate_keys_without_panicking() {
+        // "1" and "01" parse to the same number, so a duplicate key can satisfy
+        // the len==16 check yet leave a slot unfilled; the loader must reject it.
+        let mut full: BTreeMap<String, PadConfig> = BTreeMap::new();
+        full.insert("01".to_string(), make_pad(48));
+        for n in 1..PAD_COUNT {
+            full.insert(n.to_string(), make_pad(48));
+        }
+        let err = toml::from_str::<PadsByIndex>(&toml::to_string(&full).unwrap()).unwrap_err();
+        assert!(err.to_string().contains("duplicate pad key"), "got: {err}");
     }
 
     #[test]

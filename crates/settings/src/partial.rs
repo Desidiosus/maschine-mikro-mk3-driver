@@ -118,7 +118,14 @@ where
                 "pad index {config_key} out of range 1..=16"
             )));
         }
-        out[crate::pads_by_index::config_key_to_internal(config_key)] = Some(cfg);
+        let internal = crate::pads_by_index::config_key_to_internal(config_key);
+        // Distinct string keys can normalize to the same index (e.g. "1" and
+        // "01"); reject the collision instead of silently last-write-wins, matching
+        // the full-config `PadsByIndex` decoder.
+        if out[internal].is_some() {
+            return Err(DeError::custom(format!("duplicate pad key {config_key}")));
+        }
+        out[internal] = Some(cfg);
     }
     Ok(Some(out))
 }
@@ -538,6 +545,23 @@ auto_off_ms = 0
 
         assert_eq!(merged.slider.led.auto_off_ms, 0);
         assert_eq!(merged.slider.led.mode, crate::actions::SliderLedMode::Bar);
+    }
+
+    #[test]
+    fn partial_pads_reject_duplicate_normalized_keys() {
+        // "1" and "01" parse to the same index; the partial decoder must reject
+        // the collision rather than silently last-write-wins.
+        let toml_str = r#"
+[pads.1.hit]
+type = "note"
+note = 60
+
+[pads.01.hit]
+type = "note"
+note = 62
+"#;
+        let err = toml::from_str::<PartialSettings>(toml_str).unwrap_err();
+        assert!(err.to_string().contains("duplicate pad key"), "got: {err}");
     }
 
     #[test]
