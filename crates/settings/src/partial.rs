@@ -393,9 +393,11 @@ cc = 99
 
         match &merged.buttons[Buttons::Play as usize].press {
             ButtonPressAction::Cc { cc, .. } => assert_eq!(*cc, 99),
+            ButtonPressAction::Off => panic!("expected cc"),
         }
         match &merged.buttons[Buttons::Stop as usize].press {
             ButtonPressAction::Cc { cc, .. } => assert_eq!(*cc, 44),
+            ButtonPressAction::Off => panic!("expected cc"),
         }
     }
 

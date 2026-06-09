@@ -50,6 +50,7 @@ pub enum PadHitAction {
         channel: Option<MidiChannel>,
         note: u8,
     },
+    Off,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +79,7 @@ pub enum ButtonPressAction {
         channel: Option<MidiChannel>,
         cc: u8,
     },
+    Off,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,6 +97,7 @@ pub enum EncoderTurnAction {
         #[serde(default)]
         mode: CcValueMode,
     },
+    Off,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,6 +113,7 @@ pub enum SliderPositionAction {
         channel: Option<MidiChannel>,
         cc: u8,
     },
+    Off,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,6 +191,22 @@ pub struct SliderConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn off_variants_round_trip_toml() {
+        let h: PadHitAction =
+            toml::from_str(&toml::to_string(&PadHitAction::Off).unwrap()).unwrap();
+        assert_eq!(h, PadHitAction::Off);
+        let b: ButtonPressAction =
+            toml::from_str(&toml::to_string(&ButtonPressAction::Off).unwrap()).unwrap();
+        assert_eq!(b, ButtonPressAction::Off);
+        let e: EncoderTurnAction =
+            toml::from_str(&toml::to_string(&EncoderTurnAction::Off).unwrap()).unwrap();
+        assert_eq!(e, EncoderTurnAction::Off);
+        let s: SliderPositionAction =
+            toml::from_str(&toml::to_string(&SliderPositionAction::Off).unwrap()).unwrap();
+        assert_eq!(s, SliderPositionAction::Off);
+    }
 
     #[test]
     fn pad_pressure_disabled_round_trips_as_disabled_string() {

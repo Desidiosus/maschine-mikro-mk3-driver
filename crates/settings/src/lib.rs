@@ -135,7 +135,9 @@ impl Settings {
         if self.global.port_name_in.is_empty() {
             return Err("port_name_in must not be empty".to_string());
         }
-        let EncoderTurnAction::Cc { mode, .. } = &self.encoder.turn;
+        let EncoderTurnAction::Cc { mode, .. } = &self.encoder.turn else {
+            return Ok(());
+        };
         match mode {
             actions::CcValueMode::Absolute { lo, hi, step, .. } => {
                 if lo > hi {

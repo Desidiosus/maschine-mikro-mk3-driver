@@ -202,17 +202,22 @@ pub fn event_to_midi_bytes(
                     *cc,
                     if *pressed { 127 } else { 0 },
                 ]),
+                ButtonPressAction::Off => None,
             }
         }
-        ControlEvent::EncoderTurn { delta, .. } => {
-            let EncoderTurnAction::Cc { channel, cc, mode } = &settings.encoder.turn;
-            let value = encode_encoder_value(mode, *delta, rt);
-            Some([0xB0 | resolve_channel(*channel, global), *cc, value])
-        }
-        ControlEvent::SliderMoved { cc_value, .. } => {
-            let SliderPositionAction::Cc { channel, cc } = &settings.slider.position;
-            Some([0xB0 | resolve_channel(*channel, global), *cc, *cc_value])
-        }
+        ControlEvent::EncoderTurn { delta, .. } => match &settings.encoder.turn {
+            EncoderTurnAction::Cc { channel, cc, mode } => {
+                let value = encode_encoder_value(mode, *delta, rt);
+                Some([0xB0 | resolve_channel(*channel, global), *cc, value])
+            }
+            EncoderTurnAction::Off => None,
+        },
+        ControlEvent::SliderMoved { cc_value, .. } => match &settings.slider.position {
+            SliderPositionAction::Cc { channel, cc } => {
+                Some([0xB0 | resolve_channel(*channel, global), *cc, *cc_value])
+            }
+            SliderPositionAction::Off => None,
+        },
         ControlEvent::SliderTouch { pressed } => match &settings.slider.touch {
             SliderTouchAction::Disabled => None,
             SliderTouchAction::Note {
@@ -238,23 +243,34 @@ pub fn event_to_midi_bytes(
         },
         ControlEvent::PadNoteOn { index, velocity } => {
             let pad = settings.pads.0.get(*index)?;
-            let PadHitAction::Note { channel, note } = &pad.hit;
-            Some([0x90 | resolve_channel(*channel, global), *note, *velocity])
+            match &pad.hit {
+                PadHitAction::Note { channel, note } => {
+                    Some([0x90 | resolve_channel(*channel, global), *note, *velocity])
+                }
+                PadHitAction::Off => None,
+            }
         }
         ControlEvent::PadNoteOff { index, velocity } => {
             let pad = settings.pads.0.get(*index)?;
-            let PadHitAction::Note { channel, note } = &pad.hit;
-            Some([0x80 | resolve_channel(*channel, global), *note, *velocity])
+            match &pad.hit {
+                PadHitAction::Note { channel, note } => {
+                    Some([0x80 | resolve_channel(*channel, global), *note, *velocity])
+                }
+                PadHitAction::Off => None,
+            }
         }
         ControlEvent::PadAftertouch { index, pressure } => {
             let pad = settings.pads.0.get(*index)?;
             match &pad.pressure {
                 PadPressureAction::Disabled => None,
                 PadPressureAction::Poly { channel, note } => {
-                    let resolved_note = note.unwrap_or_else(|| {
-                        let PadHitAction::Note { note, .. } = &pad.hit;
-                        *note
-                    });
+                    let resolved_note = match note {
+                        Some(n) => *n,
+                        None => match &pad.hit {
+                            PadHitAction::Note { note, .. } => *note,
+                            PadHitAction::Off => return None,
+                        },
+                    };
                     Some([
                         0xA0 | resolve_channel(*channel, global),
                         resolved_note,
@@ -273,11 +289,11 @@ pub fn event_to_midi_bytes(
 fn find_index_for<I, T, F>(items: I, global: u8, target: (u8, u8), extract: F) -> Option<usize>
 where
     I: IntoIterator<Item = T>,
-    F: Fn(T) -> (Option<MidiChannel>, u8),
+    F: Fn(T) -> Option<(Option<MidiChannel>, u8)>,
 {
     let (channel, key) = target;
     items.into_iter().enumerate().find_map(|(idx, item)| {
-        let (chan, item_key) = extract(item);
+        let (chan, item_key) = extract(item)?;
         let resolved = chan.map(|c| c.as_u8()).unwrap_or(global);
         (resolved == channel && item_key == key).then_some(idx)
     })
@@ -285,18 +301,28 @@ where
 
 pub fn pad_index_for_message(settings: &Settings, channel: u8, note: u8) -> Option<usize> {
     let global = settings.global.midi_channel.as_u8();
-    find_index_for(settings.pads.iter(), global, (channel, note), |pad| {
-        let PadHitAction::Note { channel, note } = &pad.hit;
-        (*channel, *note)
-    })
+    find_index_for(
+        settings.pads.iter(),
+        global,
+        (channel, note),
+        |pad| match &pad.hit {
+            PadHitAction::Note { channel, note } => Some((*channel, *note)),
+            PadHitAction::Off => None,
+        },
+    )
 }
 
 pub fn button_index_for_message(settings: &Settings, channel: u8, cc: u8) -> Option<usize> {
     let global = settings.global.midi_channel.as_u8();
-    find_index_for(settings.buttons.0.iter(), global, (channel, cc), |btn| {
-        let ButtonPressAction::Cc { channel, cc } = &btn.press;
-        (*channel, *cc)
-    })
+    find_index_for(
+        settings.buttons.0.iter(),
+        global,
+        (channel, cc),
+        |btn| match &btn.press {
+            ButtonPressAction::Cc { channel, cc } => Some((*channel, *cc)),
+            ButtonPressAction::Off => None,
+        },
+    )
 }
 
 pub fn button_brightness_from_value(
@@ -551,6 +577,53 @@ mod tests {
             backend.sink().sent.is_empty(),
             "got {:?}",
             backend.sink().sent
+        );
+    }
+
+    #[test]
+    fn off_actions_emit_nothing() {
+        let mut s = Settings::default();
+        s.encoder.turn = EncoderTurnAction::Off;
+        s.slider.position = crate::settings::actions::SliderPositionAction::Off;
+        s.buttons.0[0].press = ButtonPressAction::Off;
+        s.pads.0[0].hit = PadHitAction::Off;
+
+        assert_eq!(
+            event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: 1 }, &s, &rt()),
+            None
+        );
+        assert_eq!(
+            event_to_midi_bytes(
+                &ControlEvent::SliderMoved {
+                    raw: 100,
+                    cc_value: 63,
+                },
+                &s,
+                &rt(),
+            ),
+            None
+        );
+        assert_eq!(
+            event_to_midi_bytes(
+                &ControlEvent::ButtonChanged {
+                    index: 0,
+                    pressed: true,
+                },
+                &s,
+                &rt(),
+            ),
+            None
+        );
+        assert_eq!(
+            event_to_midi_bytes(
+                &ControlEvent::PadNoteOn {
+                    index: 0,
+                    velocity: 64,
+                },
+                &s,
+                &rt(),
+            ),
+            None
         );
     }
 

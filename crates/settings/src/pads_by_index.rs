@@ -158,6 +158,7 @@ mod tests {
         let pads: PadsByIndex = toml::from_str(&toml::to_string(&full).unwrap()).unwrap();
         match &pads[12].hit {
             PadHitAction::Note { note, .. } => assert_eq!(*note, 99),
+            PadHitAction::Off => panic!("expected note"),
         }
     }
 
