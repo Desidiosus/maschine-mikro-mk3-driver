@@ -39,6 +39,25 @@ impl BacklightBrightness {
     }
 }
 
+impl std::fmt::Display for BacklightBrightness {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            BacklightBrightness::Dim => "dim",
+            BacklightBrightness::Normal => "normal",
+            BacklightBrightness::Bright => "bright",
+        };
+        f.write_str(s)
+    }
+}
+
+impl BacklightBrightness {
+    pub const ALL: [BacklightBrightness; 3] = [
+        BacklightBrightness::Dim,
+        BacklightBrightness::Normal,
+        BacklightBrightness::Bright,
+    ];
+}
+
 #[derive(Default, Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(try_from = "u8", into = "u8")]
 pub struct MidiChannel(u8);
@@ -164,6 +183,14 @@ mod validate_tests {
             mode,
         };
         s
+    }
+
+    #[test]
+    fn backlight_display_matches_serde_token_for_all_variants() {
+        for v in super::BacklightBrightness::ALL {
+            let token = serde_json::to_string(&v).unwrap();
+            assert_eq!(v.to_string(), token.trim_matches('"'), "{v:?}");
+        }
     }
 
     #[test]
