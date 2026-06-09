@@ -57,8 +57,14 @@ fn install_shutdown_signal_handlers() -> DriverResult<()> {
     Ok(())
 }
 
-pub fn run(settings: Settings, config_path: std::path::PathBuf) -> DriverResult<()> {
+pub fn run(loaded: crate::settings::LoadedConfig) -> DriverResult<()> {
+    let crate::settings::LoadedConfig {
+        settings,
+        persist_base,
+        persist_path,
+    } = loaded;
     let shared = new_shared(settings);
+    let persist_base = std::sync::Arc::new(persist_base);
 
     // Bind the IPC socket FIRST so the GUI can always connect and edit config,
     // even before/without a device. Settings applies + persistence work without
@@ -69,7 +75,8 @@ pub fn run(settings: Settings, config_path: std::path::PathBuf) -> DriverResult<
     let device_present = std::sync::Arc::new(AtomicBool::new(false));
     let _ipc = crate::ipc::IpcServer::start(
         shared.clone(),
-        config_path,
+        persist_base,
+        persist_path,
         effects_tx,
         subscriber.clone(),
         socket_path,
@@ -213,14 +220,19 @@ fn run_device_loop<D: HidIo>(
     let mut state = ControlState::new();
     let mut buf = [0u8; 64];
     let mut slider_released_at: Option<Instant> = None;
+    // Tracks whether MIDI output is currently failing, so a broken port is logged
+    // once (not once per event) and again only after it recovers.
+    let mut midi_send_failed = false;
 
     while !shutdown_requested.load(Ordering::Relaxed) {
         let snapshot = settings.load();
 
         // Apply any pending hardware side effects from IPC applies (HID is
-        // owned by this thread).
+        // owned by this thread). Re-load the settings per effect so the backlight
+        // refresh reads the just-applied values, not this iteration's snapshot
+        // (which was captured before the IPC thread stored the new settings).
         while let Ok(effects) = effects_rx.try_recv() {
-            if apply_side_effects(&effects, &snapshot, device, outputs).is_err() {
+            if apply_side_effects(&effects, &settings.load(), device, outputs).is_err() {
                 return SessionEnd::DeviceLost;
             }
         }
@@ -266,8 +278,24 @@ fn run_device_loop<D: HidIo>(
                 // Local feedback is best-effort: a failure here shouldn't end the
                 // session (the flush below will catch real device loss).
                 let _ = apply_local_output_feedback(outputs, &snapshot, &event);
-                if backend.handle_event(&event, runtime_state).unwrap_or(false) {
-                    emit_event(subscriber, DriverToGui::MidiActivity { dir: MidiDir::Out });
+                // A MIDI send failure shouldn't tear down the session (a transient
+                // hiccup would needlessly drop the device); log it once and keep
+                // going so a recovered port resumes without a restart.
+                match backend.handle_event(&event, runtime_state) {
+                    Ok(true) => {
+                        midi_send_failed = false;
+                        emit_event(subscriber, DriverToGui::MidiActivity { dir: MidiDir::Out });
+                    }
+                    Ok(false) => {}
+                    Err(err) => {
+                        if !midi_send_failed {
+                            midi_send_failed = true;
+                            eprintln!(
+                                "MIDI send failed: {err} (continuing; suppressing further \
+                                 errors until output recovers)"
+                            );
+                        }
+                    }
                 }
             }
         }

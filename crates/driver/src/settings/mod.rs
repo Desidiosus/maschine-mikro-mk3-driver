@@ -4,4 +4,4 @@
 pub use ::settings::*;
 
 pub mod persist;
-pub use persist::{load_xdg, resolve_and_load_settings};
+pub use persist::{LoadedConfig, load_config, load_xdg};

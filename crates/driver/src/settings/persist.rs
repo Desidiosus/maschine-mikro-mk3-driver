@@ -76,21 +76,70 @@ fn merge_from_source(
     Ok(Settings::default().merge_overrides(partial))
 }
 
-/// Resolve the config path the driver reads/writes: the CLI `-c` file if given,
-/// else the XDG config path.
-pub fn active_config_path(cli_config: Option<&str>) -> Result<PathBuf, String> {
-    match cli_config {
-        Some(file) => Ok(PathBuf::from(file)),
-        None => xdg_config_path(),
-    }
+/// Read a TOML file into a `PartialSettings`. The format is pinned to TOML (not
+/// inferred from the extension) so load and save agree on the same file for any
+/// `-c` argument.
+fn read_partial(path: &Path) -> Result<PartialSettings, String> {
+    config::Config::builder()
+        .add_source(config::File::from(path.to_path_buf()).format(config::FileFormat::Toml))
+        .build()
+        .map_err(|err| format!("Can't create settings: {err}"))?
+        .try_deserialize()
+        .map_err(|err| format!("Can't parse settings: {err}"))
 }
 
-pub fn resolve_and_load_settings(cli_config: Option<&str>) -> Result<Settings, String> {
-    if let Some(file) = cli_config {
-        return merge_from_source(config::File::with_name(file));
-    }
+/// Resolved startup configuration.
+pub struct LoadedConfig {
+    /// Live settings the driver runs with: `defaults ∘ -c seed ∘ XDG overrides`.
+    pub settings: Settings,
+    /// Persistence base (`defaults ∘ -c seed`). GUI edits are diffed against this
+    /// and written to `persist_path`, so the read-only `-c` file shows through
+    /// for keys the GUI hasn't touched.
+    pub persist_base: Settings,
+    /// Where GUI edits persist — always the XDG config path. A `-c` file is a
+    /// read-only seed and is never written.
+    pub persist_path: PathBuf,
+}
+
+/// Load the startup configuration using an explicit XDG path (testable).
+///
+/// `-c` (`cli_config`) is a read-only seed merged over the defaults; persisted
+/// overrides live in `xdg_path` and overlay on top of the seed. A first run with
+/// no `-c` writes a documented stub to `xdg_path`; with `-c` the XDG file is left
+/// untouched until the first GUI persist.
+pub fn load_config_with_xdg(
+    cli_config: Option<&str>,
+    xdg_path: &Path,
+) -> Result<LoadedConfig, String> {
+    let persist_base = match cli_config {
+        Some(file) => Settings::default().merge_overrides(read_partial(Path::new(file))?),
+        None => Settings::default(),
+    };
+
+    let settings = if xdg_path.exists() {
+        persist_base
+            .clone()
+            .merge_overrides(read_partial(xdg_path)?)
+    } else {
+        if cli_config.is_none()
+            && let Err(err) = write_atomically(xdg_path, FIRST_RUN_STUB)
+        {
+            eprintln!("warning: could not write config stub to {xdg_path:?}: {err}");
+        }
+        persist_base.clone()
+    };
+
+    Ok(LoadedConfig {
+        settings,
+        persist_base,
+        persist_path: xdg_path.to_path_buf(),
+    })
+}
+
+/// Load the startup configuration, resolving the XDG path from the environment.
+pub fn load_config(cli_config: Option<&str>) -> Result<LoadedConfig, String> {
     let xdg_path = xdg_config_path()?;
-    load_xdg(&xdg_path)
+    load_config_with_xdg(cli_config, &xdg_path)
 }
 
 pub fn load_xdg(xdg_path: &Path) -> Result<Settings, String> {
@@ -103,30 +152,25 @@ pub fn load_xdg(xdg_path: &Path) -> Result<Settings, String> {
     Ok(Settings::default())
 }
 
-/// Serialize `settings`' sparse overrides (vs defaults) to TOML and write them
-/// atomically to `path`.
-pub fn save_to(path: &Path, settings: &Settings) -> Result<(), String> {
-    let overrides = settings.diff_from_defaults();
+/// Serialize `settings`' sparse overrides relative to `base` to TOML and write
+/// them atomically to `path`. `base` is the persistence base (`defaults ∘ -c
+/// seed`) so only GUI-made changes are persisted.
+pub fn save_overrides(path: &Path, settings: &Settings, base: &Settings) -> Result<(), String> {
+    let overrides = settings.diff_from(base);
     let body = toml::to_string(&overrides)
         .map_err(|err| format!("failed to serialize settings: {err}"))?;
     write_atomically(path, &body)
 }
 
-/// Persist `settings`' overrides to the resolved XDG config path.
-pub fn save_xdg(settings: &Settings) -> Result<(), String> {
-    let path = xdg_config_path()?;
-    save_to(&path, settings)
-}
-
 #[cfg(test)]
 mod tests {
     use super::xdg_config_path_for;
-    use super::{load_xdg, save_to};
+    use super::{load_config_with_xdg, load_xdg, save_overrides};
     use crate::settings::{MidiChannel, Settings};
     use std::path::PathBuf;
 
     #[test]
-    fn save_to_then_load_round_trips_overrides() {
+    fn save_overrides_then_load_round_trips_overrides() {
         let dir = std::env::temp_dir().join("mmk3-persist-save-test");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!("config-{}.toml", std::process::id()));
@@ -136,11 +180,55 @@ mod tests {
         s.hardware.pad_sensitivity = 73;
         s.global.midi_channel = MidiChannel::try_from(4).unwrap();
 
-        save_to(&path, &s).unwrap();
+        save_overrides(&path, &s, &Settings::default()).unwrap();
         let loaded = load_xdg(&path).unwrap();
         assert_eq!(loaded, s);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn cli_seed_is_read_only_and_xdg_overrides_layer_on_top() {
+        let dir = std::env::temp_dir().join("mmk3-persist-overlay-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cli = dir.join(format!("seed-{}.toml", std::process::id()));
+        let xdg = dir.join(format!("xdg-{}.toml", std::process::id()));
+        let _ = std::fs::remove_file(&cli);
+        let _ = std::fs::remove_file(&xdg);
+
+        // A `-c` seed sets pad sensitivity and the global channel.
+        std::fs::write(
+            &cli,
+            "[hardware]\npad_sensitivity = 88\n[global]\nmidi_channel = 7\n",
+        )
+        .unwrap();
+
+        // First load: no XDG overlay yet → live == seed, and the seed file is the
+        // persistence base. The XDG file must NOT be created for a `-c` run.
+        let loaded = load_config_with_xdg(Some(cli.to_str().unwrap()), &xdg).unwrap();
+        assert_eq!(loaded.settings.hardware.pad_sensitivity, 88);
+        assert_eq!(loaded.settings.global.midi_channel.as_u8(), 7);
+        assert!(!xdg.exists(), "-c run must not create the XDG file");
+
+        // A GUI edit changes only display_contrast; persist the diff vs the base.
+        let mut edited = loaded.settings.clone();
+        edited.hardware.display_contrast = 20;
+        save_overrides(&xdg, &edited, &loaded.persist_base).unwrap();
+
+        // Next load overlays the XDG diff on the seed: the edit applies and the
+        // seed still shows through for untouched keys.
+        let reloaded = load_config_with_xdg(Some(cli.to_str().unwrap()), &xdg).unwrap();
+        assert_eq!(reloaded.settings.hardware.display_contrast, 20);
+        assert_eq!(reloaded.settings.hardware.pad_sensitivity, 88);
+        assert_eq!(reloaded.settings.global.midi_channel.as_u8(), 7);
+
+        // The seed file is untouched (only display_contrast lives in XDG).
+        let seed_text = std::fs::read_to_string(&cli).unwrap();
+        assert!(seed_text.contains("pad_sensitivity = 88"));
+        assert!(!seed_text.contains("display_contrast"));
+
+        let _ = std::fs::remove_file(&cli);
+        let _ = std::fs::remove_file(&xdg);
     }
 
     #[test]

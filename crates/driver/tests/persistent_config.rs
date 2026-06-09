@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use driver::settings::{Settings, load_xdg, resolve_and_load_settings};
+use driver::settings::persist::load_config_with_xdg;
+use driver::settings::{Settings, load_xdg};
 
 struct TempDir(PathBuf);
 
@@ -85,6 +86,7 @@ fn c_flag_skips_xdg_and_does_not_create_file() {
     let dir = TempDir::new();
 
     let cli_path = dir.path().join("cli.toml");
+    let xdg_path = dir.path().join("config.toml");
     fs::write(
         &cli_path,
         r#"
@@ -94,12 +96,16 @@ pad_sensitivity = 33
     )
     .unwrap();
 
-    let settings = resolve_and_load_settings(Some(cli_path.to_str().unwrap())).unwrap();
+    let loaded = load_config_with_xdg(Some(cli_path.to_str().unwrap()), &xdg_path).unwrap();
 
-    assert_eq!(settings.hardware.pad_sensitivity, 33);
+    assert_eq!(loaded.settings.hardware.pad_sensitivity, 33);
+    assert!(
+        !xdg_path.exists(),
+        "XDG file must not be created when -c FILE is passed"
+    );
     assert_eq!(
         fs::read_dir(dir.path()).unwrap().count(),
         1,
-        "XDG stub must not be created when -c FILE is passed"
+        "only the -c file exists; no XDG file written"
     );
 }

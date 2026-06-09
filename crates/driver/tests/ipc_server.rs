@@ -39,6 +39,7 @@ fn start(name: &str) -> Harness {
     let device_present = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let server = IpcServer::start(
         handle.clone(),
+        std::sync::Arc::new(Settings::default()),
         config.clone(),
         effects_tx,
         subscriber,
@@ -101,6 +102,41 @@ fn apply_acks_persists_updates_and_routes_side_effects() {
 
     let reloaded = load_xdg(&h.config).unwrap();
     assert_eq!(reloaded.hardware.pad_sensitivity, 80);
+    h.server.take();
+}
+
+#[test]
+fn live_preview_apply_acks_without_pushing_a_snapshot() {
+    let mut h = start("preview");
+    let delta: PartialSettings = toml::from_str("[hardware]\npad_sensitivity = 60\n").unwrap();
+    write_frame(
+        &mut h.client,
+        &GuiToDriver::Apply {
+            seq: 9,
+            delta: Box::new(delta),
+            persist: false,
+        },
+    )
+    .unwrap();
+
+    let ack: DriverToGui = read_frame(&mut h.reader).unwrap().unwrap();
+    assert!(matches!(
+        ack,
+        DriverToGui::Ack {
+            seq: 9,
+            result: Ok(())
+        }
+    ));
+    assert_eq!(h.handle.load().hardware.pad_sensitivity, 60);
+
+    // No snapshot follows a persist=false preview apply; the next frame is the
+    // response to a follow-up GetSettings, proving nothing was queued between.
+    write_frame(&mut h.client, &GuiToDriver::GetSettings).unwrap();
+    let next: DriverToGui = read_frame(&mut h.reader).unwrap().unwrap();
+    assert!(
+        matches!(next, DriverToGui::Settings(_)),
+        "expected the GetSettings snapshot, not an apply-pushed one: {next:?}"
+    );
     h.server.take();
 }
 

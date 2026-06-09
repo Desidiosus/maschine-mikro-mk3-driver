@@ -7,7 +7,8 @@ use maschine_library::preferences::{set_display_contrast, set_pad_sensitivity};
 use crate::error::DriverResult;
 use crate::outputs::DeviceOutputs;
 use crate::settings::PartialSettings;
-use crate::settings::persist::save_to;
+use crate::settings::Settings;
+use crate::settings::persist::save_overrides;
 use crate::shared_settings::SharedSettings;
 
 /// Hardware side effects that must be pushed to the device/outputs after a
@@ -23,29 +24,33 @@ pub struct SideEffects {
     pub reinit_backlight: bool,
 }
 
-/// Merge `delta` onto the live settings, validate, atomically swap it in, and
-/// (when `persist`) persist the sparse overrides to `config_path`. Returns the
-/// side effects the caller must apply to the device.
+/// Merge `delta` onto the live settings, validate, (when `persist`) persist the
+/// sparse overrides relative to `persist_base` to `persist_path`, then atomically
+/// swap the new settings in. Returns the side effects the caller must apply.
 ///
 /// `persist=false` applies live (handle swap + side effects) without writing the
-/// config file — used while a slider is being dragged. On validation failure the
-/// handle is left untouched and nothing is written. If persistence fails *after*
-/// a successful swap, the new settings are already live; the error is returned
-/// for the caller to surface.
+/// config file — used while a slider is being dragged. On validation OR
+/// persistence failure the handle is left untouched and nothing goes live, so the
+/// on-disk config and the in-memory settings never diverge: a failed persist
+/// surfaces as an error and the prior settings stay authoritative.
 pub fn apply_delta(
     handle: &SharedSettings,
     delta: PartialSettings,
-    config_path: &Path,
+    persist_base: &Settings,
+    persist_path: &Path,
     persist: bool,
 ) -> Result<SideEffects, String> {
     let current = handle.load_full();
     let merged = (*current).clone().merge_overrides(delta);
     merged.validate()?;
 
-    handle.store(Arc::new(merged.clone()));
+    // Persist BEFORE swapping in the new settings: if the write fails the live
+    // state stays at `current`, matching the on-disk file, and the error is
+    // surfaced. Once persisted (or when not persisting), commit the swap.
     if persist {
-        save_to(config_path, &merged)?;
+        save_overrides(persist_path, &merged, persist_base)?;
     }
+    handle.store(Arc::new(merged.clone()));
 
     // Derive hardware side effects from what actually changed between the live
     // settings and the merged result, so every path that alters a hardware field
@@ -128,7 +133,14 @@ mod tests {
         let path = temp_config_path("hardware");
         let handle = new_shared(Settings::default());
 
-        let effects = apply_delta(&handle, pad_sensitivity_delta(73), &path, true).unwrap();
+        let effects = apply_delta(
+            &handle,
+            pad_sensitivity_delta(73),
+            &Settings::default(),
+            &path,
+            true,
+        )
+        .unwrap();
 
         assert_eq!(effects.pad_sensitivity, Some(73));
         assert_eq!(handle.load().hardware.pad_sensitivity, 73);
@@ -145,7 +157,14 @@ mod tests {
         let path = temp_config_path("no-persist");
         let handle = new_shared(Settings::default());
 
-        let effects = apply_delta(&handle, pad_sensitivity_delta(73), &path, false).unwrap();
+        let effects = apply_delta(
+            &handle,
+            pad_sensitivity_delta(73),
+            &Settings::default(),
+            &path,
+            false,
+        )
+        .unwrap();
 
         assert_eq!(effects.pad_sensitivity, Some(73));
         assert_eq!(handle.load().hardware.pad_sensitivity, 73);
@@ -158,11 +177,43 @@ mod tests {
         let handle = new_shared(Settings::default());
 
         // pad_sensitivity > 100 fails validate().
-        let result = apply_delta(&handle, pad_sensitivity_delta(200), &path, true);
+        let result = apply_delta(
+            &handle,
+            pad_sensitivity_delta(200),
+            &Settings::default(),
+            &path,
+            true,
+        );
 
         assert!(result.is_err());
         assert_eq!(handle.load().hardware.pad_sensitivity, 50); // unchanged default
         assert!(!path.exists(), "no file written on validation failure");
+    }
+
+    #[test]
+    fn apply_delta_leaves_live_settings_unchanged_when_persist_fails() {
+        // A persist_path whose parent is a regular file makes create_dir_all (and
+        // thus the write) fail, so the swap must not happen.
+        let blocker = temp_config_path("persist-fail-blocker");
+        std::fs::write(&blocker, "x").unwrap();
+        let unwritable = blocker.join("nested").join("config.toml");
+
+        let handle = new_shared(Settings::default());
+        let result = apply_delta(
+            &handle,
+            pad_sensitivity_delta(73),
+            &Settings::default(),
+            &unwritable,
+            true,
+        );
+
+        assert!(result.is_err(), "persist failure must surface as an error");
+        assert_eq!(
+            handle.load().hardware.pad_sensitivity,
+            50,
+            "live settings stay at the prior value when persist fails"
+        );
+        let _ = std::fs::remove_file(&blocker);
     }
 
     #[test]
@@ -172,7 +223,7 @@ mod tests {
 
         let delta: PartialSettings =
             toml::from_str("[buttons.play.press]\ntype = \"cc\"\ncc = 99\n").unwrap();
-        let effects = apply_delta(&handle, delta, &path, true).unwrap();
+        let effects = apply_delta(&handle, delta, &Settings::default(), &path, true).unwrap();
 
         assert_eq!(effects, SideEffects::default());
         let reloaded = crate::settings::persist::load_xdg(&path).unwrap();
