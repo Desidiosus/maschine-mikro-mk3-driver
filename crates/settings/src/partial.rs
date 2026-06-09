@@ -408,9 +408,9 @@ type = "poly"
         let partial: PartialSettings = toml::from_str(toml_str).unwrap();
         let merged = Settings::default().merge_overrides(partial);
 
-        // TOML key 5 maps to internal logical pad 11 (16 - 5).
+        // TOML key 5 (physical pad 5) maps to internal logical pad 8 (row-flip).
         assert_eq!(
-            merged.pads[11].pressure,
+            merged.pads[8].pressure,
             PadPressureAction::Poly {
                 channel: None,
                 note: None

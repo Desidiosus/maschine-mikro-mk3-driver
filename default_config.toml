@@ -39,112 +39,112 @@
 
 [pads.1.hit]
 # type = "note"
-# note = 39
+# note = 36
 
 [pads.1.pressure]
 # type = "disabled"
 
 [pads.10.hit]
 # type = "note"
-# note = 46
+# note = 45
 
 [pads.10.pressure]
 # type = "disabled"
 
 [pads.11.hit]
 # type = "note"
-# note = 45
+# note = 46
 
 [pads.11.pressure]
 # type = "disabled"
 
 [pads.12.hit]
 # type = "note"
-# note = 44
+# note = 47
 
 [pads.12.pressure]
 # type = "disabled"
 
 [pads.13.hit]
 # type = "note"
-# note = 51
+# note = 48
 
 [pads.13.pressure]
 # type = "disabled"
 
 [pads.14.hit]
 # type = "note"
-# note = 50
+# note = 49
 
 [pads.14.pressure]
 # type = "disabled"
 
 [pads.15.hit]
 # type = "note"
-# note = 49
+# note = 50
 
 [pads.15.pressure]
 # type = "disabled"
 
 [pads.16.hit]
 # type = "note"
-# note = 48
+# note = 51
 
 [pads.16.pressure]
 # type = "disabled"
 
 [pads.2.hit]
 # type = "note"
-# note = 38
+# note = 37
 
 [pads.2.pressure]
 # type = "disabled"
 
 [pads.3.hit]
 # type = "note"
-# note = 37
+# note = 38
 
 [pads.3.pressure]
 # type = "disabled"
 
 [pads.4.hit]
 # type = "note"
-# note = 36
+# note = 39
 
 [pads.4.pressure]
 # type = "disabled"
 
 [pads.5.hit]
 # type = "note"
-# note = 43
+# note = 40
 
 [pads.5.pressure]
 # type = "disabled"
 
 [pads.6.hit]
 # type = "note"
-# note = 42
+# note = 41
 
 [pads.6.pressure]
 # type = "disabled"
 
 [pads.7.hit]
 # type = "note"
-# note = 41
+# note = 42
 
 [pads.7.pressure]
 # type = "disabled"
 
 [pads.8.hit]
 # type = "note"
-# note = 40
+# note = 43
 
 [pads.8.pressure]
 # type = "disabled"
 
 [pads.9.hit]
 # type = "note"
-# note = 47
+# note = 44
 
 [pads.9.pressure]
 # type = "disabled"

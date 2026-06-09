@@ -10,13 +10,18 @@ const PAD_COUNT: usize = 16;
 
 /// TOML key for `[pads.N]` is the physical pad number labelled on the device
 /// (1 = bottom-left, 4 = bottom-right, 13 = top-left, 16 = top-right). Internal
-/// indexing keeps the device's native byte ordering (0..=15). Map between the two.
+/// indexing is the device's native byte order: row-major from the top-left
+/// (0 = top-left, 3 = top-right, 12 = bottom-left, 15 = bottom-right). The two
+/// differ by a row flip (top↔bottom), columns unchanged — e.g. physical pad 1
+/// (bottom-left) is internal 12. This mapping is its own inverse.
 pub const fn config_key_to_internal(toml_key: usize) -> usize {
-    PAD_COUNT - toml_key
+    let z = toml_key - 1; // 0..=15, bottom-left origin
+    (3 - z / 4) * 4 + z % 4
 }
 
 pub(crate) const fn internal_to_config_key(internal: usize) -> usize {
-    PAD_COUNT - internal
+    let r = (3 - internal / 4) * 4 + internal % 4;
+    r + 1
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,27 +148,28 @@ mod tests {
     }
 
     #[test]
-    fn toml_key_1_deserializes_to_internal_index_15() {
+    fn toml_key_1_deserializes_to_internal_index_12() {
+        // Physical pad 1 (bottom-left) is internal 12 (row-flip mapping).
         let mut full: BTreeMap<String, PadConfig> = BTreeMap::new();
         full.insert("1".to_string(), make_pad(99));
         for n in 2..=PAD_COUNT {
             full.insert(n.to_string(), make_pad(48));
         }
         let pads: PadsByIndex = toml::from_str(&toml::to_string(&full).unwrap()).unwrap();
-        match &pads[15].hit {
+        match &pads[12].hit {
             PadHitAction::Note { note, .. } => assert_eq!(*note, 99),
         }
     }
 
     #[test]
-    fn internal_index_zero_serializes_as_toml_key_16() {
+    fn internal_index_zero_serializes_as_toml_key_13() {
         let mut pads = make_pads();
         pads.0[0] = make_pad(99);
         let s = toml::to_string(&pads).unwrap();
-        // Internal index 0 carries note=99 → emitted under TOML key 16.
+        // Internal index 0 (top-left) carries note=99 → emitted under TOML key 13.
         assert!(
-            s.contains("[16.hit]") || s.contains("[\"16\".hit]"),
-            "expected pad at TOML key 16 to carry note=99\ngot:\n{s}"
+            s.contains("[13.hit]") || s.contains("[\"13\".hit]"),
+            "expected pad at TOML key 13 to carry note=99\ngot:\n{s}"
         );
         let parsed: PadsByIndex = toml::from_str(&s).unwrap();
         assert_eq!(parsed, pads);
