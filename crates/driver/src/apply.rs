@@ -19,6 +19,8 @@ pub struct SideEffects {
     /// New display contrast to re-push, if the delta changed it.
     pub display_contrast: Option<u8>,
     /// Button backlight settings changed → re-initialize backlight.
+    /// Re-enable-only: turning backlight off or lowering brightness takes effect
+    /// on restart, not live.
     pub reinit_backlight: bool,
 }
 
@@ -27,13 +29,15 @@ pub struct SideEffects {
 /// caller must apply to the device.
 ///
 /// On validation failure the handle is left untouched and nothing is written.
+/// If persistence fails *after* a successful swap, the new settings are already
+/// live; the error is returned for the caller to surface.
 pub fn apply_delta(
     handle: &SharedSettings,
     delta: PartialSettings,
     config_path: &Path,
 ) -> Result<SideEffects, String> {
     let current = handle.load_full();
-    let merged = (*current).clone().merge_overrides(delta.clone());
+    let merged = (*current).clone().merge_overrides(delta);
     merged.validate()?;
 
     handle.store(Arc::new(merged.clone()));
@@ -106,7 +110,7 @@ mod tests {
     fn temp_config_path(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join("mmk3-apply-tests");
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("{name}.toml"));
+        let path = dir.join(format!("{name}-{}.toml", std::process::id()));
         let _ = std::fs::remove_file(&path);
         path
     }

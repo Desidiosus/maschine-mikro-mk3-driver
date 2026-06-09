@@ -120,7 +120,7 @@ mod tests {
     fn save_to_then_load_round_trips_overrides() {
         let dir = std::env::temp_dir().join("mmk3-persist-save-test");
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
+        let path = dir.join(format!("config-{}.toml", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
         let mut s = Settings::default();
