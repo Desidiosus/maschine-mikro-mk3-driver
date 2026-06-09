@@ -32,6 +32,9 @@ pub enum DriverToGui {
     ControlActuated { control: ControlRef },
     /// MIDI traffic occurred in the given direction (drives the In/Out indicator).
     MidiActivity { dir: MidiDir },
+    /// Whether the hardware device is currently connected. Sent on subscribe
+    /// (current state) and on each connect/disconnect transition.
+    DeviceConnected(bool),
 }
 
 /// Identifies a single control on the device.
@@ -137,6 +140,14 @@ mod tests {
     fn midi_activity_round_trips() {
         for dir in [MidiDir::In, MidiDir::Out] {
             let msg = DriverToGui::MidiActivity { dir };
+            assert_eq!(cbor_round_trip(&msg), msg);
+        }
+    }
+
+    #[test]
+    fn device_connected_round_trips() {
+        for connected in [true, false] {
+            let msg = DriverToGui::DeviceConnected(connected);
             assert_eq!(cbor_round_trip(&msg), msg);
         }
     }
