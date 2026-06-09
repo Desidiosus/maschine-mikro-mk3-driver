@@ -6,7 +6,9 @@ pub mod defaults;
 pub mod groups;
 pub mod pads_by_index;
 pub mod partial;
+pub mod persist;
 pub use partial::PartialSettings;
+pub use persist::{load_xdg, resolve_and_load_settings};
 
 pub use actions::{
     ButtonConfig, ButtonPressAction, CcValueMode, EncoderConfig, EncoderTurnAction, PadConfig,
