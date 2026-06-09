@@ -94,10 +94,45 @@ pub fn load_xdg(xdg_path: &Path) -> Result<Settings, String> {
     Ok(Settings::default())
 }
 
+/// Serialize `settings`' sparse overrides (vs defaults) to TOML and write them
+/// atomically to `path`.
+pub fn save_to(path: &Path, settings: &Settings) -> Result<(), String> {
+    let overrides = settings.diff_from_defaults();
+    let body = toml::to_string(&overrides)
+        .map_err(|err| format!("failed to serialize settings: {err}"))?;
+    write_atomically(path, &body)
+}
+
+/// Persist `settings`' overrides to the resolved XDG config path.
+pub fn save_xdg(settings: &Settings) -> Result<(), String> {
+    let path = xdg_config_path()?;
+    save_to(&path, settings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::xdg_config_path_for;
+    use super::{load_xdg, save_to};
+    use crate::settings::{MidiChannel, Settings};
     use std::path::PathBuf;
+
+    #[test]
+    fn save_to_then_load_round_trips_overrides() {
+        let dir = std::env::temp_dir().join("mmk3-persist-save-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let _ = std::fs::remove_file(&path);
+
+        let mut s = Settings::default();
+        s.hardware.pad_sensitivity = 73;
+        s.global.midi_channel = MidiChannel::try_from(4).unwrap();
+
+        save_to(&path, &s).unwrap();
+        let loaded = load_xdg(&path).unwrap();
+        assert_eq!(loaded, s);
+
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn xdg_path_uses_xdg_config_home_when_set() {
