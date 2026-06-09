@@ -2,6 +2,7 @@ use std::io::BufReader;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
@@ -63,14 +64,20 @@ impl IpcServer {
         effects_tx: Sender<SideEffects>,
         subscriber: EventSubscriber,
         socket_path: PathBuf,
+        device_present: Arc<AtomicBool>,
     ) -> DriverResult<Self> {
         let listener = bind_singleton(&socket_path)?;
         let accept = thread::spawn(move || {
             for stream in listener.incoming() {
                 match stream {
-                    Ok(stream) => {
-                        handle_client(stream, &handle, &config_path, &effects_tx, &subscriber)
-                    }
+                    Ok(stream) => handle_client(
+                        stream,
+                        &handle,
+                        &config_path,
+                        &effects_tx,
+                        &subscriber,
+                        &device_present,
+                    ),
                     Err(_) => break,
                 }
             }
@@ -94,6 +101,7 @@ fn handle_client(
     config_path: &Path,
     effects_tx: &Sender<SideEffects>,
     subscriber: &EventSubscriber,
+    device_present: &Arc<AtomicBool>,
 ) {
     let write_stream = match stream.try_clone() {
         Ok(s) => s,
@@ -111,7 +119,17 @@ fn handle_client(
 
     let mut reader = BufReader::new(stream);
     while let Ok(Some(req)) = read_frame::<_, GuiToDriver>(&mut reader) {
-        if dispatch(req, handle, config_path, effects_tx, subscriber, &out_tx).is_err() {
+        if dispatch(
+            req,
+            handle,
+            config_path,
+            effects_tx,
+            subscriber,
+            device_present,
+            &out_tx,
+        )
+        .is_err()
+        {
             break;
         }
     }
@@ -137,6 +155,7 @@ fn dispatch(
     config_path: &Path,
     effects_tx: &Sender<SideEffects>,
     subscriber: &EventSubscriber,
+    device_present: &Arc<AtomicBool>,
     out_tx: &Sender<DriverToGui>,
 ) -> Result<(), ()> {
     match req {
@@ -163,7 +182,14 @@ fn dispatch(
                 })
                 .map_err(|_| ())?,
         },
-        GuiToDriver::SubscribeEvents => subscriber.store(Some(Arc::new(out_tx.clone()))),
+        GuiToDriver::SubscribeEvents => {
+            subscriber.store(Some(Arc::new(out_tx.clone())));
+            out_tx
+                .send(DriverToGui::DeviceConnected(
+                    device_present.load(Ordering::Acquire),
+                ))
+                .map_err(|_| ())?;
+        }
     }
     Ok(())
 }

@@ -36,12 +36,14 @@ fn start(name: &str) -> Harness {
     let sock = unique(name, "sock");
     let (effects_tx, effects_rx) = mpsc::channel();
     let subscriber = new_subscriber();
+    let device_present = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let server = IpcServer::start(
         handle.clone(),
         config.clone(),
         effects_tx,
         subscriber,
         sock.clone(),
+        device_present,
     )
     .unwrap();
     let client = UnixStream::connect(&sock).unwrap();
@@ -99,6 +101,15 @@ fn apply_acks_persists_updates_and_routes_side_effects() {
 
     let reloaded = load_xdg(&h.config).unwrap();
     assert_eq!(reloaded.hardware.pad_sensitivity, 80);
+    h.server.take();
+}
+
+#[test]
+fn subscribe_sends_current_device_presence() {
+    let mut h = start("subscribe");
+    write_frame(&mut h.client, &GuiToDriver::SubscribeEvents).unwrap();
+    let resp: DriverToGui = read_frame(&mut h.reader).unwrap().unwrap();
+    assert!(matches!(resp, DriverToGui::DeviceConnected(true)));
     h.server.take();
 }
 

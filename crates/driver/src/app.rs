@@ -29,6 +29,12 @@ use crate::soft_off::{SoftOffOutcome, SoftOffState, SoftOffSync, blank_outputs};
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+/// Why a device session ended.
+enum SessionEnd {
+    Shutdown,
+    DeviceLost,
+}
+
 extern "C" fn handle_shutdown_signal(_: libc::c_int) {
     SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
 }
@@ -60,41 +66,73 @@ pub fn run(settings: Settings, config_path: std::path::PathBuf) -> DriverResult<
     let socket_path = protocol::socket_path().map_err(DriverError::Ipc)?;
     let (effects_tx, effects_rx) = mpsc::channel();
     let subscriber = crate::ipc::new_subscriber();
+    let device_present = std::sync::Arc::new(AtomicBool::new(false));
     let _ipc = crate::ipc::IpcServer::start(
         shared.clone(),
         config_path,
         effects_tx,
         subscriber.clone(),
         socket_path,
+        device_present.clone(),
     )?;
 
     install_shutdown_signal_handlers()?;
+    shared.load().validate().map_err(DriverError::Settings)?;
+
+    // Persistent across device unplug/replug so MIDI ports stay stable.
+    let outputs = DeviceOutputs::new();
+    let mut soft_off = SoftOffState::new(SoftOffSync::new());
+    let runtime_state = crate::runtime_state::RuntimeState::default();
+    let mut backend = MidiBackend::new(
+        &shared,
+        &outputs,
+        soft_off.sync(),
+        runtime_state.clone(),
+        subscriber.clone(),
+    )?;
 
     // Acquire the device, retrying so a later hotplug starts the runtime loop.
-    // While waiting, the IPC server keeps serving config edits.
+    // On unplug the session ends with `DeviceLost` and we re-acquire without
+    // tearing down the IPC server or the virtual MIDI ports.
     loop {
         if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
             return Ok(());
         }
         match open_device() {
             Ok(device) => {
-                apply_startup_preferences(&device, &shared.load())?;
+                if apply_startup_preferences(&device, &shared.load()).is_err() {
+                    continue; // device flaked during init → re-acquire
+                }
                 // Discard any side effects queued by IPC applies while there was
                 // no device — startup preferences above already pushed the
                 // current settings to the freshly opened device.
                 while effects_rx.try_recv().is_ok() {}
-                return run_with_device(
-                    shared,
+                device_present.store(true, Ordering::Release);
+                emit_event(&subscriber, DriverToGui::DeviceConnected(true));
+
+                let end = run_device_loop(
+                    &shared,
                     &device,
                     &SHUTDOWN_REQUESTED,
-                    effects_rx,
-                    subscriber,
+                    &effects_rx,
+                    &subscriber,
+                    &mut soft_off,
+                    &runtime_state,
+                    &mut backend,
+                    &outputs,
                 );
+
+                device_present.store(false, Ordering::Release);
+                emit_event(&subscriber, DriverToGui::DeviceConnected(false));
+                match end {
+                    SessionEnd::Shutdown => return Ok(()),
+                    SessionEnd::DeviceLost => {
+                        eprintln!("Maschine Mikro MK3 disconnected; waiting for reconnect…");
+                        continue;
+                    }
+                }
             }
-            Err(err) => {
-                eprintln!(
-                    "Maschine Mikro MK3 not available ({err}); IPC serving config, retrying…"
-                );
+            Err(_) => {
                 std::thread::sleep(std::time::Duration::from_secs(2));
             }
         }
@@ -123,14 +161,8 @@ pub fn run_with_device<D: HidIo>(
 ) -> DriverResult<()> {
     settings.load().validate().map_err(DriverError::Settings)?;
 
-    run_startup_self_test(device)?;
-
     let outputs = DeviceOutputs::new();
-    prepare_startup_outputs(&outputs, &settings.load());
-    outputs.flush(device)?;
-
     let mut soft_off = SoftOffState::new(SoftOffSync::new());
-    let soft_off_sync = soft_off.sync();
     let runtime_state = crate::runtime_state::RuntimeState::default();
     let mut backend = MidiBackend::new(
         &settings,
@@ -139,6 +171,45 @@ pub fn run_with_device<D: HidIo>(
         runtime_state.clone(),
         subscriber.clone(),
     )?;
+    let _ = run_device_loop(
+        &settings,
+        device,
+        shutdown_requested,
+        &effects_rx,
+        &subscriber,
+        &mut soft_off,
+        &runtime_state,
+        &mut backend,
+        &outputs,
+    );
+    Ok(())
+}
+
+/// Run one device session. Returns when the device is lost (HID error) or a
+/// shutdown is requested. Never propagates a HID error so the caller can
+/// re-acquire the device without tearing down long-lived state.
+#[allow(clippy::too_many_arguments)]
+fn run_device_loop<D: HidIo>(
+    settings: &SharedSettings,
+    device: &D,
+    shutdown_requested: &AtomicBool,
+    effects_rx: &Receiver<SideEffects>,
+    subscriber: &EventSubscriber,
+    soft_off: &mut SoftOffState,
+    runtime_state: &crate::runtime_state::RuntimeState,
+    backend: &mut MidiBackend,
+    outputs: &DeviceOutputs,
+) -> SessionEnd {
+    // Session setup; treat any HID error here as device loss.
+    if run_startup_self_test(device).is_err() {
+        return SessionEnd::DeviceLost;
+    }
+    prepare_startup_outputs(outputs, &settings.load());
+    if outputs.flush(device).is_err() {
+        return SessionEnd::DeviceLost;
+    }
+
+    let soft_off_sync = soft_off.sync();
     let mut state = ControlState::new();
     let mut buf = [0u8; 64];
     let mut slider_released_at: Option<Instant> = None;
@@ -149,7 +220,9 @@ pub fn run_with_device<D: HidIo>(
         // Apply any pending hardware side effects from IPC applies (HID is
         // owned by this thread).
         while let Ok(effects) = effects_rx.try_recv() {
-            apply_side_effects(&effects, &snapshot, device, &outputs)?;
+            if apply_side_effects(&effects, &snapshot, device, outputs).is_err() {
+                return SessionEnd::DeviceLost;
+            }
         }
 
         let pad_velocity_curve = snapshot.hardware.pad_velocity_curve;
@@ -159,21 +232,21 @@ pub fn run_with_device<D: HidIo>(
         buf.fill(0);
         let size = match device.read_timeout(&mut buf, 1) {
             Ok(s) => s,
-            Err(err) => {
+            Err(_) => {
                 if shutdown_requested.load(Ordering::Relaxed) {
-                    break;
+                    return SessionEnd::Shutdown;
                 }
-                return Err(err.into());
+                return SessionEnd::DeviceLost; // unplugged → re-acquire
             }
         };
 
         if size >= 1 {
             for event in decode_packet_with_curve(&mut state, &buf, pad_velocity_curve) {
-                if soft_off.observe_event(&outputs, &event) == SoftOffOutcome::Swallow {
+                if soft_off.observe_event(outputs, &event) == SoftOffOutcome::Swallow {
                     continue;
                 }
                 if let Some(control) = control_ref_for(&event) {
-                    emit_event(&subscriber, DriverToGui::ControlActuated { control });
+                    emit_event(subscriber, DriverToGui::ControlActuated { control });
                 }
                 match &event {
                     ControlEvent::SliderTouch { pressed: false } => {
@@ -185,9 +258,11 @@ pub fn run_with_device<D: HidIo>(
                     }
                     _ => {}
                 }
-                apply_local_output_feedback(&outputs, &snapshot, &event)?;
-                if backend.handle_event(&event, &runtime_state)? {
-                    emit_event(&subscriber, DriverToGui::MidiActivity { dir: MidiDir::Out });
+                // Local feedback is best-effort: a failure here shouldn't end the
+                // session (the flush below will catch real device loss).
+                let _ = apply_local_output_feedback(outputs, &snapshot, &event);
+                if backend.handle_event(&event, runtime_state).unwrap_or(false) {
+                    emit_event(subscriber, DriverToGui::MidiActivity { dir: MidiDir::Out });
                 }
             }
         }
@@ -203,12 +278,14 @@ pub fn run_with_device<D: HidIo>(
             slider_released_at = None;
         }
 
-        outputs.flush(device)?;
+        if outputs.flush(device).is_err() {
+            return SessionEnd::DeviceLost;
+        }
     }
 
-    blank_outputs(&outputs);
-    outputs.flush(device)?;
-    Ok(())
+    blank_outputs(outputs);
+    let _ = outputs.flush(device); // device may already be gone on shutdown
+    SessionEnd::Shutdown
 }
 
 fn control_ref_for(event: &ControlEvent) -> Option<ControlRef> {
