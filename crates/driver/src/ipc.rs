@@ -141,7 +141,11 @@ fn dispatch(
 ) -> Result<(), ()> {
     match req {
         GuiToDriver::GetSettings => out_tx.send(snapshot(handle)).map_err(|_| ())?,
-        GuiToDriver::Apply { seq, delta } => match apply_delta(handle, *delta, config_path) {
+        GuiToDriver::Apply {
+            seq,
+            delta,
+            persist,
+        } => match apply_delta(handle, *delta, config_path, persist) {
             Ok(effects) => {
                 let _ = effects_tx.send(effects);
                 out_tx

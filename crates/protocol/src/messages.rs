@@ -7,9 +7,12 @@ pub enum GuiToDriver {
     /// Request a full `Settings` snapshot.
     GetSettings,
     /// Apply a sparse settings delta. `seq` correlates the matching `Ack`.
+    /// `persist=false` applies live without writing the config file (e.g. while
+    /// dragging a slider); send `persist=true` to commit/persist.
     Apply {
         seq: u64,
         delta: Box<PartialSettings>,
+        persist: bool,
     },
     /// Opt in to the `ControlActuated` / `MidiActivity` event stream.
     SubscribeEvents,
@@ -84,9 +87,17 @@ mod tests {
         };
         let msg = GuiToDriver::Apply {
             seq: 42,
-            delta: Box::new(delta),
+            delta: Box::new(delta.clone()),
+            persist: true,
         };
         assert_eq!(cbor_round_trip(&msg), msg);
+
+        let live = GuiToDriver::Apply {
+            seq: 43,
+            delta: Box::new(delta),
+            persist: false,
+        };
+        assert_eq!(cbor_round_trip(&live), live);
     }
 
     #[test]

@@ -74,6 +74,7 @@ fn apply_acks_persists_updates_and_routes_side_effects() {
         &GuiToDriver::Apply {
             seq: 7,
             delta: Box::new(delta),
+            persist: true,
         },
     )
     .unwrap();
@@ -110,6 +111,7 @@ fn invalid_apply_acks_err_without_state_change() {
         &GuiToDriver::Apply {
             seq: 1,
             delta: Box::new(delta),
+            persist: true,
         },
     )
     .unwrap();

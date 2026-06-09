@@ -25,23 +25,28 @@ pub struct SideEffects {
 }
 
 /// Merge `delta` onto the live settings, validate, atomically swap it in, and
-/// persist the sparse overrides to `config_path`. Returns the side effects the
-/// caller must apply to the device.
+/// (when `persist`) persist the sparse overrides to `config_path`. Returns the
+/// side effects the caller must apply to the device.
 ///
-/// On validation failure the handle is left untouched and nothing is written.
-/// If persistence fails *after* a successful swap, the new settings are already
-/// live; the error is returned for the caller to surface.
+/// `persist=false` applies live (handle swap + side effects) without writing the
+/// config file — used while a slider is being dragged. On validation failure the
+/// handle is left untouched and nothing is written. If persistence fails *after*
+/// a successful swap, the new settings are already live; the error is returned
+/// for the caller to surface.
 pub fn apply_delta(
     handle: &SharedSettings,
     delta: PartialSettings,
     config_path: &Path,
+    persist: bool,
 ) -> Result<SideEffects, String> {
     let current = handle.load_full();
     let merged = (*current).clone().merge_overrides(delta);
     merged.validate()?;
 
     handle.store(Arc::new(merged.clone()));
-    save_to(config_path, &merged)?;
+    if persist {
+        save_to(config_path, &merged)?;
+    }
 
     // Derive hardware side effects from what actually changed between the live
     // settings and the merged result, so every path that alters a hardware field
@@ -124,7 +129,7 @@ mod tests {
         let path = temp_config_path("hardware");
         let handle = new_shared(Settings::default());
 
-        let effects = apply_delta(&handle, pad_sensitivity_delta(73), &path).unwrap();
+        let effects = apply_delta(&handle, pad_sensitivity_delta(73), &path, true).unwrap();
 
         assert_eq!(effects.pad_sensitivity, Some(73));
         assert_eq!(handle.load().hardware.pad_sensitivity, 73);
@@ -137,12 +142,24 @@ mod tests {
     }
 
     #[test]
+    fn apply_delta_without_persist_updates_handle_without_writing() {
+        let path = temp_config_path("no-persist");
+        let handle = new_shared(Settings::default());
+
+        let effects = apply_delta(&handle, pad_sensitivity_delta(73), &path, false).unwrap();
+
+        assert_eq!(effects.pad_sensitivity, Some(73));
+        assert_eq!(handle.load().hardware.pad_sensitivity, 73);
+        assert!(!path.exists(), "no file written when persist = false");
+    }
+
+    #[test]
     fn apply_delta_rejects_invalid_delta_without_side_effects() {
         let path = temp_config_path("invalid");
         let handle = new_shared(Settings::default());
 
         // pad_sensitivity > 100 fails validate().
-        let result = apply_delta(&handle, pad_sensitivity_delta(200), &path);
+        let result = apply_delta(&handle, pad_sensitivity_delta(200), &path, true);
 
         assert!(result.is_err());
         assert_eq!(handle.load().hardware.pad_sensitivity, 50); // unchanged default
@@ -156,7 +173,7 @@ mod tests {
 
         let delta: PartialSettings =
             toml::from_str("[buttons.play.press]\ntype = \"cc\"\ncc = 99\n").unwrap();
-        let effects = apply_delta(&handle, delta, &path).unwrap();
+        let effects = apply_delta(&handle, delta, &path, true).unwrap();
 
         assert_eq!(effects, SideEffects::default());
         let reloaded = crate::settings::persist::load_xdg(&path).unwrap();
