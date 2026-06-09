@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use driver::shared_settings::new_shared;
 use hidapi::{HidError, HidResult};
 use maschine_library::hid::HidIo;
 
@@ -77,7 +78,7 @@ fn run_with_device_blanks_lights_on_shutdown() {
     let hid = CapturingHid::default();
     let shutdown = AtomicBool::new(true);
 
-    driver::app::run_with_device(test_settings(), &hid, &shutdown).unwrap();
+    driver::app::run_with_device(new_shared(test_settings()), &hid, &shutdown).unwrap();
 
     assert_last_lights_report_blank(&hid.writes.lock().unwrap());
 }
@@ -97,8 +98,9 @@ fn run_with_device_treats_read_error_as_graceful_exit_when_shutdown_requested() 
     let result = std::thread::scope(|s| {
         let shutdown_ref = &shutdown;
         let hid_ref = &hid;
-        let handle =
-            s.spawn(move || driver::app::run_with_device(test_settings(), hid_ref, shutdown_ref));
+        let handle = s.spawn(move || {
+            driver::app::run_with_device(new_shared(test_settings()), hid_ref, shutdown_ref)
+        });
         shutdown_ref.store(true, Ordering::Relaxed);
         handle.join().unwrap()
     });

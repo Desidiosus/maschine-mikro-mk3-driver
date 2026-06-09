@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use maschine_library::lights::Brightness;
 use midir::os::unix::{VirtualInput, VirtualOutput};
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
@@ -11,6 +13,7 @@ use crate::settings::actions::{
     SliderPositionAction, SliderTouchAction,
 };
 use crate::settings::{MidiChannel, Settings};
+use crate::shared_settings::{SharedSettings, new_shared};
 use crate::soft_off::SoftOffSync;
 use crate::virmidi_bridge::try_autoconnect_virmidi;
 
@@ -27,33 +30,34 @@ impl MidiSink for MidiOutputConnection {
 }
 
 pub struct MidiBackend<S: MidiSink = MidiOutputConnection> {
-    settings: Settings,
+    settings: SharedSettings,
     sink: S,
     _input: Option<MidiInputConnection<DeviceOutputs>>,
 }
 
 impl MidiBackend {
     pub fn new(
-        settings: &Settings,
+        settings: &SharedSettings,
         outputs: &DeviceOutputs,
         soft_off: SoftOffSync,
         runtime_state: crate::runtime_state::RuntimeState,
     ) -> DriverResult<Self> {
-        let sink = MidiOutput::new(&settings.global.client_name)
+        let snapshot = settings.load();
+        let sink = MidiOutput::new(&snapshot.global.client_name)
             .map_err(|err| DriverError::Midi(format!("couldn't open MIDI output: {err}")))?
-            .create_virtual(&settings.global.port_name)
+            .create_virtual(&snapshot.global.port_name)
             .map_err(|err| {
                 DriverError::Midi(format!("couldn't create virtual output port: {err}"))
             })?;
 
         let input = create_midi_input(settings, outputs.clone(), soft_off, runtime_state)?;
 
-        if settings.bridge.midi_bridge_virmidi && settings.bridge.autoconnect_virmidi {
-            try_autoconnect_virmidi(settings)?;
+        if snapshot.bridge.midi_bridge_virmidi && snapshot.bridge.autoconnect_virmidi {
+            try_autoconnect_virmidi(&snapshot)?;
         }
 
         Ok(Self {
-            settings: settings.clone(),
+            settings: Arc::clone(settings),
             sink,
             _input: Some(input),
         })
@@ -65,7 +69,7 @@ impl<S: MidiSink> MidiBackend<S> {
     /// MIDI input port. Intended for tests.
     pub fn with_sink(settings: Settings, sink: S) -> Self {
         Self {
-            settings,
+            settings: new_shared(settings),
             sink,
             _input: None,
         }
@@ -80,7 +84,8 @@ impl<S: MidiSink> MidiBackend<S> {
         event: &ControlEvent,
         rt: &crate::runtime_state::RuntimeState,
     ) -> DriverResult<()> {
-        match event_to_midi_bytes(event, &self.settings, rt) {
+        let snapshot = self.settings.load();
+        match event_to_midi_bytes(event, &snapshot, rt) {
             Some(bytes) => self.sink.send(&bytes),
             None => Ok(()),
         }
@@ -88,19 +93,22 @@ impl<S: MidiSink> MidiBackend<S> {
 }
 
 fn create_midi_input(
-    settings: &Settings,
+    settings: &SharedSettings,
     outputs: DeviceOutputs,
     soft_off: SoftOffSync,
     runtime_state: crate::runtime_state::RuntimeState,
 ) -> DriverResult<MidiInputConnection<DeviceOutputs>> {
-    let settings_clone = settings.clone();
+    let settings_handle = Arc::clone(settings);
     let runtime_state_clone = runtime_state.clone();
-    let client_name = format!("{} In", settings.global.client_name);
+    let snapshot = settings.load();
+    let client_name = format!("{} In", snapshot.global.client_name);
+    let port_name_in = snapshot.global.port_name_in.clone();
+    drop(snapshot);
 
     MidiInput::new(&client_name)
         .map_err(|err| DriverError::Midi(format!("couldn't open MIDI input: {err}")))?
         .create_virtual(
-            &settings.global.port_name_in,
+            &port_name_in,
             move |_timestamp, message, outputs| {
                 let _guard = soft_off.lock();
                 if soft_off.is_active() {
@@ -109,7 +117,7 @@ fn create_midi_input(
                 apply_incoming_midi_message(
                     message,
                     outputs,
-                    &settings_clone,
+                    &settings_handle.load(),
                     &runtime_state_clone,
                 );
             },

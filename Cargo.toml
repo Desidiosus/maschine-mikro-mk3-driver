@@ -11,6 +11,7 @@ authors = ["Viktor Rudnev <me@vrudnev.xyz>"]
 maschine_library = { path = "crates/maschine_library" }
 settings = { path = "crates/settings" }
 protocol = { path = "crates/protocol" }
+arc-swap = "1"
 ciborium = "0.2"
 hidapi = { version = "2.6.5" }
 num = { version = "0.4.3" }

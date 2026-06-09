@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use hidapi::{HidApi, HidDevice};
+use hidapi::HidApi;
 use maschine_library::controls::Buttons;
 use maschine_library::hid::HidIo;
 use maschine_library::lights::Brightness;
@@ -19,6 +19,7 @@ use crate::hid::{ControlState, decode_packet_with_curve};
 use crate::outputs::DeviceOutputs;
 use crate::self_test::self_test;
 use crate::settings::Settings;
+use crate::shared_settings::{SharedSettings, new_shared};
 use crate::soft_off::{SoftOffOutcome, SoftOffState, SoftOffSync, blank_outputs};
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -49,31 +50,31 @@ pub fn run(settings: Settings) -> DriverResult<()> {
     let api = HidApi::new()?;
     let device = api.open(USB_VID, USB_PID)?;
     device.set_blocking_mode(false)?;
-    apply_startup_preferences(&device, &settings)?;
+    let shared = new_shared(settings);
+    apply_startup_preferences(&device, &shared.load())?;
 
     install_shutdown_signal_handlers()?;
 
-    run_with_device(settings, &device, &SHUTDOWN_REQUESTED)
+    run_with_device(shared, &device, &SHUTDOWN_REQUESTED)
 }
 
-fn apply_startup_preferences(device: &HidDevice, settings: &Settings) -> DriverResult<()> {
+fn apply_startup_preferences<D: HidIo>(device: &D, settings: &Settings) -> DriverResult<()> {
     set_pad_sensitivity(device, settings.hardware.pad_sensitivity)?;
     set_display_contrast(device, settings.hardware.display_contrast)?;
     Ok(())
 }
 
 pub fn run_with_device<D: HidIo>(
-    settings: Settings,
+    settings: SharedSettings,
     device: &D,
     shutdown_requested: &AtomicBool,
 ) -> DriverResult<()> {
-    settings.validate().map_err(DriverError::Settings)?;
-    let pad_velocity_curve = settings.hardware.pad_velocity_curve;
+    settings.load().validate().map_err(DriverError::Settings)?;
 
     run_startup_self_test(device)?;
 
     let outputs = DeviceOutputs::new();
-    prepare_startup_outputs(&outputs, &settings);
+    prepare_startup_outputs(&outputs, &settings.load());
     outputs.flush(device)?;
 
     let mut soft_off = SoftOffState::new(SoftOffSync::new());
@@ -84,10 +85,13 @@ pub fn run_with_device<D: HidIo>(
     let mut state = ControlState::new();
     let mut buf = [0u8; 64];
     let mut slider_released_at: Option<Instant> = None;
-    let auto_off = settings.slider.led.auto_off_ms;
-    let auto_off_color = settings.slider.led.color;
 
     while !shutdown_requested.load(Ordering::Relaxed) {
+        let snapshot = settings.load();
+        let pad_velocity_curve = snapshot.hardware.pad_velocity_curve;
+        let auto_off = snapshot.slider.led.auto_off_ms;
+        let auto_off_color = snapshot.slider.led.color;
+
         buf.fill(0);
         let size = match device.read_timeout(&mut buf, 1) {
             Ok(s) => s,
@@ -114,7 +118,7 @@ pub fn run_with_device<D: HidIo>(
                     }
                     _ => {}
                 }
-                apply_local_output_feedback(&outputs, &settings, &event)?;
+                apply_local_output_feedback(&outputs, &snapshot, &event)?;
                 backend.handle_event(&event, &runtime_state)?;
             }
         }
@@ -145,7 +149,7 @@ fn run_startup_self_test(device: &impl HidIo) -> DriverResult<()> {
     Ok(())
 }
 
-fn initialize_button_backlight(outputs: &DeviceOutputs, settings: &Settings) {
+pub(crate) fn initialize_button_backlight(outputs: &DeviceOutputs, settings: &Settings) {
     if !settings.hardware.backlight_buttons {
         return;
     }
