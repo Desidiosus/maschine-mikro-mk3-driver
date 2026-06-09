@@ -40,6 +40,10 @@ impl HidIo for CapturingHid {
         self.writes.lock().unwrap().push(data.to_vec());
         Ok(data.len())
     }
+
+    fn send_feature_report(&self, _data: &[u8]) -> HidResult<()> {
+        Ok(())
+    }
 }
 
 fn test_settings() -> driver::settings::Settings {

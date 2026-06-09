@@ -439,6 +439,9 @@ mod tests {
             fn read_timeout(&self, _buf: &mut [u8], _ms: i32) -> hidapi::HidResult<usize> {
                 Ok(0)
             }
+            fn send_feature_report(&self, _data: &[u8]) -> hidapi::HidResult<()> {
+                Ok(())
+            }
         }
         let cap = Capture(RefCell::new(Vec::new()));
         lights.write(&cap).unwrap();
