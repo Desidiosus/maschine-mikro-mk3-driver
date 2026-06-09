@@ -231,6 +231,19 @@ fn run_startup_self_test(device: &impl HidIo) -> DriverResult<()> {
     Ok(())
 }
 
+fn for_each_backlit_button(outputs: &DeviceOutputs, mut f: impl FnMut(&mut Lights, Buttons)) {
+    outputs.with_lights_mut(|lights| {
+        for idx in 0..41 {
+            let Some(button) = Buttons::from_usize(idx) else {
+                continue;
+            };
+            if lights.button_has_light(button) {
+                f(lights, button);
+            }
+        }
+    });
+}
+
 pub(crate) fn initialize_button_backlight(outputs: &DeviceOutputs, settings: &Settings) {
     if !settings.hardware.backlight_buttons {
         return;
@@ -238,20 +251,57 @@ pub(crate) fn initialize_button_backlight(outputs: &DeviceOutputs, settings: &Se
 
     let brightness = settings.hardware.backlight_brightness.as_light_brightness();
 
-    outputs.with_lights_mut(|lights| {
-        for idx in 0..41 {
-            let Some(button) = Buttons::from_usize(idx) else {
-                continue;
-            };
-
-            if lights.button_has_light(button) && lights.get_button(button) == Brightness::Off {
-                lights.set_button(button, brightness);
-            }
+    for_each_backlit_button(outputs, |lights, button| {
+        if lights.get_button(button) == Brightness::Off {
+            lights.set_button(button, brightness);
         }
     });
+}
+
+/// Re-apply the button-backlight setting to ALL backlight-capable buttons:
+/// the configured brightness when enabled, else `Off`. Used on live settings
+/// changes (unlike `initialize_button_backlight`, which only lifts already-Off
+/// buttons at startup). This is a blunt refresh — it may briefly override
+/// DAW-driven LED state until the next feedback message.
+pub(crate) fn refresh_button_backlight(outputs: &DeviceOutputs, settings: &Settings) {
+    let level = if settings.hardware.backlight_buttons {
+        settings.hardware.backlight_brightness.as_light_brightness()
+    } else {
+        Brightness::Off
+    };
+    for_each_backlit_button(outputs, |lights, button| lights.set_button(button, level));
 }
 
 pub fn prepare_startup_outputs(outputs: &DeviceOutputs, settings: &Settings) {
     outputs.with_screen_mut(|screen| render_centered_text(screen, "MIDI MODE"));
     initialize_button_backlight(outputs, settings);
+}
+
+#[cfg(test)]
+mod backlight_tests {
+    use super::*;
+    use maschine_library::controls::Buttons;
+    use maschine_library::lights::Brightness;
+
+    #[test]
+    fn refresh_sets_all_backlit_buttons_to_level_then_off() {
+        let outputs = DeviceOutputs::new();
+        let mut settings = Settings::default();
+        settings.hardware.backlight_buttons = true;
+        settings.hardware.backlight_brightness = crate::settings::BacklightBrightness::Bright;
+        refresh_button_backlight(&outputs, &settings);
+        outputs.with_lights_mut(|l| {
+            if l.button_has_light(Buttons::Play) {
+                assert_eq!(l.get_button(Buttons::Play), Brightness::Bright);
+            }
+        });
+
+        settings.hardware.backlight_buttons = false;
+        refresh_button_backlight(&outputs, &settings);
+        outputs.with_lights_mut(|l| {
+            if l.button_has_light(Buttons::Play) {
+                assert_eq!(l.get_button(Buttons::Play), Brightness::Off);
+            }
+        });
+    }
 }

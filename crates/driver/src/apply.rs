@@ -18,9 +18,8 @@ pub struct SideEffects {
     pub pad_sensitivity: Option<u8>,
     /// New display contrast to re-push, if the delta changed it.
     pub display_contrast: Option<u8>,
-    /// Button backlight settings changed → re-initialize backlight.
-    /// Re-enable-only: turning backlight off or lowering brightness takes effect
-    /// on restart, not live.
+    /// Button backlight settings changed → re-apply the backlight level to all
+    /// backlight-capable buttons (or turn them off when disabled).
     pub reinit_backlight: bool,
 }
 
@@ -79,7 +78,7 @@ pub fn apply_side_effects<D: HidIo>(
         set_display_contrast(device, value)?;
     }
     if effects.reinit_backlight {
-        crate::app::initialize_button_backlight(outputs, settings);
+        crate::app::refresh_button_backlight(outputs, settings);
     }
     Ok(())
 }
