@@ -1,3 +1,5 @@
+use std::io::{Read, Write};
+
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -11,6 +13,8 @@ pub enum FrameError {
     Decode(String),
     /// The declared payload length exceeds `MAX_FRAME_LEN`.
     TooLong(u32),
+    /// Underlying reader/writer I/O error.
+    Io(String),
 }
 
 impl std::fmt::Display for FrameError {
@@ -19,6 +23,7 @@ impl std::fmt::Display for FrameError {
             FrameError::Encode(e) => write!(f, "frame encode error: {e}"),
             FrameError::Decode(e) => write!(f, "frame decode error: {e}"),
             FrameError::TooLong(n) => write!(f, "frame length {n} exceeds MAX_FRAME_LEN"),
+            FrameError::Io(e) => write!(f, "frame io error: {e}"),
         }
     }
 }
@@ -53,6 +58,15 @@ pub fn decode_frame<T: DeserializeOwned>(buf: &[u8]) -> Result<Option<(T, usize)
     if len > MAX_FRAME_LEN {
         return Err(FrameError::TooLong(len));
     }
+    if len == 0 {
+        // `encode_frame` never emits a zero-length payload (CBOR is always >= 1
+        // byte). Skip a stray empty frame and decode the next one rather than
+        // failing the whole stream on a decode error.
+        return match decode_frame(&buf[4..])? {
+            Some((value, consumed)) => Ok(Some((value, consumed + 4))),
+            None => Ok(None),
+        };
+    }
     let len = len as usize;
     let end = 4 + len;
     if buf.len() < end {
@@ -61,6 +75,46 @@ pub fn decode_frame<T: DeserializeOwned>(buf: &[u8]) -> Result<Option<(T, usize)
     let value =
         ciborium::from_reader(&buf[4..end]).map_err(|e| FrameError::Decode(e.to_string()))?;
     Ok(Some((value, end)))
+}
+
+/// Write `value` as a length-prefixed CBOR frame to a blocking writer.
+pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, value: &T) -> Result<(), FrameError> {
+    let frame = encode_frame(value)?;
+    writer
+        .write_all(&frame)
+        .map_err(|e| FrameError::Io(e.to_string()))?;
+    writer.flush().map_err(|e| FrameError::Io(e.to_string()))
+}
+
+/// Read one length-prefixed CBOR frame from a blocking reader.
+///
+/// Returns `Ok(None)` on a clean EOF before any byte of a frame (peer closed).
+pub fn read_frame<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<Option<T>, FrameError> {
+    loop {
+        let mut len_buf = [0u8; 4];
+        match reader.read_exact(&mut len_buf) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(e) => return Err(FrameError::Io(e.to_string())),
+        }
+        let len = u32::from_le_bytes(len_buf);
+        if len > MAX_FRAME_LEN {
+            return Err(FrameError::TooLong(len));
+        }
+        if len == 0 {
+            // `encode_frame` never emits a zero-length payload (CBOR is always
+            // >= 1 byte). Skip a stray empty frame and read the next one rather
+            // than tearing the connection down on a decode error.
+            continue;
+        }
+        let mut payload = vec![0u8; len as usize];
+        reader
+            .read_exact(&mut payload)
+            .map_err(|e| FrameError::Io(e.to_string()))?;
+        let value =
+            ciborium::from_reader(&payload[..]).map_err(|e| FrameError::Decode(e.to_string()))?;
+        return Ok(Some(value));
+    }
 }
 
 #[cfg(test)]
@@ -113,5 +167,59 @@ mod tests {
         buf.extend_from_slice(&[0u8; 8]);
         let res: Result<Option<(GuiToDriver, usize)>, FrameError> = decode_frame(&buf);
         assert!(matches!(res, Err(FrameError::TooLong(_))));
+    }
+
+    #[test]
+    fn write_then_read_frame_round_trips_over_a_cursor() {
+        use std::io::Cursor;
+        let msg = GuiToDriver::SubscribeEvents;
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &msg).unwrap();
+        let mut cursor = Cursor::new(buf);
+        let back: GuiToDriver = read_frame(&mut cursor).unwrap().unwrap();
+        assert_eq!(back, msg);
+    }
+
+    #[test]
+    fn read_frame_returns_none_on_clean_eof() {
+        use std::io::Cursor;
+        let mut empty = Cursor::new(Vec::<u8>::new());
+        let res: Option<GuiToDriver> = read_frame(&mut empty).unwrap();
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn read_frame_skips_a_stray_zero_length_frame() {
+        use std::io::Cursor;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0u32.to_le_bytes()); // stray empty frame
+        write_frame(&mut buf, &GuiToDriver::GetSettings).unwrap();
+        let mut cursor = Cursor::new(buf);
+        let back: GuiToDriver = read_frame(&mut cursor).unwrap().unwrap();
+        assert_eq!(back, GuiToDriver::GetSettings);
+    }
+
+    #[test]
+    fn decode_skips_a_stray_zero_length_frame() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0u32.to_le_bytes()); // stray empty frame
+        buf.extend_from_slice(&encode_frame(&GuiToDriver::SubscribeEvents).unwrap());
+        let total = buf.len();
+        let (msg, consumed): (GuiToDriver, usize) = decode_frame(&buf).unwrap().unwrap();
+        assert_eq!(msg, GuiToDriver::SubscribeEvents);
+        assert_eq!(consumed, total);
+    }
+
+    #[test]
+    fn read_frame_reads_two_consecutive_frames() {
+        use std::io::Cursor;
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &GuiToDriver::GetSettings).unwrap();
+        write_frame(&mut buf, &GuiToDriver::SubscribeEvents).unwrap();
+        let mut cursor = Cursor::new(buf);
+        let a: GuiToDriver = read_frame(&mut cursor).unwrap().unwrap();
+        let b: GuiToDriver = read_frame(&mut cursor).unwrap().unwrap();
+        assert_eq!(a, GuiToDriver::GetSettings);
+        assert_eq!(b, GuiToDriver::SubscribeEvents);
     }
 }
