@@ -273,8 +273,17 @@ impl Settings {
         self
     }
 
+    /// Sparse overrides of `self` relative to `Settings::default()`.
     pub fn diff_from_defaults(&self) -> PartialSettings {
-        let defaults = Settings::default();
+        self.diff_from(&Settings::default())
+    }
+
+    /// Sparse overrides of `self` relative to an arbitrary `base`. Used to
+    /// persist only the GUI-made changes layered on top of a read-only `-c`
+    /// seed (`base = defaults ∘ -c`), so the seed shows through for untouched
+    /// keys. `diff_from(&Settings::default())` is `diff_from_defaults`.
+    pub fn diff_from(&self, base: &Settings) -> PartialSettings {
+        let defaults = base;
         let mut out = PartialSettings::default();
 
         let mut g = PartialGlobalSettings::default();
@@ -485,6 +494,27 @@ midi_channel = 5
         let partial = s.diff_from_defaults();
         let round_tripped = Settings::default().merge_overrides(partial);
         assert_eq!(round_tripped, s);
+    }
+
+    #[test]
+    fn diff_from_base_captures_only_changes_relative_to_base() {
+        // base = defaults with a custom global channel (stands in for a `-c` seed).
+        let mut base = Settings::default();
+        base.global.midi_channel = MidiChannel::try_from(7).unwrap();
+
+        // live = base plus one pad-note change. The base's channel must NOT
+        // appear in the diff (it's part of the seed, not a GUI edit).
+        let mut live = base.clone();
+        live.pads[2].hit = PadHitAction::Note {
+            channel: None,
+            note: 61,
+        };
+
+        let diff = live.diff_from(&base);
+        assert!(diff.global.is_none(), "unchanged-vs-base global is omitted");
+        assert!(diff.pads.is_some(), "changed pad is captured");
+        // Applying the diff onto the base reconstructs the live settings.
+        assert_eq!(base.merge_overrides(diff), live);
     }
 
     #[test]
