@@ -8,6 +8,7 @@ default-run = "driver"
 [dependencies]
 maschine_library.workspace = true
 settings.workspace = true
+protocol.workspace = true
 arc-swap.workspace = true
 hidapi.workspace = true
 num.workspace = true
