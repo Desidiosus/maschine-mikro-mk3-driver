@@ -1,33 +1,4 @@
-#[allow(dead_code)]
-const VALID_PAD_VELOCITY_CURVE_NAMES: &[&str] = &[
-    "soft3", "soft2", "soft1", "linear", "hard1", "hard2", "hard3",
-];
-
 pub use ::settings::PadVelocityCurve;
-
-#[allow(dead_code)]
-pub(crate) fn parse_pad_velocity_curve(value: &str) -> Option<PadVelocityCurve> {
-    match normalize_pad_velocity_curve(value).as_str() {
-        "soft3" => Some(PadVelocityCurve::Soft3),
-        "soft2" => Some(PadVelocityCurve::Soft2),
-        "soft1" => Some(PadVelocityCurve::Soft1),
-        "linear" => Some(PadVelocityCurve::Linear),
-        "hard1" => Some(PadVelocityCurve::Hard1),
-        "hard2" => Some(PadVelocityCurve::Hard2),
-        "hard3" => Some(PadVelocityCurve::Hard3),
-        _ => None,
-    }
-}
-
-#[allow(dead_code)]
-pub(crate) fn parse_pad_velocity_curve_setting(value: &str) -> Result<PadVelocityCurve, String> {
-    parse_pad_velocity_curve(value).ok_or_else(|| {
-        format!(
-            "invalid pad_velocity_curve=\"{value}\" (expected one of: {})",
-            VALID_PAD_VELOCITY_CURVE_NAMES.join(", ")
-        )
-    })
-}
 
 pub(crate) fn raw_pad_velocity(value: u16) -> u8 {
     if value == 0 {
@@ -61,62 +32,9 @@ pub(crate) fn apply_pad_velocity_curve(velocity: u8, curve: PadVelocityCurve) ->
         .clamp(1.0, 127.0) as u8
 }
 
-#[allow(dead_code)]
-fn normalize_pad_velocity_curve(value: &str) -> String {
-    value
-        .chars()
-        .filter(|c| !matches!(c, ' ' | '_' | '-'))
-        .flat_map(char::to_lowercase)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        PadVelocityCurve, apply_pad_velocity_curve, pad_velocity, parse_pad_velocity_curve,
-        parse_pad_velocity_curve_setting, raw_pad_velocity,
-    };
-
-    #[test]
-    fn parses_pad_velocity_curve_names() {
-        assert_eq!(
-            parse_pad_velocity_curve("soft3"),
-            Some(PadVelocityCurve::Soft3)
-        );
-        assert_eq!(
-            parse_pad_velocity_curve("Soft 2"),
-            Some(PadVelocityCurve::Soft2)
-        );
-        assert_eq!(
-            parse_pad_velocity_curve("soft-1"),
-            Some(PadVelocityCurve::Soft1)
-        );
-        assert_eq!(
-            parse_pad_velocity_curve("linear"),
-            Some(PadVelocityCurve::Linear)
-        );
-        assert_eq!(
-            parse_pad_velocity_curve("hard_1"),
-            Some(PadVelocityCurve::Hard1)
-        );
-        assert_eq!(
-            parse_pad_velocity_curve("Hard 2"),
-            Some(PadVelocityCurve::Hard2)
-        );
-        assert_eq!(
-            parse_pad_velocity_curve("hard3"),
-            Some(PadVelocityCurve::Hard3)
-        );
-        assert_eq!(parse_pad_velocity_curve("loud"), None);
-    }
-
-    #[test]
-    fn parse_setting_error_lists_valid_pad_velocity_curve_names() {
-        assert_eq!(
-            parse_pad_velocity_curve_setting("flat").unwrap_err(),
-            "invalid pad_velocity_curve=\"flat\" (expected one of: soft3, soft2, soft1, linear, hard1, hard2, hard3)"
-        );
-    }
+    use super::{PadVelocityCurve, apply_pad_velocity_curve, pad_velocity, raw_pad_velocity};
 
     #[test]
     fn raw_velocity_clamps_to_existing_hid_mapping() {

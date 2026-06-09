@@ -283,12 +283,11 @@ impl Settings {
     /// seed (`base = defaults ∘ -c`), so the seed shows through for untouched
     /// keys. `diff_from(&Settings::default())` is `diff_from_defaults`.
     pub fn diff_from(&self, base: &Settings) -> PartialSettings {
-        let defaults = base;
         let mut out = PartialSettings::default();
 
         let mut g = PartialGlobalSettings::default();
         diff_section!(
-            self.global, defaults.global, g;
+            self.global, base.global, g;
             copy: { midi_channel };
             clone: { client_name, port_name, port_name_in };
         );
@@ -298,7 +297,7 @@ impl Settings {
 
         let mut h = PartialHardwareSettings::default();
         diff_section!(
-            self.hardware, defaults.hardware, h;
+            self.hardware, base.hardware, h;
             copy: {
                 pad_sensitivity,
                 display_contrast,
@@ -314,7 +313,7 @@ impl Settings {
 
         let mut b = PartialBridgeSettings::default();
         diff_section!(
-            self.bridge, defaults.bridge, b;
+            self.bridge, base.bridge, b;
             copy: { midi_bridge_virmidi, autoconnect_virmidi, virmidi_port };
             clone: { virmidi_client_name };
         );
@@ -327,7 +326,7 @@ impl Settings {
         for (idx, pad) in self.pads.iter().enumerate() {
             let mut p = PartialPadConfig::default();
             diff_section!(
-                pad, defaults.pads[idx], p;
+                pad, base.pads[idx], p;
                 copy: {};
                 clone: { hit, pressure };
             );
@@ -343,7 +342,7 @@ impl Settings {
         let mut buttons: [Option<PartialButtonConfig>; 41] = std::array::from_fn(|_| None);
         let mut any_button = false;
         for (idx, slot) in buttons.iter_mut().enumerate() {
-            if self.buttons[idx].press != defaults.buttons[idx].press {
+            if self.buttons[idx].press != base.buttons[idx].press {
                 *slot = Some(PartialButtonConfig {
                     press: Some(self.buttons[idx].press.clone()),
                 });
@@ -354,7 +353,7 @@ impl Settings {
             out.buttons = Some(buttons);
         }
 
-        if self.encoder.turn != defaults.encoder.turn {
+        if self.encoder.turn != base.encoder.turn {
             out.encoder = Some(PartialEncoderConfig {
                 turn: Some(self.encoder.turn.clone()),
             });
@@ -362,13 +361,13 @@ impl Settings {
 
         let mut s = PartialSliderConfig::default();
         diff_section!(
-            self.slider, defaults.slider, s;
+            self.slider, base.slider, s;
             copy: {};
             clone: { position, touch };
         );
         let mut led = PartialSliderLedSettings::default();
         diff_section!(
-            self.slider.led, defaults.slider.led, led;
+            self.slider.led, base.slider.led, led;
             copy: { mode, color, stylized, auto_off_ms };
             clone: {};
         );

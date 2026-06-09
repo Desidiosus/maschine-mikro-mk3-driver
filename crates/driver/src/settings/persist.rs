@@ -64,18 +64,6 @@ fn write_atomically(path: &Path, contents: &str) -> Result<(), String> {
     })
 }
 
-fn merge_from_source(
-    source: config::File<config::FileSourceFile, config::FileFormat>,
-) -> Result<Settings, String> {
-    let partial: PartialSettings = config::Config::builder()
-        .add_source(source)
-        .build()
-        .map_err(|err| format!("Can't create settings: {err}"))?
-        .try_deserialize()
-        .map_err(|err| format!("Can't parse settings: {err}"))?;
-    Ok(Settings::default().merge_overrides(partial))
-}
-
 /// Read a TOML file into a `PartialSettings`. The format is pinned to TOML (not
 /// inferred from the extension) so load and save agree on the same file for any
 /// `-c` argument.
@@ -143,13 +131,7 @@ pub fn load_config(cli_config: Option<&str>) -> Result<LoadedConfig, String> {
 }
 
 pub fn load_xdg(xdg_path: &Path) -> Result<Settings, String> {
-    if xdg_path.exists() {
-        return merge_from_source(config::File::from(xdg_path.to_path_buf()));
-    }
-    if let Err(err) = write_atomically(xdg_path, FIRST_RUN_STUB) {
-        eprintln!("warning: could not write config stub to {xdg_path:?}: {err}");
-    }
-    Ok(Settings::default())
+    load_config_with_xdg(None, xdg_path).map(|c| c.settings)
 }
 
 /// Serialize `settings`' sparse overrides relative to `base` to TOML and write
