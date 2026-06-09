@@ -67,6 +67,11 @@ impl MidiChannel {
     pub const fn as_u8(self) -> u8 {
         self.0
     }
+
+    /// Convert an optional stored channel byte (0..=15) into `Option<MidiChannel>`.
+    pub fn try_from_opt(v: u8) -> Option<MidiChannel> {
+        MidiChannel::try_from(v).ok()
+    }
 }
 
 impl TryFrom<u8> for MidiChannel {
@@ -175,6 +180,13 @@ impl Settings {
 mod validate_tests {
     use super::*;
     use crate::actions::CcValueMode;
+
+    #[test]
+    fn midi_channel_try_from_opt_clamps_range() {
+        assert!(crate::MidiChannel::try_from_opt(0).is_some());
+        assert!(crate::MidiChannel::try_from_opt(15).is_some());
+        assert!(crate::MidiChannel::try_from_opt(16).is_none());
+    }
 
     fn settings_with_encoder_mode(mode: CcValueMode) -> Settings {
         let mut s = Settings::default();
