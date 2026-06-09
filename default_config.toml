@@ -9,7 +9,7 @@
 # first run) or by passing `-c <path>` on the CLI.
 #
 # Pads keyed 1..16, matching the physical pad numbers labelled on the device:
-# 1 = bottom-right, 16 = top-left.
+# 1 = bottom-left, 16 = top-right.
 # Buttons keyed by snake_case names from the `Buttons` enum:
 #   maschine, star, browse, volume, swing, tempo, plugin, sampling,
 #   left, right, pitch, mod, perform, notes, group, auto,

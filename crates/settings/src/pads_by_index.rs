@@ -9,9 +9,9 @@ use crate::actions::PadConfig;
 const PAD_COUNT: usize = 16;
 
 /// TOML key for `[pads.N]` is the physical pad number labelled on the device
-/// (1 = bottom-right, 16 = top-left). Internal indexing keeps the device's
-/// native byte ordering (0..=15). Map between the two.
-pub(crate) const fn config_key_to_internal(toml_key: usize) -> usize {
+/// (1 = bottom-left, 4 = bottom-right, 13 = top-left, 16 = top-right). Internal
+/// indexing keeps the device's native byte ordering (0..=15). Map between the two.
+pub const fn config_key_to_internal(toml_key: usize) -> usize {
     PAD_COUNT - toml_key
 }
 
