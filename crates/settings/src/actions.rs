@@ -141,6 +141,22 @@ pub enum SliderLedMode {
     Dot,
 }
 
+impl SliderLedMode {
+    pub const ALL: [SliderLedMode; 3] =
+        [SliderLedMode::Bar, SliderLedMode::Pan, SliderLedMode::Dot];
+}
+
+impl std::fmt::Display for SliderLedMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            SliderLedMode::Bar => "Bar",
+            SliderLedMode::Pan => "Pan",
+            SliderLedMode::Dot => "Dot",
+        };
+        f.write_str(s)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliderLedSettings {
     pub mode: SliderLedMode,
@@ -278,5 +294,14 @@ cc = 1
         let s = toml::to_string(&action).unwrap();
         let back: EncoderTurnAction = toml::from_str(&s).unwrap();
         assert_eq!(back, action);
+    }
+
+    #[test]
+    fn slider_led_mode_labels_are_unique_and_nonempty() {
+        use super::SliderLedMode;
+        let labels: Vec<String> = SliderLedMode::ALL.iter().map(|m| m.to_string()).collect();
+        assert!(labels.iter().all(|l| !l.is_empty()), "{labels:?}");
+        let unique: std::collections::HashSet<_> = labels.iter().collect();
+        assert_eq!(unique.len(), labels.len(), "duplicate label: {labels:?}");
     }
 }
