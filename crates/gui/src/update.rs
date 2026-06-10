@@ -5,10 +5,10 @@ use maschine_library::controls::Buttons;
 use std::sync::Arc;
 
 use crate::app::State;
-use crate::device::view::control_index_valid;
 use crate::message::Message;
 
 pub fn update(state: &mut State, message: Message) -> Task<Message> {
+    use crate::device::view::control_index_valid;
     use protocol::{DriverToGui, GuiToDriver};
 
     match message {
@@ -53,7 +53,15 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
             }
         }
-        Message::Frame(DriverToGui::ControlActuated { .. }) => {}
+        Message::Frame(DriverToGui::ControlActuated { control }) => {
+            // Guard against an out-of-range index from the driver: the
+            // inspector indexes fixed-size arrays with it, so a stray value
+            // would panic the GUI.
+            if state.touch_select && control_index_valid(control) {
+                state.reset_assign_edit();
+                state.selection = vec![select_target(state, control)];
+            }
+        }
         Message::Frame(DriverToGui::MidiActivity { dir }) => match dir {
             protocol::MidiDir::In => state.last_in = Some(std::time::Instant::now()),
             protocol::MidiDir::Out => state.last_out = Some(std::time::Instant::now()),
@@ -73,8 +81,10 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             state.status = format!("error: {err}");
         }
         Message::SelectControl(control) => {
-            state.selection = vec![control];
-            state.reset_assign_edit();
+            if control_index_valid(control) {
+                state.reset_assign_edit();
+                state.selection = vec![select_target(state, control)];
+            }
         }
         Message::SelectControls(controls) => {
             let filtered: Vec<_> = controls
@@ -346,6 +356,24 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
     }
     Task::none()
 }
+/// Resolve a freshly-selected control to its inspector target. Encoder push/touch
+/// arrive as button slots 39/40 on the wire but are sub-actions of the Encoder;
+/// map them to the Encoder control with the matching tab so they open the encoder
+/// form's Push/Touch tab instead of a generic, unlabeled "Button" inspector.
+fn select_target(state: &mut State, control: protocol::ControlRef) -> protocol::ControlRef {
+    use crate::inspector::assign::forms::AssignTab;
+    match control {
+        protocol::ControlRef::Button(b) if b == Buttons::EncoderPress as u8 => {
+            state.assign_tab = AssignTab::B;
+            protocol::ControlRef::Encoder
+        }
+        protocol::ControlRef::Button(b) if b == Buttons::EncoderTouch as u8 => {
+            state.assign_tab = AssignTab::C;
+            protocol::ControlRef::Encoder
+        }
+        other => other,
+    }
+}
 
 /// Whether two control refs are the same kind (Pad/Button/Encoder/Slider).
 /// Selection is mutually exclusive across kinds, so Ctrl+click only toggles
@@ -581,5 +609,31 @@ mod tests {
             55
         );
         assert!(!state.resync_pending, "resync flag clears once adopted");
+    }
+
+    #[test]
+    fn touch_selecting_encoder_push_or_touch_opens_the_encoder_form() {
+        use crate::inspector::assign::forms::AssignTab;
+        use protocol::ControlRef;
+        let (mut state, _rx) = seeded();
+        state.touch_select = true;
+
+        let _ = update(
+            &mut state,
+            Message::Frame(DriverToGui::ControlActuated {
+                control: ControlRef::Button(Buttons::EncoderPress as u8),
+            }),
+        );
+        assert_eq!(state.selection, vec![ControlRef::Encoder]);
+        assert_eq!(state.assign_tab, AssignTab::B);
+
+        let _ = update(
+            &mut state,
+            Message::Frame(DriverToGui::ControlActuated {
+                control: ControlRef::Button(Buttons::EncoderTouch as u8),
+            }),
+        );
+        assert_eq!(state.selection, vec![ControlRef::Encoder]);
+        assert_eq!(state.assign_tab, AssignTab::C);
     }
 }
