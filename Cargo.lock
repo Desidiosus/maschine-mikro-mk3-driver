@@ -1569,7 +1569,9 @@ dependencies = [
  "maschine_library",
  "protocol",
  "resvg 0.47.0",
+ "serde",
  "settings",
+ "toml 0.8.23",
 ]
 
 [[package]]

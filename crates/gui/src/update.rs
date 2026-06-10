@@ -115,6 +115,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ToggleTouchSelect(on) => {
             state.touch_select = on;
+            state.save_gui_prefs();
         }
         Message::PreviewPadSensitivity(v) => state.send_apply(
             crate::prefs::overrides::hardware_delta(|h| h.pad_sensitivity = Some(v)),
@@ -275,6 +276,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SetAssignTab(tab) => state.assign_tab = tab,
         Message::ToggleShowAllLabels(on) => {
             state.show_all_labels = on;
+            state.save_gui_prefs();
         }
         Message::SetPadHitType(t) => {
             use crate::inspector::assign::forms::PadHitType;

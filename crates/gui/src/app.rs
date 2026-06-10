@@ -71,8 +71,11 @@ impl Default for State {
 
 impl State {
     pub fn new() -> Self {
+        let prefs = crate::prefs::persistence::GuiPrefs::load();
         Self {
             status: "connecting…".to_string(),
+            show_all_labels: prefs.show_all_labels,
+            touch_select: prefs.touch_select,
             ..Self::default()
         }
     }

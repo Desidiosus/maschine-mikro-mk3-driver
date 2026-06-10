@@ -22,6 +22,7 @@ pub mod device {
 }
 pub mod prefs {
     pub mod overrides;
+    pub mod persistence;
     pub mod view;
 }
 pub mod inspector {
