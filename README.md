@@ -460,3 +460,9 @@ MASCHINE, Native Instruments, and NI are trademarks of Native Instruments GmbH.
 This project is an independent, unofficial driver and is not affiliated with,
 sponsored by, or endorsed by Native Instruments. Product and company names are
 used only to identify the hardware this driver targets.
+
+## Third-party assets
+
+The toolbar icons (USB and settings) and the control icons in the device diagram
+are from [Google Material Symbols](https://fonts.google.com/icons), licensed under
+the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
