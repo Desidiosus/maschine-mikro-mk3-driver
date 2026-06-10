@@ -3,6 +3,7 @@
 use std::sync::mpsc::Sender;
 
 use protocol::{DriverToGui, GuiToDriver};
+use settings::{BacklightBrightness, PadVelocityCurve};
 
 use crate::inspector::assign::forms::{
     AssignTab, CcType, EncoderModeKind, PadHitType, PadPressType, SliderTouchKind,
@@ -21,6 +22,18 @@ pub enum Message {
     Tick,
     SelectControl(protocol::ControlRef),
     SelectControls(Vec<protocol::ControlRef>),
+    ToggleTouchSelect(bool),
+    /// Slider drags apply live to the device (`persist:false`) and update the label.
+    PreviewPadSensitivity(u8),
+    PreviewDisplayContrast(u8),
+    /// Slider release persists the current value via `Apply { persist: true }`.
+    SetPadSensitivity,
+    SetDisplayContrast,
+    SetVelocityCurve(PadVelocityCurve),
+    SetBacklightButtons(bool),
+    SetBacklightBrightness(BacklightBrightness),
+    /// Toggle the Preferences overlay.
+    TogglePrefs,
     // Encoder mode + wrap (pick_list / checkbox).
     SetEncoderModeKind(EncoderModeKind),
     SetEncoderWrap(bool),
@@ -48,4 +61,7 @@ pub enum Message {
     SetEncoderPushType(CcType),
     SetEncoderTouchType(CcType),
     SetSliderPositionType(CcType),
+    /// No-op; swallows clicks inside the Preferences panel so they don't reach
+    /// the modal backdrop and close it.
+    Ignore,
 }

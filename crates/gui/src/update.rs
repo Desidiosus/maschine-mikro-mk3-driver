@@ -100,6 +100,49 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                 // Different kind than the current selection: ignored.
             }
         }
+        Message::ToggleTouchSelect(on) => {
+            state.touch_select = on;
+        }
+        Message::PreviewPadSensitivity(v) => state.send_apply(
+            crate::prefs::overrides::hardware_delta(|h| h.pad_sensitivity = Some(v)),
+            false,
+        ),
+        Message::PreviewDisplayContrast(v) => state.send_apply(
+            crate::prefs::overrides::hardware_delta(|h| h.display_contrast = Some(v)),
+            false,
+        ),
+        Message::SetPadSensitivity => {
+            if let Some(s) = &state.settings {
+                let v = s.hardware.pad_sensitivity;
+                state.send_apply(
+                    crate::prefs::overrides::hardware_delta(|h| h.pad_sensitivity = Some(v)),
+                    true,
+                );
+            }
+        }
+        Message::SetDisplayContrast => {
+            if let Some(s) = &state.settings {
+                let v = s.hardware.display_contrast;
+                state.send_apply(
+                    crate::prefs::overrides::hardware_delta(|h| h.display_contrast = Some(v)),
+                    true,
+                );
+            }
+        }
+        Message::SetVelocityCurve(c) => state.send_apply(
+            crate::prefs::overrides::hardware_delta(|h| h.pad_velocity_curve = Some(c)),
+            true,
+        ),
+        Message::SetBacklightButtons(on) => state.send_apply(
+            crate::prefs::overrides::hardware_delta(|h| h.backlight_buttons = Some(on)),
+            true,
+        ),
+        Message::SetBacklightBrightness(b) => state.send_apply(
+            crate::prefs::overrides::hardware_delta(|h| h.backlight_brightness = Some(b)),
+            true,
+        ),
+        Message::TogglePrefs => state.show_prefs = !state.show_prefs,
+        Message::Ignore => {}
         Message::SetEncoderModeKind(kind) => {
             if let Some(prev) = state.encoder_mode() {
                 state.apply_encoder(None, Some(kind.to_mode(&prev)), true);

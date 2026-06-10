@@ -1,6 +1,6 @@
+use iced::widget::{button, checkbox, column, container, row, text};
 use std::sync::Arc;
 
-use iced::widget::{checkbox, column, container, row, text};
 use iced::{Element, Length, Subscription, Task};
 use protocol::{ControlRef, GuiToDriver};
 use settings::{PartialSettings, Settings};
@@ -18,6 +18,8 @@ pub struct State {
     pub(crate) device_connected: bool,
     pub(crate) device: std::sync::Arc<Device>,
     pub(crate) selection: Vec<ControlRef>,
+    pub(crate) touch_select: bool,
+    pub(crate) show_prefs: bool,
     pub(crate) seq: u64,
     /// Highest apply `seq` the driver has acked. A pushed `Settings` snapshot is
     /// adopted as the live view only when this has caught up to `seq` — otherwise
@@ -48,6 +50,8 @@ impl Default for State {
             device_connected: false,
             device: std::sync::Arc::new(Device::load()),
             selection: Vec::new(),
+            touch_select: true,
+            show_prefs: false,
             seq: 0,
             last_acked_seq: 0,
             edit_field: None,
@@ -135,7 +139,13 @@ impl State {
         } else {
             "waiting for settings…"
         };
-        let header = row![text(self.status.clone()), text(presence), text(loaded)].spacing(16);
+        let header = row![
+            text(self.status.clone()),
+            text(presence),
+            text(loaded),
+            button("Preferences").on_press(Message::TogglePrefs),
+        ]
+        .spacing(16);
         let inspector = crate::inspector::view::inspector(self);
 
         let device_pane = container(
@@ -157,9 +167,17 @@ impl State {
         .padding(8);
 
         let main = row![device_pane, inspector].height(Length::Fill);
-        column![header, main].spacing(4).into()
+        let base = column![header, main].spacing(4);
+
+        if self.show_prefs && self.settings.is_some() {
+            return iced::widget::stack![base, crate::prefs::view::prefs_overlay(self)].into();
+        }
+        base.into()
     }
 
+    /// The connection subscription auto-reconnects: `driver_connection` loops
+    /// internally, reconnecting with backoff after the link drops, so the GUI
+    /// recovers when the driver restarts without restarting the GUI itself.
     pub fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             Subscription::run(crate::io::subscription::driver_connection),

@@ -17,6 +17,7 @@ pub mod widget {
 }
 pub mod prefs {
     pub mod overrides;
+    pub mod view;
 }
 pub mod inspector {
     pub mod view;
