@@ -1,4 +1,4 @@
-use iced::widget::{button, checkbox, column, container, row, text};
+use iced::widget::{checkbox, column, container, row};
 use std::sync::Arc;
 
 use iced::{Element, Length, Subscription, Task};
@@ -14,6 +14,9 @@ pub struct State {
     /// Shared so the per-frame device overlay clones a pointer, not the whole
     /// nested settings tree.
     pub(crate) settings: Option<Arc<Settings>>,
+    /// Last time a MIDI In / Out event arrived, for the activity LEDs.
+    pub(crate) last_in: Option<std::time::Instant>,
+    pub(crate) last_out: Option<std::time::Instant>,
     pub(crate) sender: Option<std::sync::mpsc::Sender<GuiToDriver>>,
     pub(crate) device_connected: bool,
     pub(crate) device: std::sync::Arc<Device>,
@@ -46,6 +49,8 @@ impl Default for State {
         Self {
             status: String::new(),
             settings: None,
+            last_in: None,
+            last_out: None,
             sender: None,
             device_connected: false,
             device: std::sync::Arc::new(Device::load()),
@@ -129,23 +134,7 @@ impl State {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let presence = if self.device_connected {
-            "device connected"
-        } else {
-            "no device"
-        };
-        let loaded = if self.settings.is_some() {
-            "settings loaded"
-        } else {
-            "waiting for settings…"
-        };
-        let header = row![
-            text(self.status.clone()),
-            text(presence),
-            text(loaded),
-            button("Preferences").on_press(Message::TogglePrefs),
-        ]
-        .spacing(16);
+        let top_bar = crate::shell::view::top_bar(self);
         let inspector = crate::inspector::view::inspector(self);
 
         let device_pane = container(
@@ -167,7 +156,7 @@ impl State {
         .padding(8);
 
         let main = row![device_pane, inspector].height(Length::Fill);
-        let base = column![header, main].spacing(4);
+        let base = column![top_bar, main].spacing(4);
 
         if self.show_prefs && self.settings.is_some() {
             return iced::widget::stack![base, crate::prefs::view::prefs_overlay(self)].into();
@@ -179,9 +168,24 @@ impl State {
     /// internally, reconnecting with backoff after the link drops, so the GUI
     /// recovers when the driver restarts without restarting the GUI itself.
     pub fn subscription(&self) -> Subscription<Message> {
-        Subscription::batch([
-            Subscription::run(crate::io::subscription::driver_connection),
-            iced::time::every(std::time::Duration::from_millis(120)).map(|_| Message::Tick),
-        ])
+        let mut subs = vec![Subscription::run(
+            crate::io::subscription::driver_connection,
+        )];
+        // Drive the ~8Hz redraw timer only while an activity LED is (or just was)
+        // lit, so an idle GUI does zero periodic redraws. Each MidiActivity
+        // message re-evaluates this subscription and turns the timer back on; the
+        // extra tick interval lets the final off-frame render before it stops.
+        let now = std::time::Instant::now();
+        let recent = |t: Option<std::time::Instant>| {
+            t.is_some_and(|t| {
+                now.duration_since(t).as_millis() < crate::shell::view::ACTIVITY_WINDOW_MS + 120
+            })
+        };
+        if recent(self.last_in) || recent(self.last_out) {
+            subs.push(
+                iced::time::every(std::time::Duration::from_millis(120)).map(|_| Message::Tick),
+            );
+        }
+        Subscription::batch(subs)
     }
 }

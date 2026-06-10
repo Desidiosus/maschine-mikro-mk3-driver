@@ -54,7 +54,10 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::Frame(DriverToGui::ControlActuated { .. }) => {}
-        Message::Frame(DriverToGui::MidiActivity { .. }) => {}
+        Message::Frame(DriverToGui::MidiActivity { dir }) => match dir {
+            protocol::MidiDir::In => state.last_in = Some(std::time::Instant::now()),
+            protocol::MidiDir::Out => state.last_out = Some(std::time::Instant::now()),
+        },
         Message::Tick => {}
         Message::Frame(DriverToGui::DeviceConnected(connected)) => {
             state.device_connected = connected;
