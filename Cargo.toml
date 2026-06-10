@@ -23,6 +23,9 @@ config = { version = "0.15.22" }
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "0.8"
 libc = "0.2"
+iced = { version = "0.14", features = ["canvas", "image-without-codecs", "svg", "smol"] }
+futures = "0.3"
+resvg = "0.47"
 
 [workspace.metadata.cargo-shear]
 ignored = ["num-traits"]

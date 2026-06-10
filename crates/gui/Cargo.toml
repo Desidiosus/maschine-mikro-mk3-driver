@@ -1,0 +1,18 @@
+[package]
+name = "gui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+default-run = "gui"
+
+[dependencies]
+protocol.workspace = true
+settings.workspace = true
+iced.workspace = true
+futures.workspace = true
+libc.workspace = true
+resvg.workspace = true
+
+[[bin]]
+name = "gui"
+path = "src/main.rs"
