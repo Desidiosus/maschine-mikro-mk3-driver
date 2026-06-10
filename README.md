@@ -453,3 +453,10 @@ This project provides a complete MIDI implementation for the Maschine Mikro MK3 
 The driver works at the HID level without requiring Native Instruments' proprietary software, making it a truly open-source alternative that works natively on Linux.
 
 Contributions are welcome!
+
+## Trademarks
+
+MASCHINE, Native Instruments, and NI are trademarks of Native Instruments GmbH.
+This project is an independent, unofficial driver and is not affiliated with,
+sponsored by, or endorsed by Native Instruments. Product and company names are
+used only to identify the hardware this driver targets.
