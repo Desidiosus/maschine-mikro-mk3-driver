@@ -43,6 +43,9 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             state.device_connected = false;
             state.status = format!("error: {err}");
         }
+        Message::SelectControl(control) => {
+            state.selection = vec![control];
+        }
     }
     Task::none()
 }

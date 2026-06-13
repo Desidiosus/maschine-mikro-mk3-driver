@@ -14,4 +14,5 @@ pub enum Message {
     Error(String),
     /// Periodic redraw tick.
     Tick,
+    SelectControl(protocol::ControlRef),
 }

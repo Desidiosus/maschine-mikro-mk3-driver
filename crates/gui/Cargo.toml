@@ -8,6 +8,7 @@ default-run = "gui"
 [dependencies]
 protocol.workspace = true
 settings.workspace = true
+maschine_library.workspace = true
 iced.workspace = true
 futures.workspace = true
 libc.workspace = true

@@ -1566,6 +1566,7 @@ dependencies = [
  "futures",
  "iced",
  "libc",
+ "maschine_library",
  "protocol",
  "resvg 0.47.0",
  "settings",

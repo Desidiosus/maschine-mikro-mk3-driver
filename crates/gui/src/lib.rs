@@ -5,3 +5,7 @@ pub mod io {
     pub mod connection;
     pub mod subscription;
 }
+pub mod device {
+    pub mod hotspots;
+    pub mod view;
+}
