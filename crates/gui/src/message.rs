@@ -4,6 +4,11 @@ use std::sync::mpsc::Sender;
 
 use protocol::{DriverToGui, GuiToDriver};
 
+use crate::inspector::assign::forms::{
+    AssignTab, CcType, EncoderModeKind, PadHitType, PadPressType, SliderTouchKind,
+};
+use crate::inspector::assign::numeric::EditField;
+
 #[derive(Debug, Clone)]
 pub enum Message {
     /// Connection established; carries the channel to send requests to the driver.
@@ -12,12 +17,35 @@ pub enum Message {
     Frame(DriverToGui),
     Disconnected,
     Error(String),
-    /// Periodic redraw tick.
+    /// Periodic redraw tick (fades the MIDI activity LEDs).
     Tick,
     SelectControl(protocol::ControlRef),
     SelectControls(Vec<protocol::ControlRef>),
+    // Encoder mode + wrap (pick_list / checkbox).
+    SetEncoderModeKind(EncoderModeKind),
+    SetEncoderWrap(bool),
+    // Slider touch kind + LED (pick_list / checkbox).
+    SetSliderTouchKind(SliderTouchKind),
+    SetSliderLedMode(settings::SliderLedMode),
+    SetSliderLedColor(settings::PadColors),
+    SetSliderLedStylized(bool),
+    // --- redesign: generic numeric + tabs + labels ---
+    NumericInput(EditField, String),
+    NumericStep(EditField, i8),
+    NumericCommit(EditField),
+    /// Pad pressure enable (Disabled vs Poly).
+    SetPadPressureKind(bool),
+    SetAssignTab(AssignTab),
     ToggleShowAllLabels(bool),
     /// Ctrl+click: toggle one control's membership in the current selection.
     /// Ignored when the control is a different kind than the current selection.
     ToggleControl(protocol::ControlRef),
+    // Action Type selection (per sub-action slot).
+    SetPadHitType(PadHitType),
+    SetPadPressType(PadPressType),
+    SetButtonType(CcType),
+    SetEncoderTurnType(CcType),
+    SetEncoderPushType(CcType),
+    SetEncoderTouchType(CcType),
+    SetSliderPositionType(CcType),
 }

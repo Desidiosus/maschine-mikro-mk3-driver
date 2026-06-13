@@ -3,7 +3,7 @@ use std::sync::Arc;
 use iced::widget::{checkbox, column, container, row, text};
 use iced::{Element, Length, Subscription, Task};
 use protocol::{ControlRef, GuiToDriver};
-use settings::Settings;
+use settings::{PartialSettings, Settings};
 
 use crate::device::hotspots::Device;
 use crate::device::view::device_view;
@@ -18,7 +18,25 @@ pub struct State {
     pub(crate) device_connected: bool,
     pub(crate) device: std::sync::Arc<Device>,
     pub(crate) selection: Vec<ControlRef>,
+    pub(crate) seq: u64,
+    /// Highest apply `seq` the driver has acked. A pushed `Settings` snapshot is
+    /// adopted as the live view only when this has caught up to `seq` — otherwise
+    /// a snapshot for an older apply would clobber a newer optimistic edit.
+    pub(crate) last_acked_seq: u64,
+    /// Which numeric field is being typed, and its in-progress text.
+    pub(crate) edit_field: Option<crate::inspector::assign::numeric::EditField>,
+    pub(crate) edit_text: String,
+    /// Active sub-action tab for the current selection.
+    pub(crate) assign_tab: crate::inspector::assign::forms::AssignTab,
+    /// Overlay every control's assignment label on the diagram.
     pub(crate) show_all_labels: bool,
+    /// Last driver-confirmed settings (from a pushed `Settings` snapshot). Used
+    /// to roll back an optimistic edit the driver rejected (`Ack(Err)`).
+    pub(crate) authoritative: Option<Arc<Settings>>,
+    /// Set when a rejected apply requested a resync while a newer edit was in
+    /// flight: the next `Settings` snapshot must be adopted to clear the stale
+    /// optimistic value even though `seq` has advanced past the rejected apply.
+    pub(crate) resync_pending: bool,
 }
 
 impl Default for State {
@@ -30,7 +48,14 @@ impl Default for State {
             device_connected: false,
             device: std::sync::Arc::new(Device::load()),
             selection: Vec::new(),
+            seq: 0,
+            last_acked_seq: 0,
+            edit_field: None,
+            edit_text: String::new(),
+            assign_tab: crate::inspector::assign::forms::AssignTab::A,
             show_all_labels: false,
+            authoritative: None,
+            resync_pending: false,
         }
     }
 }
@@ -45,6 +70,54 @@ impl State {
 
     pub fn title(&self) -> String {
         "Maschine Mikro MK3 — Configuration".to_string()
+    }
+
+    /// Optimistically merge `delta` into the local snapshot and send it to the
+    /// driver. The driver validates, applies, persists, and pushes an
+    /// authoritative `Settings` snapshot on success (or `Ack(Err)` on failure,
+    /// which we surface and resync from).
+    pub(crate) fn send_apply(&mut self, delta: PartialSettings, persist: bool) {
+        let Some(sender) = &self.sender else { return };
+        self.seq += 1;
+        let _ = sender.send(GuiToDriver::Apply {
+            seq: self.seq,
+            delta: Box::new(delta.clone()),
+            persist,
+        });
+        // Merge in place behind the shared Arc: make_mut clones the settings tree
+        // only when the per-frame device overlay is still holding it, never rebuilds
+        // the Arc, and a non-shared optimistic edit allocates nothing.
+        if let Some(settings) = self.settings.as_mut() {
+            let s = Arc::make_mut(settings);
+            *s = std::mem::take(s).merge_overrides(delta);
+        }
+    }
+
+    /// Internal indices of selected pads (empty if the selection isn't pads).
+    pub(crate) fn selected_pads(&self) -> Vec<u8> {
+        self.selection
+            .iter()
+            .filter_map(|c| match c {
+                ControlRef::Pad(i) => Some(*i),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn selected_buttons(&self) -> Vec<u8> {
+        self.selection
+            .iter()
+            .filter_map(|c| match c {
+                ControlRef::Button(i) => Some(*i),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn reset_assign_edit(&mut self) {
+        self.assign_tab = crate::inspector::assign::forms::AssignTab::A;
+        self.edit_field = None;
+        self.edit_text.clear();
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -63,6 +136,8 @@ impl State {
             "waiting for settings…"
         };
         let header = row![text(self.status.clone()), text(presence), text(loaded)].spacing(16);
+        let inspector = crate::inspector::view::inspector(self);
+
         let device_pane = container(
             column![
                 container(
@@ -80,7 +155,9 @@ impl State {
         .height(Length::Fill)
         .align_y(iced::alignment::Vertical::Top)
         .padding(8);
-        column![header, device_pane].spacing(4).into()
+
+        let main = row![device_pane, inspector].height(Length::Fill);
+        column![header, main].spacing(4).into()
     }
 
     pub fn subscription(&self) -> Subscription<Message> {

@@ -1,6 +1,7 @@
 //! Pure derivation of the short MIDI-assignment string shown on the device
 //! diagram (selection label + Show-all-labels overlay).
 
+use maschine_library::controls::Buttons;
 use protocol::ControlRef;
 use settings::Settings;
 
@@ -35,6 +36,39 @@ pub fn control_label(settings: &Settings, control: ControlRef) -> String {
             settings::SliderPositionAction::Cc { cc, .. } => format!("CC {cc}"),
             settings::SliderPositionAction::Off => "Off".to_string(),
         },
+    }
+}
+
+/// Label for the header box of a specific sub-action tab. `tab` selects which
+/// slot (A=Turn/Hit/Position, B=Push/Press/Touch, C=encoder Touch).
+pub fn subaction_label(
+    settings: &Settings,
+    control: ControlRef,
+    tab: crate::inspector::assign::forms::AssignTab,
+) -> String {
+    use crate::inspector::assign::forms::AssignTab::*;
+    match control {
+        ControlRef::Encoder => match tab {
+            A => control_label(settings, ControlRef::Encoder),
+            B => control_label(settings, ControlRef::Button(Buttons::EncoderPress as u8)),
+            C => control_label(settings, ControlRef::Button(Buttons::EncoderTouch as u8)),
+        },
+        ControlRef::Pad(i) => match tab {
+            B => match settings.pads[i as usize].pressure {
+                settings::PadPressureAction::Disabled => "Off".to_string(),
+                settings::PadPressureAction::Poly { .. } => "Poly".to_string(),
+            },
+            _ => control_label(settings, control),
+        },
+        ControlRef::Slider => match tab {
+            B => match settings.slider.touch {
+                settings::SliderTouchAction::Disabled => "Off".to_string(),
+                settings::SliderTouchAction::Note { note, .. } => note_name(note),
+                settings::SliderTouchAction::Cc { cc, .. } => format!("CC {cc}"),
+            },
+            _ => control_label(settings, control),
+        },
+        ControlRef::Button(_) => control_label(settings, control),
     }
 }
 
