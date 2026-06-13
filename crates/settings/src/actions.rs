@@ -9,7 +9,7 @@ fn default_lo() -> u8 {
 fn default_hi() -> u8 {
     127
 }
-fn default_step() -> u8 {
+fn default_step() -> i8 {
     1
 }
 
@@ -22,18 +22,74 @@ pub enum CcValueMode {
         #[serde(default = "default_hi")]
         hi: u8,
         #[serde(default = "default_step")]
-        step: u8,
+        step: i8,
         #[serde(default)]
         wrap: bool,
     },
     Relative {
         #[serde(default = "default_step")]
-        step: u8,
+        step: i8,
     },
     RelativeOffset {
         #[serde(default = "default_step")]
-        step: u8,
+        step: i8,
     },
+}
+
+impl CcValueMode {
+    /// 7-bit MIDI CC data-byte range. `Absolute` `lo`/`hi` are bounded by it, and
+    /// the encoder emit logic clamps relative-offset output to it.
+    pub const CC_VALUE_MIN: u8 = 0;
+    pub const CC_VALUE_MAX: u8 = 127;
+
+    // Encoder `step` is signed: the sign sets turn direction, the magnitude sets
+    // sensitivity, and `0` is invalid in every mode (it would freeze the encoder).
+
+    /// `Absolute` and `RelativeOffset` clamp their *output* to the 7-bit CC range,
+    /// so any nonzero step is valid and they span the full signed range.
+    pub const ABSOLUTE_STEP_MIN: i8 = i8::MIN;
+    pub const ABSOLUTE_STEP_MAX: i8 = i8::MAX;
+    /// `Relative` emits the turn magnitude directly on the wire (NI sign-magnitude,
+    /// magnitude up to 63), so its step is bounded to ±63.
+    pub const RELATIVE_STEP_MIN: i8 = -63;
+    pub const RELATIVE_STEP_MAX: i8 = 63;
+
+    /// This mode's `step`.
+    pub fn step(&self) -> i8 {
+        match self {
+            CcValueMode::Absolute { step, .. }
+            | CcValueMode::Relative { step }
+            | CcValueMode::RelativeOffset { step } => *step,
+        }
+    }
+
+    /// Inclusive `[min, max]` bounds for this variant's `step`. Single source of
+    /// truth shared by validation and the GUI clamping paths.
+    pub fn step_bounds(&self) -> (i8, i8) {
+        match self {
+            CcValueMode::Relative { .. } => (Self::RELATIVE_STEP_MIN, Self::RELATIVE_STEP_MAX),
+            CcValueMode::Absolute { .. } | CcValueMode::RelativeOffset { .. } => {
+                (Self::ABSOLUTE_STEP_MIN, Self::ABSOLUTE_STEP_MAX)
+            }
+        }
+    }
+
+    /// Return this mode with its `step` clamped into the variant's valid range,
+    /// coercing the invalid `0` (which would freeze the encoder) to `1` — the
+    /// smallest forward step, which every variant's range includes — and
+    /// preserving every other field.
+    pub fn with_clamped_step(self) -> Self {
+        let (min, max) = self.step_bounds();
+        let step = match self.step().clamp(min, max) {
+            0 => 1,
+            v => v,
+        };
+        match self {
+            Self::Absolute { lo, hi, wrap, .. } => Self::Absolute { lo, hi, step, wrap },
+            Self::Relative { .. } => Self::Relative { step },
+            Self::RelativeOffset { .. } => Self::RelativeOffset { step },
+        }
+    }
 }
 
 impl Default for CcValueMode {

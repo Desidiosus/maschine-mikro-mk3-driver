@@ -144,7 +144,15 @@ fn resolve_channel(per_action: Option<MidiChannel>) -> u8 {
     per_action.map(|c| c.as_u8()).unwrap_or(0)
 }
 
-fn step_absolute(cur: u8, delta: i8, lo: u8, hi: u8, step: u8, wrap: bool) -> u8 {
+/// NI relative (sign-magnitude) turn encoding: forward turns emit
+/// `1..=REL_MAX_MAGNITUDE`, backward turns emit `REL_SIGN_PIVOT - magnitude`
+/// (i.e. 65..=127), and `0` means no movement.
+const REL_MAX_MAGNITUDE: u16 = 63;
+const REL_SIGN_PIVOT: u8 = 128;
+/// Relative-offset encoding centers the emitted CC value at the 7-bit midpoint.
+const REL_OFFSET_CENTER: i16 = 64;
+
+fn step_absolute(cur: u8, delta: i8, lo: u8, hi: u8, step: i8, wrap: bool) -> u8 {
     let span = (hi as i32 - lo as i32) + 1;
     let move_ = delta as i32 * step as i32;
     let off = cur as i32 - lo as i32 + move_;
@@ -172,16 +180,23 @@ fn encode_encoder_value(
             next
         }
         CcValueMode::Relative { step } => {
-            let mag = (delta.unsigned_abs() as u16 * *step as u16).min(63) as u8;
-            if delta >= 0 {
+            // A negative `step` reverses direction; the emitted sign is the sign
+            // of `delta * step`. NI relative encoding: 1..=63 forward, 65..=127
+            // backward (sign-magnitude around 0/128).
+            let signed = delta as i16 * *step as i16;
+            let mag = signed.unsigned_abs().min(REL_MAX_MAGNITUDE) as u8;
+            if signed >= 0 {
                 mag
             } else {
-                128u8.wrapping_sub(mag)
+                REL_SIGN_PIVOT.wrapping_sub(mag)
             }
         }
         CcValueMode::RelativeOffset { step } => {
             let off = delta as i16 * *step as i16;
-            (64i16 + off).clamp(0, 127) as u8
+            (REL_OFFSET_CENTER + off).clamp(
+                i16::from(CcValueMode::CC_VALUE_MIN),
+                i16::from(CcValueMode::CC_VALUE_MAX),
+            ) as u8
         }
     }
 }
@@ -729,6 +744,31 @@ mod tests {
         };
         let bytes = event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: -1 }, &s, &rt());
         assert_eq!(bytes, Some([0xB0, 1, 125]));
+    }
+
+    #[test]
+    fn encoder_relative_negative_step_reverses_direction() {
+        let mut s = Settings::default();
+        s.encoder.turn = EncoderTurnAction::Cc {
+            channel: None,
+            cc: 1,
+            mode: CcValueMode::Relative { step: -3 },
+        };
+        // CW (delta +1) with a reversed step emits the CCW value, and vice versa.
+        let cw = event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: 1 }, &s, &rt());
+        assert_eq!(cw, Some([0xB0, 1, 125]));
+        let ccw = event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: -1 }, &s, &rt());
+        assert_eq!(ccw, Some([0xB0, 1, 3]));
+    }
+
+    #[test]
+    fn encoder_absolute_negative_step_reverses_direction() {
+        // From the default value (0) a CW turn with a -1 step decrements, so
+        // without wrap it stays clamped at the low bound.
+        let v = super::step_absolute(10, 1, 0, 127, -1, false);
+        assert_eq!(v, 9);
+        let v = super::step_absolute(10, -1, 0, 127, -1, false);
+        assert_eq!(v, 11);
     }
 
     #[test]
