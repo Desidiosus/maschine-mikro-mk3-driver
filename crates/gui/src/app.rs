@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use iced::widget::{column, container, row, text};
+use iced::widget::{checkbox, column, container, row, text};
 use iced::{Element, Length, Subscription, Task};
 use protocol::{ControlRef, GuiToDriver};
 use settings::Settings;
@@ -18,6 +18,7 @@ pub struct State {
     pub(crate) device_connected: bool,
     pub(crate) device: std::sync::Arc<Device>,
     pub(crate) selection: Vec<ControlRef>,
+    pub(crate) show_all_labels: bool,
 }
 
 impl Default for State {
@@ -29,6 +30,7 @@ impl Default for State {
             device_connected: false,
             device: std::sync::Arc::new(Device::load()),
             selection: Vec::new(),
+            show_all_labels: false,
         }
     }
 }
@@ -60,26 +62,24 @@ impl State {
         } else {
             "waiting for settings…"
         };
-        let selected = if self.selection.is_empty() {
-            "none".to_string()
-        } else {
-            self.selection
-                .iter()
-                .map(|c| crate::device::hotspots::control_name(*c))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        let header = row![
-            text(self.status.clone()),
-            text(presence),
-            text(loaded),
-            text(format!("selected: {selected}")),
-        ]
-        .spacing(16);
-        let device_pane = container(device_view(self))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(8);
+        let header = row![text(self.status.clone()), text(presence), text(loaded)].spacing(16);
+        let device_pane = container(
+            column![
+                container(
+                    checkbox(self.show_all_labels)
+                        .label("Show all labels")
+                        .on_toggle(Message::ToggleShowAllLabels),
+                )
+                .width(Length::Fill)
+                .align_x(iced::alignment::Horizontal::Right),
+                container(device_view(self)).height(Length::Fill),
+            ]
+            .spacing(6),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_y(iced::alignment::Vertical::Top)
+        .padding(8);
         column![header, device_pane].spacing(4).into()
     }
 

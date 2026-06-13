@@ -7,5 +7,6 @@ pub mod io {
 }
 pub mod device {
     pub mod hotspots;
+    pub mod labels;
     pub mod view;
 }

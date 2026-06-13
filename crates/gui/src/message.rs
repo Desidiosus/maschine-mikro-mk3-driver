@@ -15,4 +15,9 @@ pub enum Message {
     /// Periodic redraw tick.
     Tick,
     SelectControl(protocol::ControlRef),
+    SelectControls(Vec<protocol::ControlRef>),
+    ToggleShowAllLabels(bool),
+    /// Ctrl+click: toggle one control's membership in the current selection.
+    /// Ignored when the control is a different kind than the current selection.
+    ToggleControl(protocol::ControlRef),
 }
