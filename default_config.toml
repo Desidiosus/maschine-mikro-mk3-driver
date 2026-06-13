@@ -19,7 +19,6 @@
 #   encoder_press, encoder_touch.
 
 [global]
-# midi_channel = 0
 # client_name = "Maschine Mikro MK3"
 # port_name = "Maschine Mikro MK3 MIDI Out"
 # port_name_in = "Maschine Mikro MK3 MIDI In"

@@ -74,7 +74,9 @@ off_value = 5
 }
 
 #[test]
-fn per_action_channel_override_does_not_disturb_global() {
+fn per_action_channel_override_applies_and_legacy_global_channel_is_ignored() {
+    // A legacy `[global] midi_channel` still parses (back-compat) but is ignored;
+    // the per-action channel override is what takes effect.
     let merged = merged_from(
         r#"
 [global]
@@ -87,10 +89,6 @@ channel = 1
 "#,
     );
 
-    assert_eq!(
-        merged.global.midi_channel,
-        MidiChannel::try_from(3).unwrap()
-    );
     // TOML key 1 (physical pad 1, bottom-left) maps to internal logical pad 12.
     match &merged.pads[12].hit {
         PadHitAction::Note { channel, note } => {

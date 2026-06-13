@@ -140,8 +140,8 @@ fn create_midi_input(
         .map_err(|err| DriverError::Midi(format!("couldn't create virtual input port: {err}")))
 }
 
-fn resolve_channel(per_action: Option<MidiChannel>, global: MidiChannel) -> u8 {
-    per_action.unwrap_or(global).as_u8()
+fn resolve_channel(per_action: Option<MidiChannel>) -> u8 {
+    per_action.map(|c| c.as_u8()).unwrap_or(0)
 }
 
 fn step_absolute(cur: u8, delta: i8, lo: u8, hi: u8, step: u8, wrap: bool) -> u8 {
@@ -191,14 +191,12 @@ pub fn event_to_midi_bytes(
     settings: &Settings,
     rt: &crate::runtime_state::RuntimeState,
 ) -> Option<[u8; 3]> {
-    let global = settings.global.midi_channel;
-
     match event {
         ControlEvent::ButtonChanged { index, pressed } => {
             let btn = settings.buttons.0.get(*index)?;
             match &btn.press {
                 ButtonPressAction::Cc { channel, cc } => Some([
-                    0xB0 | resolve_channel(*channel, global),
+                    0xB0 | resolve_channel(*channel),
                     *cc,
                     if *pressed { 127 } else { 0 },
                 ]),
@@ -208,13 +206,13 @@ pub fn event_to_midi_bytes(
         ControlEvent::EncoderTurn { delta, .. } => match &settings.encoder.turn {
             EncoderTurnAction::Cc { channel, cc, mode } => {
                 let value = encode_encoder_value(mode, *delta, rt);
-                Some([0xB0 | resolve_channel(*channel, global), *cc, value])
+                Some([0xB0 | resolve_channel(*channel), *cc, value])
             }
             EncoderTurnAction::Off => None,
         },
         ControlEvent::SliderMoved { cc_value, .. } => match &settings.slider.position {
             SliderPositionAction::Cc { channel, cc } => {
-                Some([0xB0 | resolve_channel(*channel, global), *cc, *cc_value])
+                Some([0xB0 | resolve_channel(*channel), *cc, *cc_value])
             }
             SliderPositionAction::Off => None,
         },
@@ -226,9 +224,9 @@ pub fn event_to_midi_bytes(
                 on_value,
                 off_value,
             } => Some(if *pressed {
-                [0x90 | resolve_channel(*channel, global), *note, *on_value]
+                [0x90 | resolve_channel(*channel), *note, *on_value]
             } else {
-                [0x80 | resolve_channel(*channel, global), *note, *off_value]
+                [0x80 | resolve_channel(*channel), *note, *off_value]
             }),
             SliderTouchAction::Cc {
                 channel,
@@ -236,7 +234,7 @@ pub fn event_to_midi_bytes(
                 on_value,
                 off_value,
             } => Some([
-                0xB0 | resolve_channel(*channel, global),
+                0xB0 | resolve_channel(*channel),
                 *cc,
                 if *pressed { *on_value } else { *off_value },
             ]),
@@ -245,7 +243,7 @@ pub fn event_to_midi_bytes(
             let pad = settings.pads.0.get(*index)?;
             match &pad.hit {
                 PadHitAction::Note { channel, note } => {
-                    Some([0x90 | resolve_channel(*channel, global), *note, *velocity])
+                    Some([0x90 | resolve_channel(*channel), *note, *velocity])
                 }
                 PadHitAction::Off => None,
             }
@@ -254,7 +252,7 @@ pub fn event_to_midi_bytes(
             let pad = settings.pads.0.get(*index)?;
             match &pad.hit {
                 PadHitAction::Note { channel, note } => {
-                    Some([0x80 | resolve_channel(*channel, global), *note, *velocity])
+                    Some([0x80 | resolve_channel(*channel), *note, *velocity])
                 }
                 PadHitAction::Off => None,
             }
@@ -271,11 +269,7 @@ pub fn event_to_midi_bytes(
                             PadHitAction::Off => return None,
                         },
                     };
-                    Some([
-                        0xA0 | resolve_channel(*channel, global),
-                        resolved_note,
-                        *pressure,
-                    ])
+                    Some([0xA0 | resolve_channel(*channel), resolved_note, *pressure])
                 }
             }
         }
@@ -284,9 +278,9 @@ pub fn event_to_midi_bytes(
 
 /// Locate the index of a control whose `(channel, key)` pair matches `target`.
 /// `extract` pulls the per-action channel override and the routing key (note,
-/// CC, …) from each control's action slot. A `None` channel falls back to
-/// `global`.
-fn find_index_for<I, T, F>(items: I, global: u8, target: (u8, u8), extract: F) -> Option<usize>
+/// CC, …) from each control's action slot. A `None` channel resolves to
+/// channel 0 (displayed channel 1).
+fn find_index_for<I, T, F>(items: I, target: (u8, u8), extract: F) -> Option<usize>
 where
     I: IntoIterator<Item = T>,
     F: Fn(T) -> Option<(Option<MidiChannel>, u8)>,
@@ -294,35 +288,27 @@ where
     let (channel, key) = target;
     items.into_iter().enumerate().find_map(|(idx, item)| {
         let (chan, item_key) = extract(item)?;
-        let resolved = chan.map(|c| c.as_u8()).unwrap_or(global);
+        let resolved = chan.map(|c| c.as_u8()).unwrap_or(0);
         (resolved == channel && item_key == key).then_some(idx)
     })
 }
 
 pub fn pad_index_for_message(settings: &Settings, channel: u8, note: u8) -> Option<usize> {
-    let global = settings.global.midi_channel.as_u8();
-    find_index_for(
-        settings.pads.iter(),
-        global,
-        (channel, note),
-        |pad| match &pad.hit {
+    find_index_for(settings.pads.iter(), (channel, note), |pad| {
+        match &pad.hit {
             PadHitAction::Note { channel, note } => Some((*channel, *note)),
             PadHitAction::Off => None,
-        },
-    )
+        }
+    })
 }
 
 pub fn button_index_for_message(settings: &Settings, channel: u8, cc: u8) -> Option<usize> {
-    let global = settings.global.midi_channel.as_u8();
-    find_index_for(
-        settings.buttons.0.iter(),
-        global,
-        (channel, cc),
-        |btn| match &btn.press {
+    find_index_for(settings.buttons.0.iter(), (channel, cc), |btn| {
+        match &btn.press {
             ButtonPressAction::Cc { channel, cc } => Some((*channel, *cc)),
             ButtonPressAction::Off => None,
-        },
-    )
+        }
+    })
 }
 
 pub fn button_brightness_from_value(
@@ -506,9 +492,24 @@ mod tests {
     }
 
     #[test]
-    fn channel_inherits_global_when_action_omits_it() {
+    fn omitted_channel_defaults_to_channel_one_and_explicit_is_honored() {
+        // Default button 22 omits a channel -> channel 0 (displayed 1).
+        let bytes = event_to_midi_bytes(
+            &ControlEvent::ButtonChanged {
+                index: 22,
+                pressed: true,
+            },
+            &Settings::default(),
+            &rt(),
+        );
+        assert_eq!(bytes, Some([0xB0, 42, 127]));
+
+        // An explicit per-action channel is still used.
         let mut s = Settings::default();
-        s.global.midi_channel = MidiChannel::try_from(5).unwrap();
+        s.buttons.0[22].press = ButtonPressAction::Cc {
+            channel: MidiChannel::try_from(5).ok(),
+            cc: 42,
+        };
         let bytes = event_to_midi_bytes(
             &ControlEvent::ButtonChanged {
                 index: 22,

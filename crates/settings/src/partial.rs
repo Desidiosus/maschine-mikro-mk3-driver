@@ -37,7 +37,13 @@ pub struct PartialSettings {
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PartialGlobalSettings {
-    pub midi_channel: Option<MidiChannel>,
+    /// Deprecated and ignored. Private (not part of the builder surface): it
+    /// exists only so a legacy `[global] midi_channel` key still parses under
+    /// `deny_unknown_fields` rather than failing the load. Per-control channels
+    /// are authoritative; an unset channel resolves to channel 1. Never read or
+    /// merged, so it is dropped on the next persisted diff.
+    #[serde(skip_serializing)]
+    midi_channel: Option<MidiChannel>,
     pub client_name: Option<String>,
     pub port_name: Option<String>,
     pub port_name_in: Option<String>,
@@ -228,7 +234,7 @@ macro_rules! diff_section {
 impl Settings {
     pub fn merge_overrides(mut self, partial: PartialSettings) -> Self {
         if let Some(g) = partial.global {
-            apply_overrides!(self.global, g; midi_channel, client_name, port_name, port_name_in);
+            apply_overrides!(self.global, g; client_name, port_name, port_name_in);
         }
         if let Some(h) = partial.hardware {
             apply_overrides!(
@@ -288,7 +294,7 @@ impl Settings {
         let mut g = PartialGlobalSettings::default();
         diff_section!(
             self.global, base.global, g;
-            copy: { midi_channel };
+            copy: {};
             clone: { client_name, port_name, port_name_in };
         );
         if g != PartialGlobalSettings::default() {
@@ -385,8 +391,8 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Settings;
     use crate::actions::{ButtonPressAction, PadPressureAction, SliderTouchAction};
-    use crate::{MidiChannel, Settings};
 
     #[test]
     fn empty_partial_merges_to_default() {
@@ -460,25 +466,21 @@ off_value = 0
     }
 
     #[test]
-    fn partial_overrides_global_midi_channel_only() {
+    fn legacy_global_midi_channel_is_accepted_and_ignored() {
         let toml_str = r#"
 [global]
 midi_channel = 5
+client_name = "Custom"
 "#;
-        let partial: PartialSettings = toml::from_str(toml_str).unwrap();
+        let partial: PartialSettings = toml::from_str(toml_str).expect("legacy key still parses");
         let merged = Settings::default().merge_overrides(partial);
-
-        assert_eq!(
-            merged.global.midi_channel,
-            MidiChannel::try_from(5).unwrap()
-        );
-        assert_eq!(merged.global.client_name, "Maschine Mikro MK3");
+        // The deprecated channel is ignored; other global fields still apply.
+        assert_eq!(merged.global.client_name, "Custom");
     }
 
     #[test]
     fn diff_from_defaults_is_inverse_of_merge_overrides() {
         let mut s = Settings::default();
-        s.global.midi_channel = MidiChannel::try_from(3).unwrap();
         s.pads[2].pressure = PadPressureAction::Poly {
             channel: None,
             note: Some(60),
@@ -497,11 +499,11 @@ midi_channel = 5
 
     #[test]
     fn diff_from_base_captures_only_changes_relative_to_base() {
-        // base = defaults with a custom global channel (stands in for a `-c` seed).
+        // base = defaults with a custom global field (stands in for a `-c` seed).
         let mut base = Settings::default();
-        base.global.midi_channel = MidiChannel::try_from(7).unwrap();
+        base.global.client_name = "Seeded".to_string();
 
-        // live = base plus one pad-note change. The base's channel must NOT
+        // live = base plus one pad-note change. The base's client_name must NOT
         // appear in the diff (it's part of the seed, not a GUI edit).
         let mut live = base.clone();
         live.pads[2].hit = PadHitAction::Note {

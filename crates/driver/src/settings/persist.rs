@@ -148,7 +148,7 @@ pub fn save_overrides(path: &Path, settings: &Settings, base: &Settings) -> Resu
 mod tests {
     use super::xdg_config_path_for;
     use super::{load_config_with_xdg, load_xdg, save_overrides};
-    use crate::settings::{MidiChannel, Settings};
+    use crate::settings::Settings;
     use std::path::PathBuf;
 
     #[test]
@@ -160,7 +160,6 @@ mod tests {
 
         let mut s = Settings::default();
         s.hardware.pad_sensitivity = 73;
-        s.global.midi_channel = MidiChannel::try_from(4).unwrap();
 
         save_overrides(&path, &s, &Settings::default()).unwrap();
         let loaded = load_xdg(&path).unwrap();
@@ -178,18 +177,13 @@ mod tests {
         let _ = std::fs::remove_file(&cli);
         let _ = std::fs::remove_file(&xdg);
 
-        // A `-c` seed sets pad sensitivity and the global channel.
-        std::fs::write(
-            &cli,
-            "[hardware]\npad_sensitivity = 88\n[global]\nmidi_channel = 7\n",
-        )
-        .unwrap();
+        // A `-c` seed sets pad sensitivity.
+        std::fs::write(&cli, "[hardware]\npad_sensitivity = 88\n").unwrap();
 
         // First load: no XDG overlay yet → live == seed, and the seed file is the
         // persistence base. The XDG file must NOT be created for a `-c` run.
         let loaded = load_config_with_xdg(Some(cli.to_str().unwrap()), &xdg).unwrap();
         assert_eq!(loaded.settings.hardware.pad_sensitivity, 88);
-        assert_eq!(loaded.settings.global.midi_channel.as_u8(), 7);
         assert!(!xdg.exists(), "-c run must not create the XDG file");
 
         // A GUI edit changes only display_contrast; persist the diff vs the base.
@@ -202,7 +196,6 @@ mod tests {
         let reloaded = load_config_with_xdg(Some(cli.to_str().unwrap()), &xdg).unwrap();
         assert_eq!(reloaded.settings.hardware.display_contrast, 20);
         assert_eq!(reloaded.settings.hardware.pad_sensitivity, 88);
-        assert_eq!(reloaded.settings.global.midi_channel.as_u8(), 7);
 
         // The seed file is untouched (only display_contrast lives in XDG).
         let seed_text = std::fs::read_to_string(&cli).unwrap();
