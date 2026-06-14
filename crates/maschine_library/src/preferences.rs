@@ -1,4 +1,6 @@
-use hidapi::{HidDevice, HidResult};
+use hidapi::HidResult;
+
+use crate::hid::HidIo;
 
 const MAX_HARDWARE_PREFERENCE_VALUE: u8 = 100;
 
@@ -31,12 +33,12 @@ fn display_contrast_report(value: u8) -> [u8; 11] {
     ]
 }
 
-pub fn set_pad_sensitivity(device: &HidDevice, value: u8) -> HidResult<()> {
+pub fn set_pad_sensitivity<D: HidIo>(device: &D, value: u8) -> HidResult<()> {
     device.write(&pad_sensitivity_report(value))?;
     Ok(())
 }
 
-pub fn set_display_contrast(device: &HidDevice, value: u8) -> HidResult<()> {
+pub fn set_display_contrast<D: HidIo>(device: &D, value: u8) -> HidResult<()> {
     device.send_feature_report(&display_contrast_report(value))?;
     Ok(())
 }

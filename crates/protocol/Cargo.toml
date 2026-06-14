@@ -1,0 +1,10 @@
+[package]
+name = "protocol"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+settings.workspace = true
+serde.workspace = true
+ciborium.workspace = true

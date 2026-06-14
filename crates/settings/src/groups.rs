@@ -1,11 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use crate::settings::{BacklightBrightness, MidiChannel};
-use crate::velocity::PadVelocityCurve;
+use crate::BacklightBrightness;
+use crate::velocity_curve::PadVelocityCurve;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GlobalSettings {
-    pub midi_channel: MidiChannel,
     pub client_name: String,
     pub port_name: String,
     pub port_name_in: String,
@@ -14,7 +13,6 @@ pub struct GlobalSettings {
 impl Default for GlobalSettings {
     fn default() -> Self {
         Self {
-            midi_channel: MidiChannel::default(),
             client_name: "Maschine Mikro MK3".to_string(),
             port_name: "Maschine Mikro MK3 MIDI Out".to_string(),
             port_name_in: "Maschine Mikro MK3 MIDI In".to_string(),

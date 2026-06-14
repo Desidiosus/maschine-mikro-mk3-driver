@@ -18,9 +18,9 @@ type = "poly"
 "#,
     );
 
-    // TOML key 5 maps to internal logical pad 11 (16 - 5).
+    // TOML key 5 (physical pad 5) maps to internal logical pad 8 (row-flip).
     assert_eq!(
-        merged.pads[11].pressure,
+        merged.pads[8].pressure,
         PadPressureAction::Poly {
             channel: None,
             note: None
@@ -42,9 +42,11 @@ cc = 99
 
     match &merged.buttons[Buttons::Play as usize].press {
         ButtonPressAction::Cc { cc, .. } => assert_eq!(*cc, 99),
+        ButtonPressAction::Off => panic!("expected cc"),
     }
     match &merged.buttons[Buttons::Stop as usize].press {
         ButtonPressAction::Cc { cc, .. } => assert_eq!(*cc, 44),
+        ButtonPressAction::Off => panic!("expected cc"),
     }
 }
 
@@ -72,7 +74,9 @@ off_value = 5
 }
 
 #[test]
-fn per_action_channel_override_does_not_disturb_global() {
+fn per_action_channel_override_applies_and_legacy_global_channel_is_ignored() {
+    // A legacy `[global] midi_channel` still parses (back-compat) but is ignored;
+    // the per-action channel override is what takes effect.
     let merged = merged_from(
         r#"
 [global]
@@ -85,15 +89,12 @@ channel = 1
 "#,
     );
 
-    assert_eq!(
-        merged.global.midi_channel,
-        MidiChannel::try_from(3).unwrap()
-    );
-    // TOML key 1 maps to internal logical pad 15.
-    match &merged.pads[15].hit {
+    // TOML key 1 (physical pad 1, bottom-left) maps to internal logical pad 12.
+    match &merged.pads[12].hit {
         PadHitAction::Note { channel, note } => {
             assert_eq!(*note, 48);
             assert_eq!(*channel, MidiChannel::try_from(1).ok());
         }
+        PadHitAction::Off => panic!("expected note"),
     }
 }

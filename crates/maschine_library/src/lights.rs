@@ -35,6 +35,55 @@ pub enum PadColors {
     White = 31,
 }
 
+impl PadColors {
+    pub const ALL: [PadColors; 18] = [
+        PadColors::Off,
+        PadColors::Red,
+        PadColors::Orange,
+        PadColors::LightOrange,
+        PadColors::WarmYellow,
+        PadColors::Yellow,
+        PadColors::Lime,
+        PadColors::Green,
+        PadColors::Mint,
+        PadColors::Cyan,
+        PadColors::Turquoise,
+        PadColors::Blue,
+        PadColors::Plum,
+        PadColors::Violet,
+        PadColors::Purple,
+        PadColors::Magenta,
+        PadColors::Fuchsia,
+        PadColors::White,
+    ];
+}
+
+impl std::fmt::Display for PadColors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            PadColors::Off => "Off",
+            PadColors::Red => "Red",
+            PadColors::Orange => "Orange",
+            PadColors::LightOrange => "Light Orange",
+            PadColors::WarmYellow => "Warm Yellow",
+            PadColors::Yellow => "Yellow",
+            PadColors::Lime => "Lime",
+            PadColors::Green => "Green",
+            PadColors::Mint => "Mint",
+            PadColors::Cyan => "Cyan",
+            PadColors::Turquoise => "Turquoise",
+            PadColors::Blue => "Blue",
+            PadColors::Plum => "Plum",
+            PadColors::Violet => "Violet",
+            PadColors::Purple => "Purple",
+            PadColors::Magenta => "Magenta",
+            PadColors::Fuchsia => "Fuchsia",
+            PadColors::White => "White",
+        };
+        f.write_str(s)
+    }
+}
+
 #[derive(Clone)]
 pub struct Lights {
     status: [u8; 80],
@@ -439,9 +488,25 @@ mod tests {
             fn read_timeout(&self, _buf: &mut [u8], _ms: i32) -> hidapi::HidResult<usize> {
                 Ok(0)
             }
+            fn send_feature_report(&self, _data: &[u8]) -> hidapi::HidResult<()> {
+                Ok(())
+            }
         }
         let cap = Capture(RefCell::new(Vec::new()));
         lights.write(&cap).unwrap();
         cap.0.borrow()[idx + 1]
+    }
+}
+
+#[cfg(test)]
+mod pad_colors_tests {
+    use super::PadColors;
+
+    #[test]
+    fn pad_colors_labels_are_unique_and_nonempty() {
+        let labels: Vec<String> = PadColors::ALL.iter().map(|c| c.to_string()).collect();
+        assert!(labels.iter().all(|l| !l.is_empty()), "{labels:?}");
+        let unique: std::collections::HashSet<_> = labels.iter().collect();
+        assert_eq!(unique.len(), labels.len(), "duplicate label: {labels:?}");
     }
 }

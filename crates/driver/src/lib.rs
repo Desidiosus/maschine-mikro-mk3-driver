@@ -1,13 +1,16 @@
 pub mod app;
+pub mod apply;
 pub mod backend;
 pub mod error;
 pub mod events;
 pub mod feedback;
 pub mod hid;
+pub mod ipc;
 pub mod outputs;
 pub mod runtime_state;
 mod self_test;
 pub mod settings;
+pub mod shared_settings;
 pub mod soft_off;
 mod velocity;
 pub mod virmidi_bridge;

@@ -4,6 +4,7 @@ use hidapi::{HidDevice, HidResult};
 pub trait HidIo {
     fn read_timeout(&self, buf: &mut [u8], timeout_ms: i32) -> HidResult<usize>;
     fn write(&self, data: &[u8]) -> HidResult<usize>;
+    fn send_feature_report(&self, data: &[u8]) -> HidResult<()>;
 }
 
 impl HidIo for HidDevice {
@@ -13,5 +14,9 @@ impl HidIo for HidDevice {
 
     fn write(&self, data: &[u8]) -> HidResult<usize> {
         HidDevice::write(self, data)
+    }
+
+    fn send_feature_report(&self, data: &[u8]) -> HidResult<()> {
+        HidDevice::send_feature_report(self, data)
     }
 }

@@ -1,16 +1,21 @@
+use std::sync::Arc;
+
 use maschine_library::lights::Brightness;
 use midir::os::unix::{VirtualInput, VirtualOutput};
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
+use protocol::{DriverToGui, MidiDir};
 
 use crate::error::{DriverError, DriverResult};
 use crate::events::ControlEvent;
 use crate::feedback::midi::apply_incoming_midi_message;
+use crate::ipc::{EventSubscriber, emit_event};
 use crate::outputs::DeviceOutputs;
 use crate::settings::actions::{
     ButtonPressAction, CcValueMode, EncoderTurnAction, PadHitAction, PadPressureAction,
     SliderPositionAction, SliderTouchAction,
 };
 use crate::settings::{MidiChannel, Settings};
+use crate::shared_settings::{SharedSettings, new_shared};
 use crate::soft_off::SoftOffSync;
 use crate::virmidi_bridge::try_autoconnect_virmidi;
 
@@ -27,33 +32,41 @@ impl MidiSink for MidiOutputConnection {
 }
 
 pub struct MidiBackend<S: MidiSink = MidiOutputConnection> {
-    settings: Settings,
+    settings: SharedSettings,
     sink: S,
     _input: Option<MidiInputConnection<DeviceOutputs>>,
 }
 
 impl MidiBackend {
     pub fn new(
-        settings: &Settings,
+        settings: &SharedSettings,
         outputs: &DeviceOutputs,
         soft_off: SoftOffSync,
         runtime_state: crate::runtime_state::RuntimeState,
+        subscriber: EventSubscriber,
     ) -> DriverResult<Self> {
-        let sink = MidiOutput::new(&settings.global.client_name)
+        let snapshot = settings.load();
+        let sink = MidiOutput::new(&snapshot.global.client_name)
             .map_err(|err| DriverError::Midi(format!("couldn't open MIDI output: {err}")))?
-            .create_virtual(&settings.global.port_name)
+            .create_virtual(&snapshot.global.port_name)
             .map_err(|err| {
                 DriverError::Midi(format!("couldn't create virtual output port: {err}"))
             })?;
 
-        let input = create_midi_input(settings, outputs.clone(), soft_off, runtime_state)?;
+        let input = create_midi_input(
+            settings,
+            outputs.clone(),
+            soft_off,
+            runtime_state,
+            subscriber,
+        )?;
 
-        if settings.bridge.midi_bridge_virmidi && settings.bridge.autoconnect_virmidi {
-            try_autoconnect_virmidi(settings)?;
+        if snapshot.bridge.midi_bridge_virmidi && snapshot.bridge.autoconnect_virmidi {
+            try_autoconnect_virmidi(&snapshot)?;
         }
 
         Ok(Self {
-            settings: settings.clone(),
+            settings: Arc::clone(settings),
             sink,
             _input: Some(input),
         })
@@ -65,7 +78,7 @@ impl<S: MidiSink> MidiBackend<S> {
     /// MIDI input port. Intended for tests.
     pub fn with_sink(settings: Settings, sink: S) -> Self {
         Self {
-            settings,
+            settings: new_shared(settings),
             sink,
             _input: None,
         }
@@ -79,28 +92,36 @@ impl<S: MidiSink> MidiBackend<S> {
         &mut self,
         event: &ControlEvent,
         rt: &crate::runtime_state::RuntimeState,
-    ) -> DriverResult<()> {
-        match event_to_midi_bytes(event, &self.settings, rt) {
-            Some(bytes) => self.sink.send(&bytes),
-            None => Ok(()),
+    ) -> DriverResult<bool> {
+        let snapshot = self.settings.load();
+        match event_to_midi_bytes(event, &snapshot, rt) {
+            Some(bytes) => {
+                self.sink.send(&bytes)?;
+                Ok(true)
+            }
+            None => Ok(false),
         }
     }
 }
 
 fn create_midi_input(
-    settings: &Settings,
+    settings: &SharedSettings,
     outputs: DeviceOutputs,
     soft_off: SoftOffSync,
     runtime_state: crate::runtime_state::RuntimeState,
+    subscriber: EventSubscriber,
 ) -> DriverResult<MidiInputConnection<DeviceOutputs>> {
-    let settings_clone = settings.clone();
+    let settings_handle = Arc::clone(settings);
     let runtime_state_clone = runtime_state.clone();
-    let client_name = format!("{} In", settings.global.client_name);
+    let snapshot = settings.load();
+    let client_name = format!("{} In", snapshot.global.client_name);
+    let port_name_in = snapshot.global.port_name_in.clone();
+    drop(snapshot);
 
     MidiInput::new(&client_name)
         .map_err(|err| DriverError::Midi(format!("couldn't open MIDI input: {err}")))?
         .create_virtual(
-            &settings.global.port_name_in,
+            &port_name_in,
             move |_timestamp, message, outputs| {
                 let _guard = soft_off.lock();
                 if soft_off.is_active() {
@@ -109,20 +130,29 @@ fn create_midi_input(
                 apply_incoming_midi_message(
                     message,
                     outputs,
-                    &settings_clone,
+                    &settings_handle.load(),
                     &runtime_state_clone,
                 );
+                emit_event(&subscriber, DriverToGui::MidiActivity { dir: MidiDir::In });
             },
             outputs,
         )
         .map_err(|err| DriverError::Midi(format!("couldn't create virtual input port: {err}")))
 }
 
-fn resolve_channel(per_action: Option<MidiChannel>, global: MidiChannel) -> u8 {
-    per_action.unwrap_or(global).as_u8()
+fn resolve_channel(per_action: Option<MidiChannel>) -> u8 {
+    per_action.map(|c| c.as_u8()).unwrap_or(0)
 }
 
-fn step_absolute(cur: u8, delta: i8, lo: u8, hi: u8, step: u8, wrap: bool) -> u8 {
+/// NI relative (sign-magnitude) turn encoding: forward turns emit
+/// `1..=REL_MAX_MAGNITUDE`, backward turns emit `REL_SIGN_PIVOT - magnitude`
+/// (i.e. 65..=127), and `0` means no movement.
+const REL_MAX_MAGNITUDE: u16 = 63;
+const REL_SIGN_PIVOT: u8 = 128;
+/// Relative-offset encoding centers the emitted CC value at the 7-bit midpoint.
+const REL_OFFSET_CENTER: i16 = 64;
+
+fn step_absolute(cur: u8, delta: i8, lo: u8, hi: u8, step: i8, wrap: bool) -> u8 {
     let span = (hi as i32 - lo as i32) + 1;
     let move_ = delta as i32 * step as i32;
     let off = cur as i32 - lo as i32 + move_;
@@ -150,16 +180,23 @@ fn encode_encoder_value(
             next
         }
         CcValueMode::Relative { step } => {
-            let mag = (delta.unsigned_abs() as u16 * *step as u16).min(63) as u8;
-            if delta >= 0 {
+            // A negative `step` reverses direction; the emitted sign is the sign
+            // of `delta * step`. NI relative encoding: 1..=63 forward, 65..=127
+            // backward (sign-magnitude around 0/128).
+            let signed = delta as i16 * *step as i16;
+            let mag = signed.unsigned_abs().min(REL_MAX_MAGNITUDE) as u8;
+            if signed >= 0 {
                 mag
             } else {
-                128u8.wrapping_sub(mag)
+                REL_SIGN_PIVOT.wrapping_sub(mag)
             }
         }
         CcValueMode::RelativeOffset { step } => {
             let off = delta as i16 * *step as i16;
-            (64i16 + off).clamp(0, 127) as u8
+            (REL_OFFSET_CENTER + off).clamp(
+                i16::from(CcValueMode::CC_VALUE_MIN),
+                i16::from(CcValueMode::CC_VALUE_MAX),
+            ) as u8
         }
     }
 }
@@ -169,28 +206,31 @@ pub fn event_to_midi_bytes(
     settings: &Settings,
     rt: &crate::runtime_state::RuntimeState,
 ) -> Option<[u8; 3]> {
-    let global = settings.global.midi_channel;
-
     match event {
         ControlEvent::ButtonChanged { index, pressed } => {
             let btn = settings.buttons.0.get(*index)?;
             match &btn.press {
                 ButtonPressAction::Cc { channel, cc } => Some([
-                    0xB0 | resolve_channel(*channel, global),
+                    0xB0 | resolve_channel(*channel),
                     *cc,
                     if *pressed { 127 } else { 0 },
                 ]),
+                ButtonPressAction::Off => None,
             }
         }
-        ControlEvent::EncoderTurn { delta, .. } => {
-            let EncoderTurnAction::Cc { channel, cc, mode } = &settings.encoder.turn;
-            let value = encode_encoder_value(mode, *delta, rt);
-            Some([0xB0 | resolve_channel(*channel, global), *cc, value])
-        }
-        ControlEvent::SliderMoved { cc_value, .. } => {
-            let SliderPositionAction::Cc { channel, cc } = &settings.slider.position;
-            Some([0xB0 | resolve_channel(*channel, global), *cc, *cc_value])
-        }
+        ControlEvent::EncoderTurn { delta, .. } => match &settings.encoder.turn {
+            EncoderTurnAction::Cc { channel, cc, mode } => {
+                let value = encode_encoder_value(mode, *delta, rt);
+                Some([0xB0 | resolve_channel(*channel), *cc, value])
+            }
+            EncoderTurnAction::Off => None,
+        },
+        ControlEvent::SliderMoved { cc_value, .. } => match &settings.slider.position {
+            SliderPositionAction::Cc { channel, cc } => {
+                Some([0xB0 | resolve_channel(*channel), *cc, *cc_value])
+            }
+            SliderPositionAction::Off => None,
+        },
         ControlEvent::SliderTouch { pressed } => match &settings.slider.touch {
             SliderTouchAction::Disabled => None,
             SliderTouchAction::Note {
@@ -199,9 +239,9 @@ pub fn event_to_midi_bytes(
                 on_value,
                 off_value,
             } => Some(if *pressed {
-                [0x90 | resolve_channel(*channel, global), *note, *on_value]
+                [0x90 | resolve_channel(*channel), *note, *on_value]
             } else {
-                [0x80 | resolve_channel(*channel, global), *note, *off_value]
+                [0x80 | resolve_channel(*channel), *note, *off_value]
             }),
             SliderTouchAction::Cc {
                 channel,
@@ -209,35 +249,42 @@ pub fn event_to_midi_bytes(
                 on_value,
                 off_value,
             } => Some([
-                0xB0 | resolve_channel(*channel, global),
+                0xB0 | resolve_channel(*channel),
                 *cc,
                 if *pressed { *on_value } else { *off_value },
             ]),
         },
         ControlEvent::PadNoteOn { index, velocity } => {
             let pad = settings.pads.0.get(*index)?;
-            let PadHitAction::Note { channel, note } = &pad.hit;
-            Some([0x90 | resolve_channel(*channel, global), *note, *velocity])
+            match &pad.hit {
+                PadHitAction::Note { channel, note } => {
+                    Some([0x90 | resolve_channel(*channel), *note, *velocity])
+                }
+                PadHitAction::Off => None,
+            }
         }
         ControlEvent::PadNoteOff { index, velocity } => {
             let pad = settings.pads.0.get(*index)?;
-            let PadHitAction::Note { channel, note } = &pad.hit;
-            Some([0x80 | resolve_channel(*channel, global), *note, *velocity])
+            match &pad.hit {
+                PadHitAction::Note { channel, note } => {
+                    Some([0x80 | resolve_channel(*channel), *note, *velocity])
+                }
+                PadHitAction::Off => None,
+            }
         }
         ControlEvent::PadAftertouch { index, pressure } => {
             let pad = settings.pads.0.get(*index)?;
             match &pad.pressure {
                 PadPressureAction::Disabled => None,
                 PadPressureAction::Poly { channel, note } => {
-                    let resolved_note = note.unwrap_or_else(|| {
-                        let PadHitAction::Note { note, .. } = &pad.hit;
-                        *note
-                    });
-                    Some([
-                        0xA0 | resolve_channel(*channel, global),
-                        resolved_note,
-                        *pressure,
-                    ])
+                    let resolved_note = match note {
+                        Some(n) => *n,
+                        None => match &pad.hit {
+                            PadHitAction::Note { note, .. } => *note,
+                            PadHitAction::Off => return None,
+                        },
+                    };
+                    Some([0xA0 | resolve_channel(*channel), resolved_note, *pressure])
                 }
             }
         }
@@ -246,34 +293,36 @@ pub fn event_to_midi_bytes(
 
 /// Locate the index of a control whose `(channel, key)` pair matches `target`.
 /// `extract` pulls the per-action channel override and the routing key (note,
-/// CC, …) from each control's action slot. A `None` channel falls back to
-/// `global`.
-fn find_index_for<I, T, F>(items: I, global: u8, target: (u8, u8), extract: F) -> Option<usize>
+/// CC, …) from each control's action slot. A `None` channel resolves to
+/// channel 0 (displayed channel 1).
+fn find_index_for<I, T, F>(items: I, target: (u8, u8), extract: F) -> Option<usize>
 where
     I: IntoIterator<Item = T>,
-    F: Fn(T) -> (Option<MidiChannel>, u8),
+    F: Fn(T) -> Option<(Option<MidiChannel>, u8)>,
 {
     let (channel, key) = target;
     items.into_iter().enumerate().find_map(|(idx, item)| {
-        let (chan, item_key) = extract(item);
-        let resolved = chan.map(|c| c.as_u8()).unwrap_or(global);
+        let (chan, item_key) = extract(item)?;
+        let resolved = chan.map(|c| c.as_u8()).unwrap_or(0);
         (resolved == channel && item_key == key).then_some(idx)
     })
 }
 
 pub fn pad_index_for_message(settings: &Settings, channel: u8, note: u8) -> Option<usize> {
-    let global = settings.global.midi_channel.as_u8();
-    find_index_for(settings.pads.iter(), global, (channel, note), |pad| {
-        let PadHitAction::Note { channel, note } = &pad.hit;
-        (*channel, *note)
+    find_index_for(settings.pads.iter(), (channel, note), |pad| {
+        match &pad.hit {
+            PadHitAction::Note { channel, note } => Some((*channel, *note)),
+            PadHitAction::Off => None,
+        }
     })
 }
 
 pub fn button_index_for_message(settings: &Settings, channel: u8, cc: u8) -> Option<usize> {
-    let global = settings.global.midi_channel.as_u8();
-    find_index_for(settings.buttons.0.iter(), global, (channel, cc), |btn| {
-        let ButtonPressAction::Cc { channel, cc } = &btn.press;
-        (*channel, *cc)
+    find_index_for(settings.buttons.0.iter(), (channel, cc), |btn| {
+        match &btn.press {
+            ButtonPressAction::Cc { channel, cc } => Some((*channel, *cc)),
+            ButtonPressAction::Off => None,
+        }
     })
 }
 
@@ -458,9 +507,24 @@ mod tests {
     }
 
     #[test]
-    fn channel_inherits_global_when_action_omits_it() {
+    fn omitted_channel_defaults_to_channel_one_and_explicit_is_honored() {
+        // Default button 22 omits a channel -> channel 0 (displayed 1).
+        let bytes = event_to_midi_bytes(
+            &ControlEvent::ButtonChanged {
+                index: 22,
+                pressed: true,
+            },
+            &Settings::default(),
+            &rt(),
+        );
+        assert_eq!(bytes, Some([0xB0, 42, 127]));
+
+        // An explicit per-action channel is still used.
         let mut s = Settings::default();
-        s.global.midi_channel = MidiChannel::try_from(5).unwrap();
+        s.buttons.0[22].press = ButtonPressAction::Cc {
+            channel: MidiChannel::try_from(5).ok(),
+            cc: 42,
+        };
         let bytes = event_to_midi_bytes(
             &ControlEvent::ButtonChanged {
                 index: 22,
@@ -529,6 +593,53 @@ mod tests {
             backend.sink().sent.is_empty(),
             "got {:?}",
             backend.sink().sent
+        );
+    }
+
+    #[test]
+    fn off_actions_emit_nothing() {
+        let mut s = Settings::default();
+        s.encoder.turn = EncoderTurnAction::Off;
+        s.slider.position = crate::settings::actions::SliderPositionAction::Off;
+        s.buttons.0[0].press = ButtonPressAction::Off;
+        s.pads.0[0].hit = PadHitAction::Off;
+
+        assert_eq!(
+            event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: 1 }, &s, &rt()),
+            None
+        );
+        assert_eq!(
+            event_to_midi_bytes(
+                &ControlEvent::SliderMoved {
+                    raw: 100,
+                    cc_value: 63,
+                },
+                &s,
+                &rt(),
+            ),
+            None
+        );
+        assert_eq!(
+            event_to_midi_bytes(
+                &ControlEvent::ButtonChanged {
+                    index: 0,
+                    pressed: true,
+                },
+                &s,
+                &rt(),
+            ),
+            None
+        );
+        assert_eq!(
+            event_to_midi_bytes(
+                &ControlEvent::PadNoteOn {
+                    index: 0,
+                    velocity: 64,
+                },
+                &s,
+                &rt(),
+            ),
+            None
         );
     }
 
@@ -633,6 +744,31 @@ mod tests {
         };
         let bytes = event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: -1 }, &s, &rt());
         assert_eq!(bytes, Some([0xB0, 1, 125]));
+    }
+
+    #[test]
+    fn encoder_relative_negative_step_reverses_direction() {
+        let mut s = Settings::default();
+        s.encoder.turn = EncoderTurnAction::Cc {
+            channel: None,
+            cc: 1,
+            mode: CcValueMode::Relative { step: -3 },
+        };
+        // CW (delta +1) with a reversed step emits the CCW value, and vice versa.
+        let cw = event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: 1 }, &s, &rt());
+        assert_eq!(cw, Some([0xB0, 1, 125]));
+        let ccw = event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: -1 }, &s, &rt());
+        assert_eq!(ccw, Some([0xB0, 1, 3]));
+    }
+
+    #[test]
+    fn encoder_absolute_negative_step_reverses_direction() {
+        // From the default value (0) a CW turn with a -1 step decrements, so
+        // without wrap it stays clamped at the low bound.
+        let v = super::step_absolute(10, 1, 0, 127, -1, false);
+        assert_eq!(v, 9);
+        let v = super::step_absolute(10, -1, 0, 127, -1, false);
+        assert_eq!(v, 11);
     }
 
     #[test]

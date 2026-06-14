@@ -112,6 +112,10 @@ mod tests {
             self.writes.borrow_mut().push(data.to_vec());
             Ok(data.len())
         }
+
+        fn send_feature_report(&self, _data: &[u8]) -> HidResult<()> {
+            Ok(())
+        }
     }
 
     #[test]

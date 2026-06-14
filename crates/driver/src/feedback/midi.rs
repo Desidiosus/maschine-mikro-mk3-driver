@@ -27,20 +27,21 @@ pub fn apply_incoming_midi_message(
     let data1 = message[1];
     let data2 = message[2];
 
-    let global = settings.global.midi_channel.as_u8();
-    let EncoderTurnAction::Cc {
+    if let EncoderTurnAction::Cc {
         channel: enc_channel,
         cc: enc_cc,
         mode: enc_mode,
-    } = &settings.encoder.turn;
-    let enc_resolved_channel = enc_channel.map(|c| c.as_u8()).unwrap_or(global);
-    if status == 0xB0
-        && channel == enc_resolved_channel
-        && data1 == *enc_cc
-        && matches!(enc_mode, CcValueMode::Absolute { .. })
+    } = &settings.encoder.turn
     {
-        rt.encoder_absolute
-            .store(data2, std::sync::atomic::Ordering::Relaxed);
+        let enc_resolved_channel = enc_channel.map(|c| c.as_u8()).unwrap_or(0);
+        if status == 0xB0
+            && channel == enc_resolved_channel
+            && data1 == *enc_cc
+            && matches!(enc_mode, CcValueMode::Absolute { .. })
+        {
+            rt.encoder_absolute
+                .store(data2, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     match status {
@@ -208,7 +209,7 @@ mod tests {
     #[test]
     fn incoming_message_for_wrong_channel_is_ignored_for_pad() {
         let outputs = DeviceOutputs::new();
-        let settings = Settings::default(); // global channel 0
+        let settings = Settings::default(); // controls default to channel 0
         apply_incoming_midi_message(
             &[0x95, 48, 64],
             &outputs,

@@ -8,6 +8,7 @@ pub enum DriverError {
     Settings(String),
     Midi(String),
     Bridge(String),
+    Ipc(String),
 }
 
 pub type DriverResult<T> = Result<T, DriverError>;
@@ -19,6 +20,7 @@ impl fmt::Display for DriverError {
             Self::Settings(message) => write!(f, "invalid settings: {message}"),
             Self::Midi(message) => write!(f, "MIDI error: {message}"),
             Self::Bridge(message) => write!(f, "MIDI bridge error: {message}"),
+            Self::Ipc(message) => write!(f, "IPC error: {message}"),
         }
     }
 }

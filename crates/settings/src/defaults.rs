@@ -1,4 +1,4 @@
-use crate::settings::{
+use crate::{
     actions::{
         ButtonConfig, ButtonPressAction, CcValueMode, EncoderConfig, EncoderTurnAction, PadConfig,
         PadHitAction, PadPressureAction, SliderConfig, SliderLedSettings, SliderPositionAction,
@@ -65,17 +65,19 @@ pub(crate) fn default_slider() -> SliderConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::Settings;
+    use crate::Settings;
 
     #[test]
     fn settings_default_pads_have_expected_notes() {
         let pads = default_pads();
         match &pads[0].hit {
             PadHitAction::Note { note, .. } => assert_eq!(*note, 48),
+            PadHitAction::Off => panic!("expected note"),
         }
         assert_eq!(pads[0].pressure, PadPressureAction::Disabled);
         match &pads[15].hit {
             PadHitAction::Note { note, .. } => assert_eq!(*note, 39),
+            PadHitAction::Off => panic!("expected note"),
         }
     }
 
@@ -85,6 +87,7 @@ mod tests {
         let buttons = default_buttons();
         match &buttons[Buttons::Play as usize].press {
             ButtonPressAction::Cc { cc, .. } => assert_eq!(*cc, 42),
+            ButtonPressAction::Off => panic!("expected cc"),
         }
     }
 

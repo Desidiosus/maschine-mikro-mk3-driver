@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use driver::shared_settings::new_shared;
 use hidapi::{HidError, HidResult};
 use maschine_library::hid::HidIo;
 
@@ -40,6 +41,10 @@ impl HidIo for CapturingHid {
         self.writes.lock().unwrap().push(data.to_vec());
         Ok(data.len())
     }
+
+    fn send_feature_report(&self, _data: &[u8]) -> HidResult<()> {
+        Ok(())
+    }
 }
 
 fn test_settings() -> driver::settings::Settings {
@@ -73,7 +78,16 @@ fn run_with_device_blanks_lights_on_shutdown() {
     let hid = CapturingHid::default();
     let shutdown = AtomicBool::new(true);
 
-    driver::app::run_with_device(test_settings(), &hid, &shutdown).unwrap();
+    let (_effects_tx, effects_rx) = std::sync::mpsc::channel();
+    let subscriber = driver::ipc::new_subscriber();
+    driver::app::run_with_device(
+        new_shared(test_settings()),
+        &hid,
+        &shutdown,
+        effects_rx,
+        subscriber,
+    )
+    .unwrap();
 
     assert_last_lights_report_blank(&hid.writes.lock().unwrap());
 }
@@ -90,11 +104,20 @@ fn run_with_device_treats_read_error_as_graceful_exit_when_shutdown_requested() 
     };
     let shutdown = AtomicBool::new(false);
 
+    let (_effects_tx, effects_rx) = std::sync::mpsc::channel();
+    let subscriber = driver::ipc::new_subscriber();
     let result = std::thread::scope(|s| {
         let shutdown_ref = &shutdown;
         let hid_ref = &hid;
-        let handle =
-            s.spawn(move || driver::app::run_with_device(test_settings(), hid_ref, shutdown_ref));
+        let handle = s.spawn(move || {
+            driver::app::run_with_device(
+                new_shared(test_settings()),
+                hid_ref,
+                shutdown_ref,
+                effects_rx,
+                subscriber,
+            )
+        });
         shutdown_ref.store(true, Ordering::Relaxed);
         handle.join().unwrap()
     });

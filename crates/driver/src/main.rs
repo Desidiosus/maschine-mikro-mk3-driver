@@ -1,7 +1,6 @@
 use clap::Parser;
 use driver::app;
 use driver::error::DriverResult;
-use driver::settings::Settings;
 use hidapi::HidResult;
 use maschine_library::font::Font;
 use maschine_library::hid::HidIo;
@@ -88,26 +87,17 @@ fn run() -> DriverResult<()> {
         return Ok(());
     }
 
-    let mut builder = config::Config::builder();
-
-    if let Some(config_fn) = args.config {
-        builder = builder.add_source(config::File::with_name(config_fn.as_str()));
-    }
-
-    let partial: driver::settings::PartialSettings = builder
-        .build()
-        .map_err(|err| driver::error::DriverError::Settings(err.to_string()))?
-        .try_deserialize()
-        .map_err(|err| driver::error::DriverError::Settings(err.to_string()))?;
-    let settings = Settings::default().merge_overrides(partial);
-    settings
+    let loaded = driver::settings::load_config(args.config.as_deref())
+        .map_err(driver::error::DriverError::Settings)?;
+    loaded
+        .settings
         .validate()
         .map_err(driver::error::DriverError::Settings)?;
 
     println!("Running with settings:");
-    println!("{settings:?}");
+    println!("{:?}", loaded.settings);
 
-    app::run(settings)
+    app::run(loaded)
 }
 
 fn main() -> ExitCode {

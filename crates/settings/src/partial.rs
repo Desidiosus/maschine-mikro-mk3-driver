@@ -4,12 +4,12 @@ use maschine_library::controls::{BUTTON_NAMES, button_index_from_name};
 use serde::de::Error as DeError;
 use serde::{Deserialize, Serialize};
 
-use crate::settings::actions::{
+use crate::actions::{
     ButtonPressAction, EncoderTurnAction, PadHitAction, PadPressureAction, SliderLedMode,
     SliderPositionAction, SliderTouchAction,
 };
-use crate::settings::{BacklightBrightness, MidiChannel, Settings};
-use crate::velocity::PadVelocityCurve;
+use crate::velocity_curve::PadVelocityCurve;
+use crate::{BacklightBrightness, MidiChannel, Settings};
 use maschine_library::lights::PadColors;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -37,7 +37,13 @@ pub struct PartialSettings {
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PartialGlobalSettings {
-    pub midi_channel: Option<MidiChannel>,
+    /// Deprecated and ignored. Private (not part of the builder surface): it
+    /// exists only so a legacy `[global] midi_channel` key still parses under
+    /// `deny_unknown_fields` rather than failing the load. Per-control channels
+    /// are authoritative; an unset channel resolves to channel 1. Never read or
+    /// merged, so it is dropped on the next persisted diff.
+    #[serde(skip_serializing)]
+    midi_channel: Option<MidiChannel>,
     pub client_name: Option<String>,
     pub port_name: Option<String>,
     pub port_name_in: Option<String>,
@@ -118,7 +124,14 @@ where
                 "pad index {config_key} out of range 1..=16"
             )));
         }
-        out[crate::settings::pads_by_index::config_key_to_internal(config_key)] = Some(cfg);
+        let internal = crate::pads_by_index::config_key_to_internal(config_key);
+        // Distinct string keys can normalize to the same index (e.g. "1" and
+        // "01"); reject the collision instead of silently last-write-wins, matching
+        // the full-config `PadsByIndex` decoder.
+        if out[internal].is_some() {
+            return Err(DeError::custom(format!("duplicate pad key {config_key}")));
+        }
+        out[internal] = Some(cfg);
     }
     Ok(Some(out))
 }
@@ -138,8 +151,8 @@ where
     let mut map = serializer.serialize_map(Some(count))?;
     for (internal, pad) in pads.iter().enumerate() {
         if let Some(pad) = pad {
-            let config_key = crate::settings::pads_by_index::internal_to_config_key(internal);
-            map.serialize_entry(&config_key, pad)?;
+            let config_key = crate::pads_by_index::internal_to_config_key(internal);
+            map.serialize_entry(&config_key.to_string(), pad)?;
         }
     }
     map.end()
@@ -221,7 +234,7 @@ macro_rules! diff_section {
 impl Settings {
     pub fn merge_overrides(mut self, partial: PartialSettings) -> Self {
         if let Some(g) = partial.global {
-            apply_overrides!(self.global, g; midi_channel, client_name, port_name, port_name_in);
+            apply_overrides!(self.global, g; client_name, port_name, port_name_in);
         }
         if let Some(h) = partial.hardware {
             apply_overrides!(
@@ -266,14 +279,22 @@ impl Settings {
         self
     }
 
+    /// Sparse overrides of `self` relative to `Settings::default()`.
     pub fn diff_from_defaults(&self) -> PartialSettings {
-        let defaults = Settings::default();
+        self.diff_from(&Settings::default())
+    }
+
+    /// Sparse overrides of `self` relative to an arbitrary `base`. Used to
+    /// persist only the GUI-made changes layered on top of a read-only `-c`
+    /// seed (`base = defaults ∘ -c`), so the seed shows through for untouched
+    /// keys. `diff_from(&Settings::default())` is `diff_from_defaults`.
+    pub fn diff_from(&self, base: &Settings) -> PartialSettings {
         let mut out = PartialSettings::default();
 
         let mut g = PartialGlobalSettings::default();
         diff_section!(
-            self.global, defaults.global, g;
-            copy: { midi_channel };
+            self.global, base.global, g;
+            copy: {};
             clone: { client_name, port_name, port_name_in };
         );
         if g != PartialGlobalSettings::default() {
@@ -282,7 +303,7 @@ impl Settings {
 
         let mut h = PartialHardwareSettings::default();
         diff_section!(
-            self.hardware, defaults.hardware, h;
+            self.hardware, base.hardware, h;
             copy: {
                 pad_sensitivity,
                 display_contrast,
@@ -298,7 +319,7 @@ impl Settings {
 
         let mut b = PartialBridgeSettings::default();
         diff_section!(
-            self.bridge, defaults.bridge, b;
+            self.bridge, base.bridge, b;
             copy: { midi_bridge_virmidi, autoconnect_virmidi, virmidi_port };
             clone: { virmidi_client_name };
         );
@@ -311,7 +332,7 @@ impl Settings {
         for (idx, pad) in self.pads.iter().enumerate() {
             let mut p = PartialPadConfig::default();
             diff_section!(
-                pad, defaults.pads[idx], p;
+                pad, base.pads[idx], p;
                 copy: {};
                 clone: { hit, pressure };
             );
@@ -327,7 +348,7 @@ impl Settings {
         let mut buttons: [Option<PartialButtonConfig>; 41] = std::array::from_fn(|_| None);
         let mut any_button = false;
         for (idx, slot) in buttons.iter_mut().enumerate() {
-            if self.buttons[idx].press != defaults.buttons[idx].press {
+            if self.buttons[idx].press != base.buttons[idx].press {
                 *slot = Some(PartialButtonConfig {
                     press: Some(self.buttons[idx].press.clone()),
                 });
@@ -338,7 +359,7 @@ impl Settings {
             out.buttons = Some(buttons);
         }
 
-        if self.encoder.turn != defaults.encoder.turn {
+        if self.encoder.turn != base.encoder.turn {
             out.encoder = Some(PartialEncoderConfig {
                 turn: Some(self.encoder.turn.clone()),
             });
@@ -346,13 +367,13 @@ impl Settings {
 
         let mut s = PartialSliderConfig::default();
         diff_section!(
-            self.slider, defaults.slider, s;
+            self.slider, base.slider, s;
             copy: {};
             clone: { position, touch };
         );
         let mut led = PartialSliderLedSettings::default();
         diff_section!(
-            self.slider.led, defaults.slider.led, led;
+            self.slider.led, base.slider.led, led;
             copy: { mode, color, stylized, auto_off_ms };
             clone: {};
         );
@@ -370,8 +391,8 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::actions::{ButtonPressAction, PadPressureAction, SliderTouchAction};
-    use crate::settings::{MidiChannel, Settings};
+    use crate::Settings;
+    use crate::actions::{ButtonPressAction, PadPressureAction, SliderTouchAction};
 
     #[test]
     fn empty_partial_merges_to_default() {
@@ -393,9 +414,11 @@ cc = 99
 
         match &merged.buttons[Buttons::Play as usize].press {
             ButtonPressAction::Cc { cc, .. } => assert_eq!(*cc, 99),
+            ButtonPressAction::Off => panic!("expected cc"),
         }
         match &merged.buttons[Buttons::Stop as usize].press {
             ButtonPressAction::Cc { cc, .. } => assert_eq!(*cc, 44),
+            ButtonPressAction::Off => panic!("expected cc"),
         }
     }
 
@@ -408,9 +431,9 @@ type = "poly"
         let partial: PartialSettings = toml::from_str(toml_str).unwrap();
         let merged = Settings::default().merge_overrides(partial);
 
-        // TOML key 5 maps to internal logical pad 11 (16 - 5).
+        // TOML key 5 (physical pad 5) maps to internal logical pad 8 (row-flip).
         assert_eq!(
-            merged.pads[11].pressure,
+            merged.pads[8].pressure,
             PadPressureAction::Poly {
                 channel: None,
                 note: None
@@ -443,25 +466,21 @@ off_value = 0
     }
 
     #[test]
-    fn partial_overrides_global_midi_channel_only() {
+    fn legacy_global_midi_channel_is_accepted_and_ignored() {
         let toml_str = r#"
 [global]
 midi_channel = 5
+client_name = "Custom"
 "#;
-        let partial: PartialSettings = toml::from_str(toml_str).unwrap();
+        let partial: PartialSettings = toml::from_str(toml_str).expect("legacy key still parses");
         let merged = Settings::default().merge_overrides(partial);
-
-        assert_eq!(
-            merged.global.midi_channel,
-            MidiChannel::try_from(5).unwrap()
-        );
-        assert_eq!(merged.global.client_name, "Maschine Mikro MK3");
+        // The deprecated channel is ignored; other global fields still apply.
+        assert_eq!(merged.global.client_name, "Custom");
     }
 
     #[test]
     fn diff_from_defaults_is_inverse_of_merge_overrides() {
         let mut s = Settings::default();
-        s.global.midi_channel = MidiChannel::try_from(3).unwrap();
         s.pads[2].pressure = PadPressureAction::Poly {
             channel: None,
             note: Some(60),
@@ -479,6 +498,27 @@ midi_channel = 5
     }
 
     #[test]
+    fn diff_from_base_captures_only_changes_relative_to_base() {
+        // base = defaults with a custom global field (stands in for a `-c` seed).
+        let mut base = Settings::default();
+        base.global.client_name = "Seeded".to_string();
+
+        // live = base plus one pad-note change. The base's client_name must NOT
+        // appear in the diff (it's part of the seed, not a GUI edit).
+        let mut live = base.clone();
+        live.pads[2].hit = PadHitAction::Note {
+            channel: None,
+            note: 61,
+        };
+
+        let diff = live.diff_from(&base);
+        assert!(diff.global.is_none(), "unchanged-vs-base global is omitted");
+        assert!(diff.pads.is_some(), "changed pad is captured");
+        // Applying the diff onto the base reconstructs the live settings.
+        assert_eq!(base.merge_overrides(diff), live);
+    }
+
+    #[test]
     fn partial_overrides_slider_led_mode_only() {
         let toml_str = r#"
 [slider.led]
@@ -487,10 +527,7 @@ mode = "pan"
         let partial: PartialSettings = toml::from_str(toml_str).unwrap();
         let merged = Settings::default().merge_overrides(partial);
 
-        assert_eq!(
-            merged.slider.led.mode,
-            crate::settings::actions::SliderLedMode::Pan
-        );
+        assert_eq!(merged.slider.led.mode, crate::actions::SliderLedMode::Pan);
         assert_eq!(
             merged.slider.led.color,
             maschine_library::lights::PadColors::White
@@ -513,15 +550,12 @@ stylized = true
             maschine_library::lights::PadColors::Cyan
         );
         assert!(merged.slider.led.stylized);
-        assert_eq!(
-            merged.slider.led.mode,
-            crate::settings::actions::SliderLedMode::Bar
-        );
+        assert_eq!(merged.slider.led.mode, crate::actions::SliderLedMode::Bar);
     }
 
     #[test]
     fn diff_from_defaults_emits_slider_led_overrides() {
-        use crate::settings::actions::SliderLedMode;
+        use crate::actions::SliderLedMode;
         let mut s = Settings::default();
         s.slider.led.mode = SliderLedMode::Dot;
         s.slider.led.stylized = true;
@@ -541,9 +575,46 @@ auto_off_ms = 0
         let merged = Settings::default().merge_overrides(partial);
 
         assert_eq!(merged.slider.led.auto_off_ms, 0);
-        assert_eq!(
-            merged.slider.led.mode,
-            crate::settings::actions::SliderLedMode::Bar
-        );
+        assert_eq!(merged.slider.led.mode, crate::actions::SliderLedMode::Bar);
+    }
+
+    #[test]
+    fn partial_pads_reject_duplicate_normalized_keys() {
+        // "1" and "01" parse to the same index; the partial decoder must reject
+        // the collision rather than silently last-write-wins.
+        let toml_str = r#"
+[pads.1.hit]
+type = "note"
+note = 60
+
+[pads.01.hit]
+type = "note"
+note = 62
+"#;
+        let err = toml::from_str::<PartialSettings>(toml_str).unwrap_err();
+        assert!(err.to_string().contains("duplicate pad key"), "got: {err}");
+    }
+
+    #[test]
+    fn partial_pads_round_trip_through_self_describing_codec() {
+        use crate::PadPressureAction;
+
+        let mut pads: [Option<PartialPadConfig>; 16] = std::array::from_fn(|_| None);
+        pads[2] = Some(PartialPadConfig {
+            hit: None,
+            pressure: Some(PadPressureAction::Poly {
+                channel: None,
+                note: Some(60),
+            }),
+        });
+        let original = PartialSettings {
+            pads: Some(pads),
+            ..Default::default()
+        };
+
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&original, &mut bytes).expect("serialize");
+        let back: PartialSettings = ciborium::from_reader(&bytes[..]).expect("deserialize");
+        assert_eq!(back, original);
     }
 }

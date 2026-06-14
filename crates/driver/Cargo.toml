@@ -7,6 +7,9 @@ default-run = "driver"
 
 [dependencies]
 maschine_library.workspace = true
+settings.workspace = true
+protocol.workspace = true
+arc-swap.workspace = true
 hidapi.workspace = true
 num.workspace = true
 midly.workspace = true
@@ -17,6 +20,7 @@ toml.workspace = true
 libc.workspace = true
 
 midir = { version = "0.10.4", features = ["default"] }
+
 
 [[bin]]
 name = "driver"
