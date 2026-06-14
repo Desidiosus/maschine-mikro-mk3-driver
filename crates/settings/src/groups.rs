@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::BacklightBrightness;
 use crate::velocity_curve::PadVelocityCurve;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,8 +24,7 @@ pub struct HardwareSettings {
     pub pad_sensitivity: u8,
     pub display_contrast: u8,
     pub pad_velocity_curve: PadVelocityCurve,
-    pub backlight_buttons: bool,
-    pub backlight_brightness: BacklightBrightness,
+    pub led_brightness: u8,
 }
 
 impl Default for HardwareSettings {
@@ -35,8 +33,7 @@ impl Default for HardwareSettings {
             pad_sensitivity: 50,
             display_contrast: 50,
             pad_velocity_curve: PadVelocityCurve::Linear,
-            backlight_buttons: true,
-            backlight_brightness: BacklightBrightness::Dim,
+            led_brightness: 5,
         }
     }
 }

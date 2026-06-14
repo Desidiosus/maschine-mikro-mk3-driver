@@ -3,7 +3,7 @@
 use std::sync::mpsc::Sender;
 
 use protocol::{DriverToGui, GuiToDriver};
-use settings::{BacklightBrightness, PadVelocityCurve};
+use settings::PadVelocityCurve;
 
 use crate::inspector::assign::forms::{
     AssignTab, CcType, EncoderModeKind, PadHitType, PadPressType, SliderTouchKind,
@@ -30,8 +30,8 @@ pub enum Message {
     SetPadSensitivity,
     SetDisplayContrast,
     SetVelocityCurve(PadVelocityCurve),
-    SetBacklightButtons(bool),
-    SetBacklightBrightness(BacklightBrightness),
+    PreviewLedBrightness(u8),
+    SetLedBrightness,
     /// Toggle the Preferences overlay.
     TogglePrefs,
     // Encoder mode + wrap (pick_list / checkbox).

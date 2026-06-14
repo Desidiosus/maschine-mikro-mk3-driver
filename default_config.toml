@@ -27,8 +27,7 @@
 # pad_sensitivity = 50
 # display_contrast = 50
 # pad_velocity_curve = "linear"
-# backlight_buttons = true
-# backlight_brightness = "dim"
+# led_brightness = 5
 
 [bridge]
 # midi_bridge_virmidi = false

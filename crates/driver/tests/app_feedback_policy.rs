@@ -1,11 +1,10 @@
 use maschine_library::controls::Buttons;
-use maschine_library::lights::{Brightness, PadColors};
+use maschine_library::lights::{BUTTON_BACKLIGHT_LEVEL, Brightness, PadColors};
 
 fn test_settings(midi_bridge_virmidi: bool) -> driver::settings::Settings {
     let mut s = driver::settings::Settings::default();
     s.bridge.midi_bridge_virmidi = midi_bridge_virmidi;
-    s.hardware.backlight_buttons = true;
-    s.hardware.backlight_brightness = driver::settings::BacklightBrightness::Dim;
+    s.hardware.led_brightness = 5;
     s.global.client_name = "Client".into();
     s.global.port_name = "Port".into();
     s.global.port_name_in = "Input".into();
@@ -26,7 +25,7 @@ fn midi_button_release_applies_local_backlight() {
     assert!(outputs.lights_dirty());
     assert_eq!(
         outputs.with_lights(|lights| lights.get_button(Buttons::Play)),
-        Brightness::Dim
+        BUTTON_BACKLIGHT_LEVEL
     );
 }
 

@@ -1,6 +1,6 @@
 use hidapi::HidResult;
 use maschine_library::controls::Buttons;
-use maschine_library::lights::{Brightness, PadColors};
+use maschine_library::lights::{BUTTON_BACKLIGHT_LEVEL, Brightness, PadColors};
 use num::FromPrimitive;
 
 use crate::events::ControlEvent;
@@ -30,10 +30,10 @@ pub fn apply_local_output_feedback(
         ControlEvent::ButtonChanged {
             index,
             pressed: false,
-        } if settings.hardware.backlight_buttons
+        } if settings.hardware.led_brightness > 0
             && local_button_release_backlight_enabled(settings) =>
         {
-            let brightness = settings.hardware.backlight_brightness.as_light_brightness();
+            let brightness = BUTTON_BACKLIGHT_LEVEL;
             outputs.with_lights_mut(|lights| {
                 if let Some(button) = Buttons::from_usize(*index)
                     && lights.button_has_light(button)

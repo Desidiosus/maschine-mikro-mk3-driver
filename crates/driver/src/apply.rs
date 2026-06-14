@@ -2,7 +2,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use maschine_library::hid::HidIo;
-use maschine_library::preferences::{set_display_contrast, set_pad_sensitivity};
+use maschine_library::preferences::{
+    set_button_brightness, set_display_contrast, set_pad_sensitivity,
+};
 
 use crate::error::DriverResult;
 use crate::outputs::DeviceOutputs;
@@ -19,9 +21,14 @@ pub struct SideEffects {
     pub pad_sensitivity: Option<u8>,
     /// New display contrast to re-push, if the delta changed it.
     pub display_contrast: Option<u8>,
-    /// Button backlight settings changed → re-apply the backlight level to all
-    /// backlight-capable buttons (or turn them off when disabled).
-    pub reinit_backlight: bool,
+    /// New button-backlight brightness (0..=10) to push to the device via the
+    /// `0xf3` report, if the delta changed it. The global preference scales the
+    /// emitted intensity; `0` turns the backlight off.
+    pub button_brightness: Option<u8>,
+    /// Re-apply the per-LED ambient state to all backlight-capable buttons. Only
+    /// set when the backlight toggles between off and on, so adjusting brightness
+    /// among non-zero values scales `0xf3` without overwriting DAW-driven LEDs.
+    pub refresh_backlight: bool,
 }
 
 /// Merge `delta` onto the live settings, validate, (when `persist`) persist the
@@ -62,8 +69,8 @@ pub fn apply_delta(
             .then_some(new.pad_sensitivity),
         display_contrast: (old.display_contrast != new.display_contrast)
             .then_some(new.display_contrast),
-        reinit_backlight: old.backlight_buttons != new.backlight_buttons
-            || old.backlight_brightness != new.backlight_brightness,
+        button_brightness: (old.led_brightness != new.led_brightness).then_some(new.led_brightness),
+        refresh_backlight: (old.led_brightness > 0) != (new.led_brightness > 0),
     };
 
     Ok(effects)
@@ -82,7 +89,10 @@ pub fn apply_side_effects<D: HidIo>(
     if let Some(value) = effects.display_contrast {
         set_display_contrast(device, value)?;
     }
-    if effects.reinit_backlight {
+    if let Some(value) = effects.button_brightness {
+        set_button_brightness(device, value)?;
+    }
+    if effects.refresh_backlight {
         crate::app::refresh_button_backlight(outputs, settings);
     }
     Ok(())
@@ -241,7 +251,8 @@ mod tests {
         let effects = SideEffects {
             pad_sensitivity: Some(70),
             display_contrast: Some(30),
-            reinit_backlight: false,
+            button_brightness: None,
+            refresh_backlight: false,
         };
         apply_side_effects(&effects, &settings, &device, &outputs).unwrap();
 
@@ -252,5 +263,73 @@ mod tests {
         assert_eq!(writes[0][0], 0xf4); // pad-sensitivity report marker
         assert_eq!(features.len(), 1);
         assert_eq!(features[0][0], 0xf8); // display-contrast report marker
+    }
+
+    #[test]
+    fn apply_side_effects_pushes_button_brightness() {
+        let settings = Settings::default();
+        let outputs = DeviceOutputs::new();
+        let device = FakeHid::default();
+
+        let effects = SideEffects {
+            pad_sensitivity: None,
+            display_contrast: None,
+            button_brightness: Some(7),
+            refresh_backlight: false,
+        };
+        apply_side_effects(&effects, &settings, &device, &outputs).unwrap();
+
+        let writes = device.writes.borrow();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0], vec![0xf3, 7]);
+    }
+
+    fn backlight_delta(value: u8) -> PartialSettings {
+        toml::from_str(&format!("[hardware]\nled_brightness = {value}\n")).unwrap()
+    }
+
+    #[test]
+    fn apply_delta_refreshes_leds_only_when_backlight_toggles() {
+        let path = temp_config_path("backlight-toggle");
+        // Default brightness is non-zero (on).
+        let handle = new_shared(Settings::default());
+
+        // On → on: brightness changes but stays lit; push 0xf3 without an LED refresh.
+        let effects = apply_delta(
+            &handle,
+            backlight_delta(8),
+            &Settings::default(),
+            &path,
+            false,
+        )
+        .unwrap();
+        assert_eq!(effects.button_brightness, Some(8));
+        assert!(!effects.refresh_backlight);
+
+        // On → off: refresh to drive the ambient LEDs dark.
+        let effects = apply_delta(
+            &handle,
+            backlight_delta(0),
+            &Settings::default(),
+            &path,
+            false,
+        )
+        .unwrap();
+        assert_eq!(effects.button_brightness, Some(0));
+        assert!(effects.refresh_backlight);
+
+        // Off → on: refresh to light the ambient LEDs.
+        let effects = apply_delta(
+            &handle,
+            backlight_delta(4),
+            &Settings::default(),
+            &path,
+            false,
+        )
+        .unwrap();
+        assert_eq!(effects.button_brightness, Some(4));
+        assert!(effects.refresh_backlight);
+
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -9,7 +9,7 @@ use crate::actions::{
     SliderPositionAction, SliderTouchAction,
 };
 use crate::velocity_curve::PadVelocityCurve;
-use crate::{BacklightBrightness, MidiChannel, Settings};
+use crate::{MidiChannel, Settings};
 use maschine_library::lights::PadColors;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -55,8 +55,16 @@ pub struct PartialHardwareSettings {
     pub pad_sensitivity: Option<u8>,
     pub display_contrast: Option<u8>,
     pub pad_velocity_curve: Option<PadVelocityCurve>,
-    pub backlight_buttons: Option<bool>,
-    pub backlight_brightness: Option<BacklightBrightness>,
+    pub led_brightness: Option<u8>,
+    /// Deprecated and ignored. Private absorber fields for the old on/off flag and
+    /// string-typed brightness preset that `led_brightness` replaced: they exist
+    /// only so a legacy `[hardware]` config still parses under `deny_unknown_fields`
+    /// rather than failing the load. Never read or merged, so they are dropped on
+    /// the next persisted diff.
+    #[serde(skip_serializing)]
+    backlight_buttons: Option<bool>,
+    #[serde(skip_serializing)]
+    backlight_brightness: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -242,8 +250,7 @@ impl Settings {
                 pad_sensitivity,
                 display_contrast,
                 pad_velocity_curve,
-                backlight_buttons,
-                backlight_brightness,
+                led_brightness,
             );
         }
         if let Some(b) = partial.bridge {
@@ -308,8 +315,7 @@ impl Settings {
                 pad_sensitivity,
                 display_contrast,
                 pad_velocity_curve,
-                backlight_buttons,
-                backlight_brightness,
+                led_brightness,
             };
             clone: {};
         );
@@ -463,6 +469,27 @@ off_value = 0
                 off_value: 0
             }
         );
+    }
+
+    #[test]
+    fn unknown_hardware_key_is_rejected() {
+        // A typo'd key must fail the load rather than being silently dropped, so a
+        // mistyped override surfaces as an error instead of quietly doing nothing.
+        let err = toml::from_str::<PartialSettings>("[hardware]\npad_sensitvity = 90\n")
+            .expect_err("typo'd key must be rejected");
+        assert!(err.to_string().contains("pad_sensitvity"), "got: {err}");
+    }
+
+    #[test]
+    fn legacy_backlight_keys_are_accepted_and_ignored() {
+        // The removed on/off flag and renamed brightness preset still parse (absorbed
+        // by deprecated fields) so an older config loads, but never affect settings.
+        let partial: PartialSettings = toml::from_str(
+            "[hardware]\nbacklight_buttons = false\nbacklight_brightness = \"dim\"\nled_brightness = 7\n",
+        )
+        .expect("legacy keys still parse");
+        let merged = Settings::default().merge_overrides(partial);
+        assert_eq!(merged.hardware.led_brightness, 7);
     }
 
     #[test]

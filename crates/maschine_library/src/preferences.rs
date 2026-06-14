@@ -3,7 +3,9 @@ use hidapi::HidResult;
 use crate::hid::HidIo;
 
 const MAX_HARDWARE_PREFERENCE_VALUE: u8 = 100;
-const MAX_BUTTON_BRIGHTNESS: u8 = 10;
+/// Highest button-backlight brightness the `0xf3` preference accepts. Shared as
+/// the single source of truth for the setting's range (validation + GUI slider).
+pub const MAX_BUTTON_BRIGHTNESS: u8 = 10;
 
 fn pad_sensitivity_report(value: u8) -> [u8; 33] {
     let mut report = [0u8; 33];

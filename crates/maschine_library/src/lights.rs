@@ -12,6 +12,10 @@ pub enum Brightness {
     Bright = 0x7f,
 }
 
+/// Per-LED brightness written to a backlight-capable button when it is lit. The
+/// global `0xf3` preference scales the actual emitted intensity on top of this.
+pub const BUTTON_BACKLIGHT_LEVEL: Brightness = Brightness::Normal;
+
 #[derive(FromPrimitive, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PadColors {

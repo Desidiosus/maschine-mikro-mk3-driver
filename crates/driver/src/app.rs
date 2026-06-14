@@ -6,9 +6,10 @@ use std::time::{Duration, Instant};
 use hidapi::{HidApi, HidDevice};
 use maschine_library::controls::Buttons;
 use maschine_library::hid::HidIo;
-use maschine_library::lights::Brightness;
-use maschine_library::lights::Lights;
-use maschine_library::preferences::{set_display_contrast, set_pad_sensitivity};
+use maschine_library::lights::{BUTTON_BACKLIGHT_LEVEL, Brightness, Lights};
+use maschine_library::preferences::{
+    set_button_brightness, set_display_contrast, set_pad_sensitivity,
+};
 use maschine_library::screen::{Screen, render_centered_text};
 use maschine_library::{USB_PID, USB_VID};
 use num::FromPrimitive;
@@ -156,6 +157,7 @@ fn open_device() -> DriverResult<HidDevice> {
 fn apply_startup_preferences<D: HidIo>(device: &D, settings: &Settings) -> DriverResult<()> {
     set_pad_sensitivity(device, settings.hardware.pad_sensitivity)?;
     set_display_contrast(device, settings.hardware.display_contrast)?;
+    set_button_brightness(device, settings.hardware.led_brightness)?;
     Ok(())
 }
 
@@ -355,27 +357,24 @@ fn for_each_backlit_button(outputs: &DeviceOutputs, mut f: impl FnMut(&mut Light
 }
 
 pub(crate) fn initialize_button_backlight(outputs: &DeviceOutputs, settings: &Settings) {
-    if !settings.hardware.backlight_buttons {
+    if settings.hardware.led_brightness == 0 {
         return;
     }
-
-    let brightness = settings.hardware.backlight_brightness.as_light_brightness();
-
     for_each_backlit_button(outputs, |lights, button| {
         if lights.get_button(button) == Brightness::Off {
-            lights.set_button(button, brightness);
+            lights.set_button(button, BUTTON_BACKLIGHT_LEVEL);
         }
     });
 }
 
 /// Re-apply the button-backlight setting to ALL backlight-capable buttons:
-/// the configured brightness when enabled, else `Off`. Used on live settings
-/// changes (unlike `initialize_button_backlight`, which only lifts already-Off
-/// buttons at startup). This is a blunt refresh — it may briefly override
-/// DAW-driven LED state until the next feedback message.
+/// `BUTTON_BACKLIGHT_LEVEL` when brightness is non-zero, else `Off`. The
+/// global `0xf3` preference scales the actual emitted intensity. This is a blunt
+/// refresh — it may briefly override DAW-driven LED state until the next feedback
+/// message, so it runs only when the backlight toggles on or off.
 pub(crate) fn refresh_button_backlight(outputs: &DeviceOutputs, settings: &Settings) {
-    let level = if settings.hardware.backlight_buttons {
-        settings.hardware.backlight_brightness.as_light_brightness()
+    let level = if settings.hardware.led_brightness > 0 {
+        BUTTON_BACKLIGHT_LEVEL
     } else {
         Brightness::Off
     };
@@ -394,19 +393,18 @@ mod backlight_tests {
     use maschine_library::lights::Brightness;
 
     #[test]
-    fn refresh_sets_all_backlit_buttons_to_level_then_off() {
+    fn refresh_sets_all_backlit_buttons_to_ambient_then_off() {
         let outputs = DeviceOutputs::new();
         let mut settings = Settings::default();
-        settings.hardware.backlight_buttons = true;
-        settings.hardware.backlight_brightness = crate::settings::BacklightBrightness::Bright;
+        settings.hardware.led_brightness = 5;
         refresh_button_backlight(&outputs, &settings);
         outputs.with_lights_mut(|l| {
             if l.button_has_light(Buttons::Play) {
-                assert_eq!(l.get_button(Buttons::Play), Brightness::Bright);
+                assert_eq!(l.get_button(Buttons::Play), BUTTON_BACKLIGHT_LEVEL);
             }
         });
 
-        settings.hardware.backlight_buttons = false;
+        settings.hardware.led_brightness = 0;
         refresh_button_backlight(&outputs, &settings);
         outputs.with_lights_mut(|l| {
             if l.button_has_light(Buttons::Play) {

@@ -19,45 +19,8 @@ pub use actions::{
 pub use buttons_by_name::ButtonsByName;
 pub use groups::{BridgeSettings, GlobalSettings, HardwareSettings};
 pub use maschine_library::lights::PadColors;
+pub use maschine_library::preferences::MAX_BUTTON_BRIGHTNESS;
 pub use pads_by_index::PadsByIndex;
-
-#[derive(Default, Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum BacklightBrightness {
-    #[default]
-    Dim,
-    Normal,
-    Bright,
-}
-
-impl BacklightBrightness {
-    pub fn as_light_brightness(self) -> maschine_library::lights::Brightness {
-        match self {
-            Self::Dim => maschine_library::lights::Brightness::Dim,
-            Self::Normal => maschine_library::lights::Brightness::Normal,
-            Self::Bright => maschine_library::lights::Brightness::Bright,
-        }
-    }
-}
-
-impl std::fmt::Display for BacklightBrightness {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            BacklightBrightness::Dim => "dim",
-            BacklightBrightness::Normal => "normal",
-            BacklightBrightness::Bright => "bright",
-        };
-        f.write_str(s)
-    }
-}
-
-impl BacklightBrightness {
-    pub const ALL: [BacklightBrightness; 3] = [
-        BacklightBrightness::Dim,
-        BacklightBrightness::Normal,
-        BacklightBrightness::Bright,
-    ];
-}
 
 #[derive(Default, Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(try_from = "u8", into = "u8")]
@@ -125,6 +88,11 @@ impl Settings {
         }
         if self.hardware.display_contrast > 100 {
             return Err("display_contrast must be in range 0..=100".to_string());
+        }
+        if self.hardware.led_brightness > MAX_BUTTON_BRIGHTNESS {
+            return Err(format!(
+                "led_brightness must be in range 0..={MAX_BUTTON_BRIGHTNESS}"
+            ));
         }
         if self.global.client_name.is_empty() {
             return Err("client_name must not be empty".to_string());
@@ -261,11 +229,10 @@ mod validate_tests {
     }
 
     #[test]
-    fn backlight_display_matches_serde_token_for_all_variants() {
-        for v in super::BacklightBrightness::ALL {
-            let token = serde_json::to_string(&v).unwrap();
-            assert_eq!(v.to_string(), token.trim_matches('"'), "{v:?}");
-        }
+    fn validate_rejects_led_brightness_above_10() {
+        let mut s = Settings::default();
+        s.hardware.led_brightness = 11;
+        assert!(s.validate().is_err());
     }
 
     #[test]

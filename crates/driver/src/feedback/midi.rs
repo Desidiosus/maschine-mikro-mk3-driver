@@ -78,8 +78,7 @@ pub fn apply_incoming_midi_message(
                 }
                 let brightness = backend_midi::button_brightness_from_value(
                     data2,
-                    settings.hardware.backlight_buttons,
-                    settings.hardware.backlight_brightness.as_light_brightness(),
+                    settings.hardware.led_brightness > 0,
                 );
                 lights.set_button(button, brightness);
             });

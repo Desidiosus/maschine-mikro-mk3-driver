@@ -207,6 +207,38 @@ mod tests {
     }
 
     #[test]
+    fn legacy_backlight_keys_are_ignored_and_dropped_on_rewrite() {
+        let dir = std::env::temp_dir().join("mmk3-persist-legacy-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("legacy-{}.toml", std::process::id()));
+
+        // A config written by an older version: keys that no longer exist (the
+        // removed on/off flag and the renamed, string-typed brightness preset).
+        std::fs::write(
+            &path,
+            "[hardware]\nbacklight_buttons = false\nbacklight_brightness = \"dim\"\n",
+        )
+        .unwrap();
+
+        // Loads without error; the unknown keys are ignored and led_brightness
+        // keeps its default.
+        let loaded = load_xdg(&path).unwrap();
+        assert_eq!(
+            loaded.hardware.led_brightness,
+            Settings::default().hardware.led_brightness
+        );
+
+        // Rewriting the config drops the stale keys.
+        save_overrides(&path, &loaded, &Settings::default()).unwrap();
+        let rewritten = std::fs::read_to_string(&path).unwrap();
+        assert!(!rewritten.contains("backlight_buttons"));
+        assert!(!rewritten.contains("backlight_brightness"));
+        assert!(!rewritten.contains("\"dim\""));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn xdg_path_uses_xdg_config_home_when_set() {
         let path = xdg_config_path_for(Some("/tmp/xdg-test"), Some("/home/ignored")).unwrap();
         assert_eq!(

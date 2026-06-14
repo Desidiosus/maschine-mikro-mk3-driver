@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use maschine_library::lights::Brightness;
+use maschine_library::lights::{BUTTON_BACKLIGHT_LEVEL, Brightness};
 use midir::os::unix::{VirtualInput, VirtualOutput};
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use protocol::{DriverToGui, MidiDir};
@@ -326,25 +326,17 @@ pub fn button_index_for_message(settings: &Settings, channel: u8, cc: u8) -> Opt
     })
 }
 
-pub fn button_brightness_from_value(
-    value: u8,
-    backlight_enabled: bool,
-    backlight_brightness: Brightness,
-) -> Brightness {
-    let brightness = if value > 0 {
+pub fn button_brightness_from_value(value: u8, backlight_on: bool) -> Brightness {
+    if value > 0 {
         match value {
             1..=42 => Brightness::Dim,
             43..=84 => Brightness::Normal,
             _ => Brightness::Bright,
         }
+    } else if backlight_on {
+        BUTTON_BACKLIGHT_LEVEL
     } else {
         Brightness::Off
-    };
-
-    if backlight_enabled && brightness == Brightness::Off {
-        backlight_brightness
-    } else {
-        brightness
     }
 }
 
@@ -381,6 +373,22 @@ mod tests {
             note,
         };
         s
+    }
+
+    #[test]
+    fn button_brightness_maps_cc_value_bands() {
+        assert_eq!(button_brightness_from_value(1, true), Brightness::Dim);
+        assert_eq!(button_brightness_from_value(50, true), Brightness::Normal);
+        assert_eq!(button_brightness_from_value(127, true), Brightness::Bright);
+    }
+
+    #[test]
+    fn button_brightness_zero_returns_ambient_when_on_else_off() {
+        assert_eq!(
+            button_brightness_from_value(0, true),
+            BUTTON_BACKLIGHT_LEVEL
+        );
+        assert_eq!(button_brightness_from_value(0, false), Brightness::Off);
     }
 
     #[test]

@@ -147,14 +147,19 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             crate::prefs::overrides::hardware_delta(|h| h.pad_velocity_curve = Some(c)),
             true,
         ),
-        Message::SetBacklightButtons(on) => state.send_apply(
-            crate::prefs::overrides::hardware_delta(|h| h.backlight_buttons = Some(on)),
-            true,
+        Message::PreviewLedBrightness(v) => state.send_apply(
+            crate::prefs::overrides::hardware_delta(|h| h.led_brightness = Some(v)),
+            false,
         ),
-        Message::SetBacklightBrightness(b) => state.send_apply(
-            crate::prefs::overrides::hardware_delta(|h| h.backlight_brightness = Some(b)),
-            true,
-        ),
+        Message::SetLedBrightness => {
+            if let Some(s) = &state.settings {
+                let v = s.hardware.led_brightness;
+                state.send_apply(
+                    crate::prefs::overrides::hardware_delta(|h| h.led_brightness = Some(v)),
+                    true,
+                );
+            }
+        }
         Message::TogglePrefs => state.show_prefs = !state.show_prefs,
         Message::Ignore => {}
         Message::SetEncoderModeKind(kind) => {

@@ -2,7 +2,7 @@
 
 use iced::widget::{checkbox, column, pick_list, row, slider, text};
 use iced::{Element, Length};
-use settings::{BacklightBrightness, PadVelocityCurve};
+use settings::PadVelocityCurve;
 
 use crate::app::State;
 use crate::message::Message;
@@ -41,6 +41,64 @@ fn sub_header<'a>(title: &str) -> Element<'a, Message> {
             ..iced::Font::DEFAULT
         })
         .color(iced::Color::from_rgb(0.60, 0.60, 0.66))
+        .into()
+}
+
+/// Radius of iced 0.14's default slider handle circle. Its center travels from
+/// `radius` to `width - radius`, so the tick strip is inset by this much to line
+/// up with the handle's stop positions.
+const SLIDER_HANDLE_RADIUS: f32 = 7.0;
+const TICK_WIDTH: f32 = 2.0;
+const TICK_HEIGHT: f32 = 6.0;
+
+/// A 0–10 slider that snaps to integer steps, with 11 decorative tick marks
+/// drawn beneath the track and an "off" caption under tick 0. Drag previews live
+/// (`persist:false`); release commits (`persist:true`).
+fn ticked_slider<'a>(value: u8) -> Element<'a, Message> {
+    use iced::widget::{Space, container};
+    use iced::{Background, Color, Theme};
+
+    let s = slider(
+        0..=settings::MAX_BUTTON_BRIGHTNESS,
+        value,
+        Message::PreviewLedBrightness,
+    )
+    .step(1u8)
+    .on_release(Message::SetLedBrightness);
+
+    fn tick_mark<'a>() -> Element<'a, Message> {
+        container(text(""))
+            .width(Length::Fixed(TICK_WIDTH))
+            .height(Length::Fixed(TICK_HEIGHT))
+            .style(|_t: &Theme| container::Style {
+                background: Some(Background::Color(Color::from_rgb(0.40, 0.40, 0.46))),
+                ..container::Style::default()
+            })
+            .into()
+    }
+
+    let mut ticks = row![].width(Length::Fill);
+    for i in 0..=settings::MAX_BUTTON_BRIGHTNESS {
+        ticks = ticks.push(tick_mark());
+        if i < settings::MAX_BUTTON_BRIGHTNESS {
+            ticks = ticks.push(Space::new().width(Length::Fill));
+        }
+    }
+
+    let ticks = container(ticks).padding([0.0, SLIDER_HANDLE_RADIUS]);
+    // Center the "off" caption on tick 0. Tick 0's center sits at
+    // `SLIDER_HANDLE_RADIUS + TICK_WIDTH / 2`; a box of twice that width with the
+    // text centered places the caption's center on the tick.
+    let off_label = container(
+        text("off")
+            .size(10)
+            .color(Color::from_rgb(0.55, 0.55, 0.60)),
+    )
+    .center_x(Length::Fixed(2.0 * SLIDER_HANDLE_RADIUS + TICK_WIDTH));
+
+    column![s, ticks, off_label]
+        .spacing(4)
+        .width(Length::Fill)
         .into()
 }
 
@@ -92,21 +150,7 @@ pub fn prefs_overlay(state: &State) -> Element<'_, Message> {
                 .into(),
         ),
         sub_header("LEDs"),
-        labeled(
-            "Button backlight".to_string(),
-            checkbox(h.backlight_buttons)
-                .on_toggle(Message::SetBacklightButtons)
-                .into(),
-        ),
-        labeled(
-            "Backlight brightness".to_string(),
-            pick_list(
-                &BacklightBrightness::ALL[..],
-                Some(h.backlight_brightness),
-                Message::SetBacklightBrightness
-            )
-            .into(),
-        ),
+        labeled("Brightness".to_string(), ticked_slider(h.led_brightness),),
     ]
     .spacing(10);
 
