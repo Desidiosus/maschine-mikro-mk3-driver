@@ -15,7 +15,7 @@ use maschine_library::{USB_PID, USB_VID};
 use num::FromPrimitive;
 use protocol::{ControlRef, DriverToGui, MidiDir};
 
-use crate::apply::{SideEffects, apply_side_effects};
+use crate::apply::{SideEffects, apply_device_registers, apply_output_overlays};
 use crate::backend::midi::MidiBackend;
 use crate::error::{DriverError, DriverResult};
 use crate::events::ControlEvent;
@@ -222,22 +222,46 @@ fn run_device_loop<D: HidIo>(
     let mut state = ControlState::new();
     let mut buf = [0u8; 64];
     let mut slider_released_at: Option<Instant> = None;
+    // Output overlays (backlight + pad idle LEDs) queued by IPC applies while
+    // soft-off blanks the device. Accumulated here and flushed on wake against
+    // the restored outputs, instead of lighting a sleeping device.
+    let mut pending_overlays = SideEffects::default();
     // Tracks whether MIDI output is currently failing, so a broken port is logged
     // once (not once per event) and again only after it recovers.
     let mut midi_send_failed = false;
 
     while !shutdown_requested.load(Ordering::Relaxed) {
-        let snapshot = settings.load();
-
         // Apply any pending hardware side effects from IPC applies (HID is
-        // owned by this thread). Re-load the settings per effect so the backlight
-        // refresh reads the just-applied values, not this iteration's snapshot
-        // (which was captured before the IPC thread stored the new settings).
+        // owned by this thread). Re-load the settings per effect so the overlay
+        // refresh reads the just-applied values.
+        //
+        // Device-register writes (sensitivity/contrast/brightness) apply
+        // immediately — they are independent of the blanked display. Output
+        // overlays (backlight + pad idle LEDs) would light a sleeping device, so
+        // while soft-off is active they accumulate in `pending_overlays` and are
+        // flushed on wake against the restored outputs.
         while let Ok(effects) = effects_rx.try_recv() {
-            if apply_side_effects(&effects, &settings.load(), device, outputs).is_err() {
+            if apply_device_registers(&effects, device).is_err() {
                 return SessionEnd::DeviceLost;
             }
+            if soft_off_sync.is_active() {
+                pending_overlays.refresh_backlight |= effects.refresh_backlight;
+                pending_overlays.refresh_pad_leds |= effects.refresh_pad_leds;
+            } else {
+                apply_output_overlays(&effects, &settings.load(), outputs);
+            }
         }
+        if !soft_off_sync.is_active()
+            && (pending_overlays.refresh_backlight || pending_overlays.refresh_pad_leds != 0)
+        {
+            apply_output_overlays(&pending_overlays, &settings.load(), outputs);
+            pending_overlays = SideEffects::default();
+        }
+
+        // Captured after applying pending IPC changes so input decoding and local
+        // feedback this iteration read the just-applied settings, not a snapshot
+        // taken before the IPC thread stored them.
+        let snapshot = settings.load();
 
         let pad_velocity_curve = snapshot.hardware.pad_velocity_curve;
         let auto_off = snapshot.slider.led.auto_off_ms;
@@ -381,9 +405,92 @@ pub(crate) fn refresh_button_backlight(outputs: &DeviceOutputs, settings: &Setti
     for_each_backlit_button(outputs, |lights, button| lights.set_button(button, level));
 }
 
+/// Seed every pad LED to its active source's idle state, so Single/Dual-idle
+/// pads glow at rest (not only after the first event). Source `Off`/`Velocity`
+/// idle is dark.
+pub(crate) fn initialize_pad_leds(outputs: &DeviceOutputs, settings: &Settings) {
+    seed_pad_leds(outputs, settings, u16::MAX);
+}
+
+/// Re-seed only the pads whose bit is set in `mask` to their idle state, leaving
+/// every other pad untouched so a config edit never clobbers a pad currently lit
+/// by live feedback.
+pub(crate) fn reseed_pad_leds(outputs: &DeviceOutputs, settings: &Settings, mask: u16) {
+    seed_pad_leds(outputs, settings, mask);
+}
+
+fn seed_pad_leds(outputs: &DeviceOutputs, settings: &Settings, mask: u16) {
+    outputs.with_lights_mut(|lights| {
+        for index in 0..16 {
+            if mask & (1 << index) == 0 {
+                continue;
+            }
+            let (color, brightness) = settings.pads[index].led.resolve(false, 0);
+            lights.set_pad(index, color, brightness);
+        }
+    });
+}
+
 pub fn prepare_startup_outputs(outputs: &DeviceOutputs, settings: &Settings) {
     outputs.with_screen_mut(|screen| render_centered_text(screen, "MIDI MODE"));
     initialize_button_backlight(outputs, settings);
+    initialize_pad_leds(outputs, settings);
+}
+
+#[cfg(test)]
+mod pad_led_seed_tests {
+    use super::*;
+    use maschine_library::lights::{Brightness, PadColors};
+    use settings::{PadLedColorMode, PadLedSource, Settings};
+
+    #[test]
+    fn seeding_lights_single_idle_and_leaves_velocity_dark() {
+        let outputs = DeviceOutputs::new();
+        let mut settings = Settings::default();
+        // pad 0: Single Green on the active (Out) source → dim idle.
+        settings.pads[0].led.midi_out = PadLedColorMode::single(PadColors::Green);
+        // pad 1: Velocity on the active source → dark idle.
+        settings.pads[1].led.midi_out = PadLedColorMode::velocity();
+        // pad 2: source Off → dark.
+        settings.pads[2].led.source = PadLedSource::Off;
+
+        initialize_pad_leds(&outputs, &settings);
+
+        assert_eq!(
+            outputs.with_lights(|l| l.get_pad(0)),
+            (PadColors::Green, Brightness::Dim)
+        );
+        assert_eq!(
+            outputs.with_lights(|l| l.get_pad(1)),
+            (PadColors::Off, Brightness::Off)
+        );
+        assert_eq!(
+            outputs.with_lights(|l| l.get_pad(2)),
+            (PadColors::Off, Brightness::Off)
+        );
+    }
+
+    #[test]
+    fn reseed_only_touches_masked_pads() {
+        let outputs = DeviceOutputs::new();
+        let mut settings = Settings::default();
+        settings.pads[0].led.midi_out = PadLedColorMode::single(PadColors::Green);
+        // Pad 1 is currently lit by live feedback, not at its idle state.
+        outputs.with_lights_mut(|l| l.set_pad(1, PadColors::Red, Brightness::Bright));
+
+        // Re-seed only pad 0; pad 1 must be left untouched.
+        reseed_pad_leds(&outputs, &settings, 1 << 0);
+
+        assert_eq!(
+            outputs.with_lights(|l| l.get_pad(0)),
+            (PadColors::Green, Brightness::Dim)
+        );
+        assert_eq!(
+            outputs.with_lights(|l| l.get_pad(1)),
+            (PadColors::Red, Brightness::Bright),
+            "a targeted re-seed must not clobber an unrelated lit pad"
+        );
+    }
 }
 
 #[cfg(test)]

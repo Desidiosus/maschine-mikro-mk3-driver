@@ -29,6 +29,11 @@ pub struct SideEffects {
     /// set when the backlight toggles between off and on, so adjusting brightness
     /// among non-zero values scales `0xf3` without overwriting DAW-driven LEDs.
     pub refresh_backlight: bool,
+    /// Bitmask (bit `i` = pad `i`) of pads whose `led` config changed and whose
+    /// idle LED must be re-seeded, so Single/Dual-idle pads update at rest.
+    /// Only the changed pads are touched, so an edit never clobbers an unrelated
+    /// pad that is currently lit by live feedback.
+    pub refresh_pad_leds: u16,
 }
 
 /// Merge `delta` onto the live settings, validate, (when `persist`) persist the
@@ -71,18 +76,22 @@ pub fn apply_delta(
             .then_some(new.display_contrast),
         button_brightness: (old.led_brightness != new.led_brightness).then_some(new.led_brightness),
         refresh_backlight: (old.led_brightness > 0) != (new.led_brightness > 0),
+        refresh_pad_leds: current
+            .pads
+            .iter()
+            .zip(merged.pads.iter())
+            .enumerate()
+            .filter(|(_, (a, b))| a.led != b.led)
+            .fold(0u16, |mask, (i, _)| mask | (1 << i)),
     };
 
     Ok(effects)
 }
 
-/// Apply hardware `effects` to the device and outputs. Runs on the loop thread.
-pub fn apply_side_effects<D: HidIo>(
-    effects: &SideEffects,
-    settings: &crate::settings::Settings,
-    device: &D,
-    outputs: &DeviceOutputs,
-) -> DriverResult<()> {
+/// Push the device-register `effects` (pad sensitivity, display contrast, button
+/// brightness) over HID. These are independent of the blanked display state, so
+/// the loop applies them immediately even while soft-off is active.
+pub fn apply_device_registers<D: HidIo>(effects: &SideEffects, device: &D) -> DriverResult<()> {
     if let Some(value) = effects.pad_sensitivity {
         set_pad_sensitivity(device, value)?;
     }
@@ -92,9 +101,35 @@ pub fn apply_side_effects<D: HidIo>(
     if let Some(value) = effects.button_brightness {
         set_button_brightness(device, value)?;
     }
+    Ok(())
+}
+
+/// Re-render the output overlays (button backlight, pad idle LEDs) the `effects`
+/// request. These write to `outputs`, so the loop defers them while soft-off
+/// blanks the device and flushes them on wake.
+pub fn apply_output_overlays(
+    effects: &SideEffects,
+    settings: &crate::settings::Settings,
+    outputs: &DeviceOutputs,
+) {
     if effects.refresh_backlight {
         crate::app::refresh_button_backlight(outputs, settings);
     }
+    if effects.refresh_pad_leds != 0 {
+        crate::app::reseed_pad_leds(outputs, settings, effects.refresh_pad_leds);
+    }
+}
+
+/// Apply both halves of `effects`. Used off the soft-off path (tests, and any
+/// caller that does not need to defer overlays).
+pub fn apply_side_effects<D: HidIo>(
+    effects: &SideEffects,
+    settings: &crate::settings::Settings,
+    device: &D,
+    outputs: &DeviceOutputs,
+) -> DriverResult<()> {
+    apply_device_registers(effects, device)?;
+    apply_output_overlays(effects, settings, outputs);
     Ok(())
 }
 
@@ -253,6 +288,7 @@ mod tests {
             display_contrast: Some(30),
             button_brightness: None,
             refresh_backlight: false,
+            refresh_pad_leds: 0,
         };
         apply_side_effects(&effects, &settings, &device, &outputs).unwrap();
 
@@ -276,12 +312,54 @@ mod tests {
             display_contrast: None,
             button_brightness: Some(7),
             refresh_backlight: false,
+            refresh_pad_leds: 0,
         };
         apply_side_effects(&effects, &settings, &device, &outputs).unwrap();
 
         let writes = device.writes.borrow();
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0], vec![0xf3, 7]);
+    }
+
+    fn pad_led_source_delta() -> PartialSettings {
+        toml::from_str("[pads.1.led]\nsource = \"midi_in\"\n").unwrap()
+    }
+
+    #[test]
+    fn apply_delta_for_pad_led_change_requests_a_reseed() {
+        let path = temp_config_path("pad-led");
+        let handle = new_shared(Settings::default());
+        let effects = apply_delta(
+            &handle,
+            pad_led_source_delta(),
+            &Settings::default(),
+            &path,
+            false,
+        )
+        .unwrap();
+        // TOML key `pads.1` maps to internal pad 12; only that pad's bit is set.
+        assert_eq!(
+            effects.refresh_pad_leds,
+            1 << 12,
+            "a pad-LED change re-seeds only the changed pad"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn apply_delta_for_hardware_change_does_not_reseed_pads() {
+        let path = temp_config_path("no-pad-led");
+        let handle = new_shared(Settings::default());
+        let effects = apply_delta(
+            &handle,
+            pad_sensitivity_delta(73),
+            &Settings::default(),
+            &path,
+            false,
+        )
+        .unwrap();
+        assert_eq!(effects.refresh_pad_leds, 0);
+        let _ = std::fs::remove_file(&path);
     }
 
     fn backlight_delta(value: u8) -> PartialSettings {

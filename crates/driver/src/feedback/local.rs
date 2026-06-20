@@ -1,10 +1,11 @@
 use hidapi::HidResult;
 use maschine_library::controls::Buttons;
-use maschine_library::lights::{BUTTON_BACKLIGHT_LEVEL, Brightness, PadColors};
+use maschine_library::lights::BUTTON_BACKLIGHT_LEVEL;
 use num::FromPrimitive;
 
 use crate::events::ControlEvent;
 use crate::outputs::DeviceOutputs;
+use crate::settings::PadLedSource;
 use crate::settings::Settings;
 use crate::settings::actions::{SliderLedMode, SliderLedSettings};
 
@@ -17,15 +18,25 @@ pub fn apply_local_output_feedback(
         ControlEvent::SliderMoved { raw, .. } => {
             update_slider_lights(outputs, *raw, &settings.slider.led);
         }
-        ControlEvent::PadNoteOn { index, .. } => {
-            outputs.with_lights_mut(|lights| {
-                lights.set_pad(*index, PadColors::Blue, Brightness::Normal);
-            });
+        ControlEvent::PadNoteOn { index, velocity } => {
+            super::render_pad_led(
+                outputs,
+                settings,
+                PadLedSource::MidiOut,
+                *index,
+                true,
+                *velocity,
+            );
         }
-        ControlEvent::PadNoteOff { index, .. } => {
-            outputs.with_lights_mut(|lights| {
-                lights.set_pad(*index, PadColors::Off, Brightness::Off);
-            });
+        ControlEvent::PadNoteOff { index, velocity } => {
+            super::render_pad_led(
+                outputs,
+                settings,
+                PadLedSource::MidiOut,
+                *index,
+                false,
+                *velocity,
+            );
         }
         ControlEvent::ButtonChanged {
             index,

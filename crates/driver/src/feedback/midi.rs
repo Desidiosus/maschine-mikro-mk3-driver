@@ -1,10 +1,10 @@
 use maschine_library::controls::Buttons;
-use maschine_library::lights::{Brightness, PadColors};
 use maschine_library::screen::{ScreenCommand, parse_sysex_command, render_centered_text};
 use num::FromPrimitive;
 
 use crate::backend::midi as backend_midi;
 use crate::outputs::DeviceOutputs;
+use crate::settings::PadLedSource;
 use crate::settings::Settings;
 use crate::settings::actions::{CcValueMode, EncoderTurnAction};
 
@@ -47,20 +47,19 @@ pub fn apply_incoming_midi_message(
     match status {
         0x90 => {
             if let Some(index) = backend_midi::pad_index_for_message(settings, channel, data1) {
-                outputs.with_lights_mut(|lights| {
-                    if data2 > 0 {
-                        lights.set_pad(index, pad_color_from_velocity(data2), Brightness::Normal);
-                    } else {
-                        lights.set_pad(index, PadColors::Off, Brightness::Off);
-                    }
-                });
+                super::render_pad_led(
+                    outputs,
+                    settings,
+                    PadLedSource::MidiIn,
+                    index,
+                    data2 > 0,
+                    data2,
+                );
             }
         }
         0x80 => {
             if let Some(index) = backend_midi::pad_index_for_message(settings, channel, data1) {
-                outputs.with_lights_mut(|lights| {
-                    lights.set_pad(index, PadColors::Off, Brightness::Off);
-                });
+                super::render_pad_led(outputs, settings, PadLedSource::MidiIn, index, false, 0);
             }
         }
         0xB0 => {
@@ -99,29 +98,6 @@ fn apply_incoming_sysex(message: &[u8], outputs: &DeviceOutputs) {
     }
 }
 
-pub fn pad_color_from_velocity(velocity: u8) -> PadColors {
-    match velocity {
-        0 => PadColors::Off,
-        1..=7 => PadColors::Red,
-        8..=14 => PadColors::Orange,
-        15..=21 => PadColors::LightOrange,
-        22..=28 => PadColors::WarmYellow,
-        29..=35 => PadColors::Yellow,
-        36..=42 => PadColors::Lime,
-        43..=49 => PadColors::Green,
-        50..=56 => PadColors::Mint,
-        57..=63 => PadColors::Cyan,
-        64..=70 => PadColors::Turquoise,
-        71..=77 => PadColors::Blue,
-        78..=84 => PadColors::Plum,
-        85..=91 => PadColors::Violet,
-        92..=98 => PadColors::Purple,
-        99..=105 => PadColors::Magenta,
-        106..=112 => PadColors::Fuchsia,
-        _ => PadColors::White,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::apply_incoming_midi_message;
@@ -133,7 +109,8 @@ mod tests {
     #[test]
     fn incoming_note_on_lights_pad_with_velocity_color() {
         let outputs = DeviceOutputs::new();
-        let settings = Settings::default();
+        let mut settings = Settings::default();
+        settings.pads[0].led.source = settings::PadLedSource::MidiIn;
         // pads[0].hit.note default = 48
         apply_incoming_midi_message(
             &[0x90, 48, 64],
@@ -145,14 +122,15 @@ mod tests {
         assert!(outputs.take_lights_dirty());
         assert_eq!(
             outputs.with_lights(|l| l.get_pad(0)),
-            (PadColors::Turquoise, Brightness::Normal)
+            (PadColors::Lime, Brightness::Normal)
         );
     }
 
     #[test]
     fn incoming_note_off_turns_pad_off() {
         let outputs = DeviceOutputs::new();
-        let settings = Settings::default();
+        let mut settings = Settings::default();
+        settings.pads[0].led.source = settings::PadLedSource::MidiIn;
         apply_incoming_midi_message(
             &[0x80, 48, 0],
             &outputs,
@@ -160,6 +138,7 @@ mod tests {
             &crate::runtime_state::RuntimeState::default(),
         );
 
+        assert!(outputs.take_lights_dirty());
         assert_eq!(
             outputs.with_lights(|l| l.get_pad(0)),
             (PadColors::Off, Brightness::Off)
@@ -188,6 +167,7 @@ mod tests {
     fn incoming_message_honors_per_action_channel_override() {
         let outputs = DeviceOutputs::new();
         let mut settings = Settings::default();
+        settings.pads[0].led.source = settings::PadLedSource::MidiIn;
         settings.pads[0].hit = crate::settings::actions::PadHitAction::Note {
             channel: crate::settings::MidiChannel::try_from(2).ok(),
             note: 60,
@@ -201,7 +181,7 @@ mod tests {
 
         assert_eq!(
             outputs.with_lights(|l| l.get_pad(0)),
-            (PadColors::Turquoise, Brightness::Normal)
+            (PadColors::Lime, Brightness::Normal)
         );
     }
 
