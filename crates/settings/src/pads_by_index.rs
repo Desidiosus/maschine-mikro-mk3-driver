@@ -120,7 +120,7 @@ impl<'de> Deserialize<'de> for PadsByIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::{PadHitAction, PadPressureAction};
+    use crate::actions::{PadHitAction, PadLedConfig, PadPressureAction};
 
     fn make_pad(note: u8) -> PadConfig {
         PadConfig {
@@ -129,6 +129,7 @@ mod tests {
                 note,
             },
             pressure: PadPressureAction::Disabled,
+            led: PadLedConfig::default(),
         }
     }
 

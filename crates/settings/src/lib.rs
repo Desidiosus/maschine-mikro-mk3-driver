@@ -13,8 +13,8 @@ pub use velocity_curve::PadVelocityCurve;
 
 pub use actions::{
     ButtonConfig, ButtonPressAction, CcValueMode, EncoderConfig, EncoderTurnAction, PadConfig,
-    PadHitAction, PadPressureAction, SliderConfig, SliderLedMode, SliderLedSettings,
-    SliderPositionAction, SliderTouchAction,
+    PadHitAction, PadLedColorMode, PadLedConfig, PadLedMode, PadLedSource, PadPressureAction,
+    SliderConfig, SliderLedMode, SliderLedSettings, SliderPositionAction, SliderTouchAction,
 };
 pub use buttons_by_name::ButtonsByName;
 pub use groups::{BridgeSettings, GlobalSettings, HardwareSettings};

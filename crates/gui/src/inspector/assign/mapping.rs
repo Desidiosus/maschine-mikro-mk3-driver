@@ -195,6 +195,7 @@ pub fn pad_delta(
         Some(PartialPadConfig {
             hit: hit.clone(),
             pressure: pressure.clone(),
+            led: None,
         })
     })
 }
@@ -247,6 +248,7 @@ pub(crate) fn default_pad_hit_delta(pads: &[u8]) -> PartialSettings {
         Some(PartialPadConfig {
             hit: Some(def.pads[i as usize].hit.clone()),
             pressure: None,
+            led: None,
         })
     })
 }
@@ -557,6 +559,7 @@ impl State {
                             note: set_note.unwrap_or(*note),
                         }),
                         pressure: None,
+                        led: None,
                     })
                 }
                 settings::PadHitAction::Off => None,
@@ -581,6 +584,7 @@ impl State {
                             channel: set_channel.unwrap_or(*channel),
                             note: set_note.unwrap_or(*note),
                         }),
+                        led: None,
                     })
                 }
                 settings::PadPressureAction::Disabled => None,
@@ -628,6 +632,7 @@ mod tests {
                     note: notes[i as usize],
                 }),
                 pressure: None,
+                led: None,
             })
         });
         let merged = Settings::default().merge_overrides(delta);

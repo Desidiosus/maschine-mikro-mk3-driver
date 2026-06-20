@@ -5,8 +5,8 @@ use serde::de::Error as DeError;
 use serde::{Deserialize, Serialize};
 
 use crate::actions::{
-    ButtonPressAction, EncoderTurnAction, PadHitAction, PadPressureAction, SliderLedMode,
-    SliderPositionAction, SliderTouchAction,
+    ButtonPressAction, EncoderTurnAction, PadHitAction, PadLedColorMode, PadLedSource,
+    PadPressureAction, SliderLedMode, SliderPositionAction, SliderTouchAction,
 };
 use crate::velocity_curve::PadVelocityCurve;
 use crate::{MidiChannel, Settings};
@@ -81,6 +81,15 @@ pub struct PartialBridgeSettings {
 pub struct PartialPadConfig {
     pub hit: Option<PadHitAction>,
     pub pressure: Option<PadPressureAction>,
+    pub led: Option<PartialPadLedConfig>,
+}
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PartialPadLedConfig {
+    pub source: Option<PadLedSource>,
+    pub midi_in: Option<PadLedColorMode>,
+    pub midi_out: Option<PadLedColorMode>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -266,6 +275,9 @@ impl Settings {
             for (idx, cfg) in pads.into_iter().enumerate() {
                 let Some(cfg) = cfg else { continue };
                 apply_overrides!(self.pads[idx], cfg; hit, pressure);
+                if let Some(led) = cfg.led {
+                    apply_overrides!(self.pads[idx].led, led; source, midi_in, midi_out);
+                }
             }
         }
         if let Some(buttons) = partial.buttons {
@@ -342,6 +354,15 @@ impl Settings {
                 copy: {};
                 clone: { hit, pressure };
             );
+            let mut led = PartialPadLedConfig::default();
+            diff_section!(
+                pad.led, base.pads[idx].led, led;
+                copy: { source, midi_in, midi_out };
+                clone: {};
+            );
+            if led != PartialPadLedConfig::default() {
+                p.led = Some(led);
+            }
             if p != PartialPadConfig::default() {
                 pads[idx] = Some(p);
                 any_pad = true;
@@ -633,6 +654,7 @@ note = 62
                 channel: None,
                 note: Some(60),
             }),
+            led: None,
         });
         let original = PartialSettings {
             pads: Some(pads),
@@ -643,5 +665,55 @@ note = 62
         ciborium::into_writer(&original, &mut bytes).expect("serialize");
         let back: PartialSettings = ciborium::from_reader(&bytes[..]).expect("deserialize");
         assert_eq!(back, original);
+    }
+
+    #[test]
+    fn partial_sets_pad_led_source_only() {
+        let toml_str = r#"
+[pads.1.led]
+source = "midi_in"
+"#;
+        let partial: PartialSettings = toml::from_str(toml_str).unwrap();
+        let merged = Settings::default().merge_overrides(partial);
+        // TOML key 1 → internal pad 12 (row flip).
+        assert_eq!(merged.pads[12].led.source, crate::PadLedSource::MidiIn);
+        // Other LED fields keep their defaults.
+        assert_eq!(
+            merged.pads[12].led.midi_out,
+            Settings::default().pads[12].led.midi_out
+        );
+        // Other pads untouched.
+        assert_eq!(merged.pads[0].led, Settings::default().pads[0].led);
+    }
+
+    #[test]
+    fn partial_sets_pad_led_in_mode_only() {
+        let toml_str = r#"
+[pads.1.led.midi_in]
+mode = "single"
+single = "red"
+"#;
+        let partial: PartialSettings = toml::from_str(toml_str).unwrap();
+        let merged = Settings::default().merge_overrides(partial);
+        assert_eq!(merged.pads[12].led.midi_in.mode, crate::PadLedMode::Single);
+        assert_eq!(
+            merged.pads[12].led.midi_in.single,
+            maschine_library::lights::PadColors::Red
+        );
+        assert_eq!(merged.pads[12].led.source, crate::PadLedSource::MidiOut);
+    }
+
+    #[test]
+    fn diff_from_defaults_round_trips_pad_led() {
+        let mut s = Settings::default();
+        s.pads[3].led.source = crate::PadLedSource::MidiIn;
+        s.pads[3].led.midi_in = crate::PadLedColorMode::dual(
+            maschine_library::lights::PadColors::Green,
+            maschine_library::lights::PadColors::Turquoise,
+        );
+        let partial = s.diff_from_defaults();
+        assert!(partial.pads.is_some(), "changed pad LED is captured");
+        let round_tripped = Settings::default().merge_overrides(partial);
+        assert_eq!(round_tripped, s);
     }
 }

@@ -1,8 +1,8 @@
 use crate::{
     actions::{
         ButtonConfig, ButtonPressAction, CcValueMode, EncoderConfig, EncoderTurnAction, PadConfig,
-        PadHitAction, PadPressureAction, SliderConfig, SliderLedSettings, SliderPositionAction,
-        SliderTouchAction,
+        PadHitAction, PadLedConfig, PadPressureAction, SliderConfig, SliderLedSettings,
+        SliderPositionAction, SliderTouchAction,
     },
     buttons_by_name::ButtonsByName,
     pads_by_index::PadsByIndex,
@@ -27,6 +27,7 @@ pub(crate) fn default_pads() -> PadsByIndex {
             note: DEFAULT_PAD_NOTES[i],
         },
         pressure: PadPressureAction::Disabled,
+        led: PadLedConfig::default(),
     });
     PadsByIndex(arr)
 }
@@ -97,5 +98,22 @@ mod tests {
         let serialized = toml::to_string(&s).unwrap();
         let back: Settings = toml::from_str(&serialized).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn default_pad_led_preserves_blue_on_hit() {
+        use maschine_library::lights::{Brightness, PadColors};
+        let pads = default_pads();
+        let led = pads[0].led;
+        assert_eq!(led.source, crate::PadLedSource::MidiOut);
+        assert_eq!(
+            led.midi_out.resolve(true, 0),
+            (PadColors::Blue, Brightness::Normal)
+        );
+        assert_eq!(
+            led.midi_out.resolve(false, 0),
+            (PadColors::Off, Brightness::Off)
+        );
+        assert_eq!(led.midi_in.mode, crate::PadLedMode::Velocity);
     }
 }

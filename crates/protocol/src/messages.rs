@@ -79,10 +79,12 @@ mod tests {
                 channel: None,
                 note: Some(60),
             }),
+            led: None,
         });
         pads[7] = Some(PartialPadConfig {
             hit: None,
             pressure: Some(PadPressureAction::Disabled),
+            led: None,
         });
         let delta = PartialSettings {
             pads: Some(pads),
@@ -150,5 +152,33 @@ mod tests {
             let msg = DriverToGui::DeviceConnected(connected);
             assert_eq!(cbor_round_trip(&msg), msg);
         }
+    }
+
+    #[test]
+    fn apply_with_pad_led_delta_round_trips() {
+        use settings::partial::PartialPadLedConfig;
+        use settings::{PadLedColorMode, PadLedSource};
+
+        let mut pads: [Option<PartialPadConfig>; 16] = std::array::from_fn(|_| None);
+        pads[4] = Some(PartialPadConfig {
+            led: Some(PartialPadLedConfig {
+                source: Some(PadLedSource::MidiIn),
+                midi_in: Some(PadLedColorMode::dual(
+                    settings::PadColors::Green,
+                    settings::PadColors::Turquoise,
+                )),
+                midi_out: None,
+            }),
+            ..Default::default()
+        });
+        let msg = GuiToDriver::Apply {
+            seq: 7,
+            delta: Box::new(PartialSettings {
+                pads: Some(pads),
+                ..Default::default()
+            }),
+            persist: true,
+        };
+        assert_eq!(cbor_round_trip(&msg), msg);
     }
 }
