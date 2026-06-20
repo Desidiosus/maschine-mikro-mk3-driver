@@ -88,6 +88,27 @@ impl std::fmt::Display for PadColors {
     }
 }
 
+/// Map a 7-bit MIDI velocity to a pad color across a cool-to-warm hue gradient
+/// (`Violet` at low velocity through blue, cyan, green, yellow and orange to
+/// `Red` at the top). `0` is `Off`.
+pub fn pad_color_from_velocity(velocity: u8) -> PadColors {
+    match velocity {
+        0 => PadColors::Off,
+        1..=10 => PadColors::Violet,
+        11..=21 => PadColors::Blue,
+        22..=31 => PadColors::Turquoise,
+        32..=42 => PadColors::Cyan,
+        43..=52 => PadColors::Mint,
+        53..=63 => PadColors::Green,
+        64..=73 => PadColors::Lime,
+        74..=84 => PadColors::Yellow,
+        85..=94 => PadColors::WarmYellow,
+        95..=105 => PadColors::LightOrange,
+        106..=116 => PadColors::Orange,
+        _ => PadColors::Red,
+    }
+}
+
 #[derive(Clone)]
 pub struct Lights {
     status: [u8; 80],
@@ -512,5 +533,11 @@ mod pad_colors_tests {
         assert!(labels.iter().all(|l| !l.is_empty()), "{labels:?}");
         let unique: std::collections::HashSet<_> = labels.iter().collect();
         assert_eq!(unique.len(), labels.len(), "duplicate label: {labels:?}");
+    }
+
+    #[test]
+    fn pad_color_from_velocity_maps_endpoints() {
+        assert_eq!(super::pad_color_from_velocity(0), PadColors::Off);
+        assert_eq!(super::pad_color_from_velocity(127), PadColors::Red);
     }
 }
