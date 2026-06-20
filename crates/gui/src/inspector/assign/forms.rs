@@ -200,6 +200,13 @@ impl std::fmt::Display for PadPressType {
     }
 }
 
+/// Which LED source the pad Assign form is editing. Independent of `AssignTab`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LedTab {
+    In,
+    Out,
+}
+
 pub fn cc_type_of_button(a: &ButtonPressAction) -> CcType {
     match a {
         ButtonPressAction::Cc { .. } => CcType::ControlChange,

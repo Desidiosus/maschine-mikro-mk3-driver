@@ -6,8 +6,9 @@ use protocol::{DriverToGui, GuiToDriver};
 use settings::PadVelocityCurve;
 
 use crate::inspector::assign::forms::{
-    AssignTab, CcType, EncoderModeKind, PadHitType, PadPressType, SliderTouchKind,
+    AssignTab, CcType, EncoderModeKind, LedTab, PadHitType, PadPressType, SliderTouchKind,
 };
+use crate::inspector::assign::mapping::PadLedColorSlot;
 use crate::inspector::assign::numeric::EditField;
 
 #[derive(Debug, Clone)]
@@ -61,6 +62,11 @@ pub enum Message {
     SetEncoderPushType(CcType),
     SetEncoderTouchType(CcType),
     SetSliderPositionType(CcType),
+    // --- per-pad LED color ---
+    SetPadLedSource(settings::PadLedSource),
+    SetPadLedMode(LedTab, settings::PadLedMode),
+    /// Set the color in one slot (Single / Dual-on / Dual-off) of `tab`'s mode.
+    SetPadLedColor(LedTab, PadLedColorSlot, settings::PadColors),
     /// No-op; swallows clicks inside the Preferences panel so they don't reach
     /// the modal backdrop and close it.
     Ignore,

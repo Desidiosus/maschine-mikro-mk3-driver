@@ -7,8 +7,8 @@
 
 use settings::PartialSettings;
 use settings::partial::{
-    PartialButtonConfig, PartialEncoderConfig, PartialPadConfig, PartialSliderConfig,
-    PartialSliderLedSettings,
+    PartialButtonConfig, PartialEncoderConfig, PartialPadConfig, PartialPadLedConfig,
+    PartialSliderConfig, PartialSliderLedSettings,
 };
 use settings::{
     ButtonPressAction, EncoderTurnAction, PadHitAction, PadPressureAction, SliderPositionAction,
@@ -16,8 +16,16 @@ use settings::{
 };
 
 use crate::app::State;
-use crate::inspector::assign::forms::CcType;
+use crate::inspector::assign::forms::{CcType, LedTab};
 use crate::inspector::assign::multi::{MultiValue, fold};
+
+/// Which color of a pad LED mode a color edit targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PadLedColorSlot {
+    Single,
+    DualOn,
+    DualOff,
+}
 
 // ---------------------------------------------------------------------------
 // Free functions: CcValueMode helpers
@@ -278,6 +286,43 @@ pub(crate) fn default_encoder_turn() -> EncoderTurnAction {
 /// The schema-default slider position action (its default CC).
 pub(crate) fn default_slider_position() -> SliderPositionAction {
     settings::Settings::default().slider.position
+}
+
+/// Delta setting selected pads' LED source.
+pub(crate) fn pad_led_source_delta(pads: &[u8], source: settings::PadLedSource) -> PartialSettings {
+    pads_map(pads, |_| {
+        Some(PartialPadConfig {
+            led: Some(PartialPadLedConfig {
+                source: Some(source),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    })
+}
+
+/// Override only the color config on `tab`'s source, leaving the other source
+/// untouched — the one place that maps `LedTab` to its `midi_in`/`midi_out` field.
+fn partial_led_for_tab(tab: LedTab, colors: settings::PadLedColorMode) -> PartialPadLedConfig {
+    match tab {
+        LedTab::In => PartialPadLedConfig {
+            midi_in: Some(colors),
+            ..Default::default()
+        },
+        LedTab::Out => PartialPadLedConfig {
+            midi_out: Some(colors),
+            ..Default::default()
+        },
+    }
+}
+
+/// Whether a pad delta sets at least one pad, vs an all-`None` no-op that would
+/// still bump the apply seq and rewrite the config on disk.
+fn delta_touches_any_pad(delta: &PartialSettings) -> bool {
+    delta
+        .pads
+        .as_ref()
+        .is_some_and(|pads| pads.iter().any(Option::is_some))
 }
 
 // ---------------------------------------------------------------------------
@@ -592,6 +637,137 @@ impl State {
         }))
     }
 
+    /// The pad's LED color mode for the given source tab.
+    fn pad_led_mode_at(&self, i: usize, tab: LedTab) -> Option<settings::PadLedColorMode> {
+        let s = self.settings.as_ref()?;
+        Some(match tab {
+            LedTab::In => s.pads[i].led.midi_in,
+            LedTab::Out => s.pads[i].led.midi_out,
+        })
+    }
+
+    /// Shared LED source across the pad selection.
+    pub(crate) fn pads_led_source(&self) -> MultiValue<settings::PadLedSource> {
+        self.fold_selected(&self.selected_pads(), |s, i| Some(s.pads[i].led.source))
+    }
+
+    /// Shared LED mode across the pad selection, for `tab`'s source.
+    pub(crate) fn pads_led_mode(&self, tab: LedTab) -> MultiValue<settings::PadLedMode> {
+        self.fold_selected(&self.selected_pads(), |_s, i| {
+            self.pad_led_mode_at(i, tab).map(|m| m.mode)
+        })
+    }
+
+    /// Shared color across the pad selection for `tab`'s source, reading the
+    /// `pick` field from each pad's stored colors. Every pad always stores all
+    /// modes' colors, so this is meaningful regardless of the active mode.
+    fn pads_led_color(
+        &self,
+        tab: LedTab,
+        pick: impl Fn(settings::PadLedColorMode) -> settings::PadColors,
+    ) -> MultiValue<settings::PadColors> {
+        self.fold_selected(&self.selected_pads(), |_s, i| {
+            self.pad_led_mode_at(i, tab).map(&pick)
+        })
+    }
+
+    /// Shared `Single` color across the selection for `tab`'s source.
+    pub(crate) fn pads_led_single_color(&self, tab: LedTab) -> MultiValue<settings::PadColors> {
+        self.pads_led_color(tab, |m| m.single)
+    }
+
+    /// Shared `Dual` on color across the selection for `tab`'s source.
+    pub(crate) fn pads_led_dual_on(&self, tab: LedTab) -> MultiValue<settings::PadColors> {
+        self.pads_led_color(tab, |m| m.dual_on)
+    }
+
+    /// Shared `Dual` off color across the selection for `tab`'s source.
+    pub(crate) fn pads_led_dual_off(&self, tab: LedTab) -> MultiValue<settings::PadColors> {
+        self.pads_led_color(tab, |m| m.dual_off)
+    }
+
+    pub(crate) fn apply_pad_led_source(&mut self, source: settings::PadLedSource) {
+        let Some(settings) = self.settings.as_ref() else {
+            return;
+        };
+        // Only re-apply pads whose source actually changes, so re-selecting the
+        // current source is a no-op instead of a config rewrite + seq bump.
+        let changed: Vec<u8> = self
+            .selected_pads()
+            .into_iter()
+            .filter(|&i| settings.pads[i as usize].led.source != source)
+            .collect();
+        if !changed.is_empty() {
+            self.send_apply(pad_led_source_delta(&changed, source), true);
+        }
+    }
+
+    /// Edit each selected pad's stored color mode for `tab`'s source and apply
+    /// only the pads `edit` actually changes. `edit` mutates a pad's colors in
+    /// place and returns `false` to skip it — re-applying an unchanged pad would
+    /// rewrite the config and bump the seq for no change.
+    fn apply_pad_led_edit(
+        &mut self,
+        tab: LedTab,
+        edit: impl Fn(&mut settings::PadLedColorMode) -> bool,
+    ) {
+        if self.settings.is_none() {
+            return;
+        }
+        let pads = self.selected_pads();
+        if pads.is_empty() {
+            return;
+        }
+        let delta = pads_map(&pads, |i| {
+            let mut colors = self.pad_led_mode_at(i as usize, tab)?;
+            if !edit(&mut colors) {
+                return None;
+            }
+            Some(PartialPadConfig {
+                led: Some(partial_led_for_tab(tab, colors)),
+                ..Default::default()
+            })
+        });
+        if delta_touches_any_pad(&delta) {
+            self.send_apply(delta, true);
+        }
+    }
+
+    /// Switch the active LED `mode` for `tab`, leaving every mode's stored colors
+    /// in place — so the colors you set for the other modes persist and reappear
+    /// when you switch back.
+    pub(crate) fn apply_pad_led_mode(&mut self, tab: LedTab, mode: settings::PadLedMode) {
+        self.apply_pad_led_edit(tab, |colors| {
+            if colors.mode == mode {
+                return false;
+            }
+            colors.mode = mode;
+            true
+        });
+    }
+
+    /// Set one color slot (Single / Dual-on / Dual-off) for `tab`'s source on each
+    /// selected pad, leaving the active mode and the other slots untouched.
+    pub(crate) fn apply_pad_led_color(
+        &mut self,
+        tab: LedTab,
+        which: PadLedColorSlot,
+        color: settings::PadColors,
+    ) {
+        self.apply_pad_led_edit(tab, |colors| {
+            let slot = match which {
+                PadLedColorSlot::Single => &mut colors.single,
+                PadLedColorSlot::DualOn => &mut colors.dual_on,
+                PadLedColorSlot::DualOff => &mut colors.dual_off,
+            };
+            if *slot == color {
+                return false;
+            }
+            *slot = color;
+            true
+        });
+    }
+
     /// Per-button press delta changing only `channel` and/or `cc`, preserving
     /// each button's other field.
     pub(crate) fn button_press_delta(
@@ -620,6 +796,29 @@ impl State {
 mod tests {
     use super::*;
     use settings::Settings;
+
+    #[test]
+    fn pad_led_source_delta_sets_only_listed_pads() {
+        use settings::{PadLedSource, Settings};
+        let delta = pad_led_source_delta(&[2, 5], PadLedSource::MidiIn);
+        let merged = Settings::default().merge_overrides(delta);
+        assert_eq!(merged.pads[2].led.source, PadLedSource::MidiIn);
+        assert_eq!(merged.pads[5].led.source, PadLedSource::MidiIn);
+        assert_eq!(merged.pads[0].led.source, PadLedSource::MidiOut);
+    }
+
+    #[test]
+    fn partial_led_for_tab_targets_only_the_chosen_source() {
+        use crate::inspector::assign::forms::LedTab;
+        use settings::{PadColors, PadLedColorMode};
+        let mode = PadLedColorMode::single(PadColors::Red);
+        let led = partial_led_for_tab(LedTab::In, mode);
+        assert_eq!(led.midi_in, Some(mode));
+        assert_eq!(led.midi_out, None, "the Out side is untouched");
+        let led = partial_led_for_tab(LedTab::Out, mode);
+        assert_eq!(led.midi_out, Some(mode));
+        assert_eq!(led.midi_in, None, "the In side is untouched");
+    }
 
     #[test]
     fn pads_map_preserves_each_pads_own_field() {

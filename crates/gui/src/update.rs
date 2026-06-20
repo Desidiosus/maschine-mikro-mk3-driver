@@ -360,6 +360,9 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                 true,
             );
         }
+        Message::SetPadLedSource(source) => state.apply_pad_led_source(source),
+        Message::SetPadLedMode(tab, mode) => state.apply_pad_led_mode(tab, mode),
+        Message::SetPadLedColor(tab, slot, color) => state.apply_pad_led_color(tab, slot, color),
     }
     Task::none()
 }
@@ -642,5 +645,85 @@ mod tests {
         );
         assert_eq!(state.selection, vec![ControlRef::Encoder]);
         assert_eq!(state.assign_tab, AssignTab::C);
+    }
+
+    #[test]
+    fn set_pad_led_source_updates_selected_pads() {
+        use protocol::ControlRef;
+        use settings::PadLedSource;
+        let (mut state, _rx) = seeded();
+        state.selection = vec![ControlRef::Pad(0), ControlRef::Pad(3)];
+        let _ = update(&mut state, Message::SetPadLedSource(PadLedSource::MidiIn));
+        let s = state.settings.as_ref().unwrap();
+        assert_eq!(s.pads[0].led.source, PadLedSource::MidiIn);
+        assert_eq!(s.pads[3].led.source, PadLedSource::MidiIn);
+    }
+
+    #[test]
+    fn set_pad_led_source_noop_when_already_current() {
+        use protocol::ControlRef;
+        use settings::PadLedSource;
+        let (mut state, rx) = seeded();
+        state.selection = vec![ControlRef::Pad(0)];
+        // Default pad source is MidiOut; re-selecting it must not send an Apply.
+        let _ = update(&mut state, Message::SetPadLedSource(PadLedSource::MidiOut));
+        assert!(
+            rx.try_recv().is_err(),
+            "re-selecting the current source sends no Apply"
+        );
+    }
+
+    #[test]
+    fn set_pad_led_mode_preserves_stored_colors() {
+        use crate::inspector::assign::forms::LedTab;
+        use protocol::ControlRef;
+        use settings::PadLedMode;
+        let (mut state, _rx) = seeded();
+        state.selection = vec![ControlRef::Pad(0)];
+        // Switching mode changes only `mode`; every mode's stored colors are kept.
+        let before = state.settings.as_ref().unwrap().pads[0].led.midi_out;
+        let _ = update(
+            &mut state,
+            Message::SetPadLedMode(LedTab::Out, PadLedMode::Single),
+        );
+        let after = state.settings.as_ref().unwrap().pads[0].led.midi_out;
+        assert_eq!(after.mode, PadLedMode::Single);
+        assert_eq!(after.single, before.single);
+        assert_eq!(after.dual_on, before.dual_on);
+        assert_eq!(after.dual_off, before.dual_off);
+    }
+
+    #[test]
+    fn pad_led_color_survives_round_trip_through_velocity() {
+        use crate::inspector::assign::forms::LedTab;
+        use crate::inspector::assign::mapping::PadLedColorSlot;
+        use protocol::ControlRef;
+        use settings::{PadColors, PadLedMode};
+        let (mut state, _rx) = seeded();
+        state.selection = vec![ControlRef::Pad(0)];
+
+        // Make Out a Single Red.
+        let _ = update(
+            &mut state,
+            Message::SetPadLedMode(LedTab::Out, PadLedMode::Single),
+        );
+        let _ = update(
+            &mut state,
+            Message::SetPadLedColor(LedTab::Out, PadLedColorSlot::Single, PadColors::Red),
+        );
+
+        // Single -> Velocity -> Single keeps Red: every mode's colors persist in
+        // the stored struct, so nothing is dropped on the round-trip.
+        let _ = update(
+            &mut state,
+            Message::SetPadLedMode(LedTab::Out, PadLedMode::Velocity),
+        );
+        let _ = update(
+            &mut state,
+            Message::SetPadLedMode(LedTab::Out, PadLedMode::Single),
+        );
+        let out = state.settings.as_ref().unwrap().pads[0].led.midi_out;
+        assert_eq!(out.mode, PadLedMode::Single);
+        assert_eq!(out.single, PadColors::Red);
     }
 }

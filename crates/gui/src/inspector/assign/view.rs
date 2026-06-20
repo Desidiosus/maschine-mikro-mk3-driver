@@ -5,15 +5,16 @@ use iced::{Background, Border, Color, Element, Length, Theme};
 use maschine_library::controls::Buttons;
 use protocol::ControlRef;
 use settings::{
-    ButtonPressAction, EncoderTurnAction, PadColors, SliderLedMode, SliderLedSettings,
-    SliderPositionAction, SliderTouchAction,
+    ButtonPressAction, EncoderTurnAction, PadColors, PadLedMode, PadLedSource, SliderLedMode,
+    SliderLedSettings, SliderPositionAction, SliderTouchAction,
 };
 
 use crate::app::State;
 use crate::inspector::assign::forms::{
-    AssignTab, CcType, EncoderModeKind, PadHitType, PadPressType, SliderTouchKind,
+    AssignTab, CcType, EncoderModeKind, LedTab, PadHitType, PadPressType, SliderTouchKind,
     cc_type_of_button, cc_type_of_encoder, cc_type_of_position,
 };
+use crate::inspector::assign::mapping::PadLedColorSlot;
 use crate::inspector::assign::multi::{MultiValue, fold};
 use crate::inspector::assign::numeric::EditField;
 use crate::message::Message;
@@ -151,11 +152,12 @@ fn encoder_turn_body<'a>(
     active: &dyn Fn(EditField) -> Option<String>,
 ) -> Element<'a, Message> {
     let ty = cc_type_of_encoder(turn);
-    let type_row = row![
-        text("Type").width(Length::Fixed(90.0)),
-        pick_list(&CcType::ALL[..], Some(ty), Message::SetEncoderTurnType),
-    ]
-    .spacing(8);
+    let type_row = labeled_pick_list(
+        "Type",
+        &CcType::ALL[..],
+        Some(ty),
+        Message::SetEncoderTurnType,
+    );
     let mut col = column![type_row].spacing(8);
     if let EncoderTurnAction::Cc { channel, cc, mode } = turn {
         let channel = channel.map(|c| c.as_u8());
@@ -171,17 +173,12 @@ fn encoder_turn_body<'a>(
                 Some(*cc as i8),
                 active(EditField::EncoderCc).as_deref(),
             ))
-            .push(
-                row![
-                    text("Mode").width(Length::Fixed(90.0)),
-                    pick_list(
-                        &EncoderModeKind::ALL[..],
-                        Some(EncoderModeKind::of(mode)),
-                        Message::SetEncoderModeKind
-                    ),
-                ]
-                .spacing(8),
-            );
+            .push(labeled_pick_list(
+                "Mode",
+                &EncoderModeKind::ALL[..],
+                Some(EncoderModeKind::of(mode)),
+                Message::SetEncoderModeKind,
+            ));
         match mode {
             settings::CcValueMode::Absolute { lo, hi, step, wrap } => {
                 col = col
@@ -229,11 +226,7 @@ fn cc_slot_body<'a>(
     active: &dyn Fn(EditField) -> Option<String>,
 ) -> Element<'a, Message> {
     let ty = cc_type_of_button(press);
-    let type_row = row![
-        text("Type").width(Length::Fixed(90.0)),
-        pick_list(&CcType::ALL[..], Some(ty), on_type),
-    ]
-    .spacing(8);
+    let type_row = labeled_pick_list("Type", &CcType::ALL[..], Some(ty), on_type);
     let mut col = column![type_row].spacing(8);
     if let ButtonPressAction::Cc { channel, cc } = press {
         let channel = channel.map(|c| c.as_u8());
@@ -269,11 +262,7 @@ pub fn button_form<'a>(
             CcType::Off
         }
     });
-    let type_row = row![
-        text("Type").width(Length::Fixed(90.0)),
-        pick_list(&CcType::ALL[..], selected, Message::SetButtonType).placeholder("…"),
-    ]
-    .spacing(8);
+    let type_row = labeled_pick_list("Type", &CcType::ALL[..], selected, Message::SetButtonType);
     let mut col = column![type_row].spacing(8);
     if ty == MultiValue::Same(true) {
         col = col
@@ -314,11 +303,12 @@ pub fn pad_form<'a>(
                     PadHitType::Off
                 }
             });
-            let type_row = row![
-                text("Type").width(Length::Fixed(90.0)),
-                pick_list(&PadHitType::ALL[..], selected, Message::SetPadHitType).placeholder("…"),
-            ]
-            .spacing(8);
+            let type_row = labeled_pick_list(
+                "Type",
+                &PadHitType::ALL[..],
+                selected,
+                Message::SetPadHitType,
+            );
             let mut col = column![type_row].spacing(8);
             if ty == MultiValue::Same(true) {
                 col = col
@@ -345,12 +335,12 @@ pub fn pad_form<'a>(
                     PadPressType::Off
                 }
             });
-            let type_row = row![
-                text("Type").width(Length::Fixed(90.0)),
-                pick_list(&PadPressType::ALL[..], selected, Message::SetPadPressType)
-                    .placeholder("…"),
-            ]
-            .spacing(8);
+            let type_row = labeled_pick_list(
+                "Type",
+                &PadPressType::ALL[..],
+                selected,
+                Message::SetPadPressType,
+            );
             let mut col = column![type_row].spacing(8);
             if ty == MultiValue::Same(true) {
                 col = col
@@ -374,9 +364,92 @@ pub fn pad_form<'a>(
         header(name, assignment),
         tab_strip(&[("Hit", AssignTab::A), ("Press", AssignTab::B)], tab),
         group_box(body),
+        group_box(pad_led_section(state)),
     ]
     .spacing(10)
     .into()
+}
+
+/// A labeled `pick_list` row: `label  [ value ▾ ]`. `selected` is the shared
+/// value, or `None` (indeterminate → placeholder) across a multi-selection.
+fn labeled_pick_list<'a, T>(
+    label: &str,
+    options: &'a [T],
+    selected: Option<T>,
+    on_select: impl Fn(T) -> Message + 'a,
+) -> Element<'a, Message>
+where
+    T: ToString + PartialEq + Clone + 'a,
+{
+    row![
+        text(label.to_string()).width(Length::Fixed(90.0)),
+        pick_list(options, selected, on_select).placeholder("…"),
+    ]
+    .spacing(8)
+    .align_y(iced::alignment::Vertical::Center)
+    .into()
+}
+
+/// The pad LED section: LED On source dropdown, and the color fields for the
+/// source being edited. The dropdown's selected source IS the source you edit;
+/// the other source's stored colors persist in the schema but are not shown
+/// until you switch the dropdown. Folds over the pad selection.
+fn pad_led_section<'a>(state: &State) -> Element<'a, Message> {
+    let source = state.pads_led_source().value();
+    let source_row = labeled_pick_list(
+        "LED On",
+        &PadLedSource::ALL[..],
+        source,
+        Message::SetPadLedSource,
+    );
+
+    let mut col = column![text("LED").size(15), source_row].spacing(8);
+
+    // The active source is the one being edited. Off / indeterminate selection
+    // shows no color config (nothing to edit).
+    let edit_tab = match source {
+        Some(PadLedSource::MidiIn) => Some(LedTab::In),
+        Some(PadLedSource::MidiOut) => Some(LedTab::Out),
+        _ => None,
+    };
+    if let Some(tab) = edit_tab {
+        let mode = state.pads_led_mode(tab).value();
+        col = col.push(labeled_pick_list(
+            "Color Mode",
+            &PadLedMode::ALL[..],
+            mode,
+            move |m| Message::SetPadLedMode(tab, m),
+        ));
+        match mode {
+            Some(PadLedMode::Single) => {
+                // Off would make the lit state invisible; pick source `Off` to
+                // disable the LED instead, so it is dropped from the hue list.
+                col = col.push(labeled_pick_list(
+                    "Color",
+                    &PadColors::ALL[1..],
+                    state.pads_led_single_color(tab).value(),
+                    move |c| Message::SetPadLedColor(tab, PadLedColorSlot::Single, c),
+                ));
+            }
+            Some(PadLedMode::Dual) => {
+                col = col
+                    .push(labeled_pick_list(
+                        "Color On",
+                        &PadColors::ALL[1..],
+                        state.pads_led_dual_on(tab).value(),
+                        move |c| Message::SetPadLedColor(tab, PadLedColorSlot::DualOn, c),
+                    ))
+                    .push(labeled_pick_list(
+                        "Color Off",
+                        &PadColors::ALL[..],
+                        state.pads_led_dual_off(tab).value(),
+                        move |c| Message::SetPadLedColor(tab, PadLedColorSlot::DualOff, c),
+                    ));
+            }
+            _ => {}
+        }
+    }
+    col.into()
 }
 
 /// The strip-wide LED section. `auto_off_active` is the live auto-off text
@@ -475,15 +548,12 @@ pub fn slider_form<'a>(
 ) -> Element<'a, Message> {
     let body: Element<'a, Message> = match tab {
         AssignTab::A | AssignTab::C => {
-            let type_row = row![
-                text("Type").width(Length::Fixed(90.0)),
-                pick_list(
-                    &CcType::ALL[..],
-                    Some(cc_type_of_position(position)),
-                    Message::SetSliderPositionType
-                ),
-            ]
-            .spacing(8);
+            let type_row = labeled_pick_list(
+                "Type",
+                &CcType::ALL[..],
+                Some(cc_type_of_position(position)),
+                Message::SetSliderPositionType,
+            );
             let mut col = column![type_row].spacing(8);
             if let SliderPositionAction::Cc { channel, cc } = position {
                 let channel = channel.map(|c| c.as_u8());
@@ -503,15 +573,12 @@ pub fn slider_form<'a>(
             col.into()
         }
         AssignTab::B => {
-            let type_row = row![
-                text("Type").width(Length::Fixed(90.0)),
-                pick_list(
-                    &SliderTouchKind::ALL[..],
-                    Some(SliderTouchKind::of(touch)),
-                    Message::SetSliderTouchKind
-                ),
-            ]
-            .spacing(8);
+            let type_row = labeled_pick_list(
+                "Type",
+                &SliderTouchKind::ALL[..],
+                Some(SliderTouchKind::of(touch)),
+                Message::SetSliderTouchKind,
+            );
             let mut col = column![type_row].spacing(8);
             match touch {
                 SliderTouchAction::Disabled => {}
