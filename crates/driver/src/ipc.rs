@@ -12,7 +12,7 @@ use arc_swap::ArcSwapOption;
 use protocol::frame::{read_frame, write_frame};
 use protocol::{DriverToGui, GuiToDriver};
 
-use crate::apply::{SideEffects, apply_delta};
+use crate::apply::{SideEffects, apply_delta, persist_current};
 use crate::error::{DriverError, DriverResult};
 use crate::settings::Settings;
 use crate::shared_settings::SharedSettings;
@@ -250,6 +250,18 @@ fn dispatch(
                 })
                 .map_err(|_| ())?,
         },
+        GuiToDriver::Persist { seq } => {
+            let result = persist_current(handle, persist_base, persist_path);
+            let ok = result.is_ok();
+            out_tx
+                .send(DriverToGui::Ack { seq, result })
+                .map_err(|_| ())?;
+            // Settings are unchanged, so there are no hardware side effects; just
+            // echo the authoritative snapshot like a committed apply.
+            if ok {
+                out_tx.send(snapshot(handle)).map_err(|_| ())?;
+            }
+        }
         GuiToDriver::SubscribeEvents => {
             subscriber.store(Some(Arc::new(out_tx.clone())));
             out_tx

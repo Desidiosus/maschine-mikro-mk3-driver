@@ -14,6 +14,11 @@ pub enum GuiToDriver {
         delta: Box<PartialSettings>,
         persist: bool,
     },
+    /// Persist the current live settings to disk without changing them. Commits
+    /// edits previously applied live via `Apply { persist: false }` (e.g. typed
+    /// values flushed once typing settles). `seq` correlates the matching `Ack`,
+    /// and a `Settings` snapshot follows on success.
+    Persist { seq: u64 },
     /// Opt in to the `ControlActuated` / `MidiActivity` event stream.
     SubscribeEvents,
 }
@@ -103,6 +108,12 @@ mod tests {
             persist: false,
         };
         assert_eq!(cbor_round_trip(&live), live);
+    }
+
+    #[test]
+    fn persist_round_trips() {
+        let msg = GuiToDriver::Persist { seq: 99 };
+        assert_eq!(cbor_round_trip(&msg), msg);
     }
 
     #[test]

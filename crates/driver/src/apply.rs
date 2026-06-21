@@ -88,6 +88,19 @@ pub fn apply_delta(
     Ok(effects)
 }
 
+/// Persist the current live settings to `persist_path` as sparse overrides
+/// relative to `persist_base`, without touching the live state. Commits edits
+/// that were applied live via `apply_delta(.., persist=false)` once an explicit
+/// `Persist` request arrives (e.g. typed values flushed after typing settles).
+pub fn persist_current(
+    handle: &SharedSettings,
+    persist_base: &Settings,
+    persist_path: &Path,
+) -> Result<(), String> {
+    let current = handle.load_full();
+    save_overrides(persist_path, &current, persist_base)
+}
+
 /// Push the device-register `effects` (pad sensitivity, display contrast, button
 /// brightness) over HID. These are independent of the blanked display state, so
 /// the loop applies them immediately even while soft-off is active.

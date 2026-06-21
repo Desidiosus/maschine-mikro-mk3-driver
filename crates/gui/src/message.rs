@@ -47,6 +47,10 @@ pub enum Message {
     NumericInput(EditField, String),
     NumericStep(EditField, i8),
     NumericCommit(EditField),
+    /// Debounce tick: typed edits apply live (`persist:false`); this fires after
+    /// a quiet window to persist them, so a value is saved even without pressing
+    /// Enter (iced gives no focus-lost callback to commit on).
+    PersistDebounce,
     /// Pad pressure enable (Disabled vs Poly).
     SetPadPressureKind(bool),
     SetAssignTab(AssignTab),

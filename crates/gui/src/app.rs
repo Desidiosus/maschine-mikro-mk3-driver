@@ -42,7 +42,21 @@ pub struct State {
     /// flight: the next `Settings` snapshot must be adopted to clear the stale
     /// optimistic value even though `seq` has advanced past the rejected apply.
     pub(crate) resync_pending: bool,
+    /// Debounce countdown (in `PERSIST_DEBOUNCE_INTERVAL` ticks) for persisting
+    /// typed numeric edits. Each keystroke applies live (`persist:false`) and
+    /// re-arms this; when it counts down to zero the live state is persisted.
+    /// Zero means no persist is pending.
+    pub(crate) persist_debounce: u8,
 }
+
+/// Tick interval for the typed-edit persist debounce.
+pub(crate) const PERSIST_DEBOUNCE_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(300);
+
+/// Quiet ticks required after the last keystroke before a typed edit persists.
+/// Two ticks guarantee at least one full quiet interval (the timer is free-running,
+/// so a tick may arrive immediately after a keystroke).
+pub(crate) const PERSIST_DEBOUNCE_TICKS: u8 = 2;
 
 impl Default for State {
     fn default() -> Self {
@@ -65,6 +79,7 @@ impl Default for State {
             show_all_labels: false,
             authoritative: None,
             resync_pending: false,
+            persist_debounce: 0,
         }
     }
 }
@@ -103,6 +118,17 @@ impl State {
             let s = Arc::make_mut(settings);
             *s = std::mem::take(s).merge_overrides(delta);
         }
+    }
+
+    /// Ask the driver to persist its current live settings to disk. The driver
+    /// already holds the typed value from the live (`persist:false`) applies, so
+    /// this flushes edits applied live but never committed via Enter — even if the
+    /// selection has since changed. `seq` advances so the resulting snapshot is
+    /// adopted by the same logic as a committed apply.
+    pub(crate) fn persist_current(&mut self) {
+        let Some(sender) = &self.sender else { return };
+        self.seq += 1;
+        let _ = sender.send(GuiToDriver::Persist { seq: self.seq });
     }
 
     /// Internal indices of selected pads (empty if the selection isn't pads).
@@ -187,6 +213,13 @@ impl State {
         if recent(self.last_in) || recent(self.last_out) {
             subs.push(
                 iced::time::every(std::time::Duration::from_millis(120)).map(|_| Message::Tick),
+            );
+        }
+        // Run the persist-debounce timer only while a typed edit is awaiting its
+        // quiet-window flush, so an idle GUI does zero periodic work.
+        if self.persist_debounce > 0 {
+            subs.push(
+                iced::time::every(PERSIST_DEBOUNCE_INTERVAL).map(|_| Message::PersistDebounce),
             );
         }
         Subscription::batch(subs)

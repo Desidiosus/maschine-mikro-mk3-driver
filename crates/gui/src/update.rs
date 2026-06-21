@@ -205,7 +205,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::NumericInput(field, s) => {
             state.edit_field = Some(field);
             state.edit_text = s.clone();
-            if field == crate::inspector::assign::numeric::EditField::SliderAutoOff {
+            let applied = if field == crate::inspector::assign::numeric::EditField::SliderAutoOff {
                 if let Ok(ms) = s.trim().parse::<u64>() {
                     state.apply_slider_led(
                         settings::partial::PartialSliderLedSettings {
@@ -216,16 +216,37 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                         },
                         false,
                     );
+                    true
+                } else {
+                    false
                 }
             } else if let Some(range) = field.range()
                 && let Some(v) = crate::widget::numeric_field::parse_clamped(&s, range)
             {
                 state.apply_numeric(field, v, false);
+                true
+            } else {
+                false
+            };
+            // Re-arm the debounce so the live edit persists after typing stops,
+            // since iced gives no focus-lost callback to commit on.
+            if applied {
+                state.persist_debounce = crate::app::PERSIST_DEBOUNCE_TICKS;
+            }
+        }
+        Message::PersistDebounce => {
+            if state.persist_debounce > 0 {
+                state.persist_debounce -= 1;
+                if state.persist_debounce == 0 {
+                    state.persist_current();
+                }
             }
         }
         Message::NumericCommit(field) => {
             let s = std::mem::take(&mut state.edit_text);
             state.edit_field = None;
+            // Enter persists immediately below; drop any pending debounced flush.
+            state.persist_debounce = 0;
             if field == crate::inspector::assign::numeric::EditField::SliderAutoOff {
                 if let Ok(ms) = s.trim().parse::<u64>() {
                     state.apply_slider_led(
@@ -247,6 +268,8 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::NumericStep(field, dir) => {
             state.edit_field = None;
             state.edit_text.clear();
+            // Scroll steps persist immediately below; drop any pending debounce.
+            state.persist_debounce = 0;
             if let Some(range) = field.range()
                 && let Some(cur) = state.current_numeric(field)
             {
@@ -415,6 +438,130 @@ mod tests {
             Message::Frame(DriverToGui::Settings(Box::default())),
         );
         (state, rx)
+    }
+
+    /// Drain every frame the GUI sent to the driver.
+    fn drained_frames(rx: &std::sync::mpsc::Receiver<GuiToDriver>) -> Vec<GuiToDriver> {
+        let mut out = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            out.push(frame);
+        }
+        out
+    }
+
+    fn is_live_apply(frame: &GuiToDriver) -> bool {
+        matches!(frame, GuiToDriver::Apply { persist: false, .. })
+    }
+
+    fn is_persist(frame: &GuiToDriver) -> bool {
+        matches!(frame, GuiToDriver::Persist { .. })
+    }
+
+    fn pad_note(state: &State, internal: usize) -> Option<u8> {
+        match state.settings.as_ref()?.pads[internal].hit {
+            settings::PadHitAction::Note { note, .. } => Some(note),
+            settings::PadHitAction::Off => None,
+        }
+    }
+
+    #[test]
+    fn typed_pad_note_persists_after_debounce_without_enter() {
+        use crate::inspector::assign::numeric::EditField;
+        use protocol::ControlRef;
+        let (mut state, rx) = seeded();
+        state.selection = vec![ControlRef::Pad(0)];
+
+        // Type a new note but never press Enter.
+        let _ = update(
+            &mut state,
+            Message::NumericInput(EditField::PadHitNote, "60".into()),
+        );
+
+        // The edit applies live (preview) and arms the debounce; nothing persisted yet.
+        let frames = drained_frames(&rx);
+        assert_eq!(frames.len(), 1, "one live apply for the keystroke");
+        assert!(
+            is_live_apply(&frames[0]),
+            "keystroke applies live, not persisted"
+        );
+        assert_eq!(
+            pad_note(&state, 0),
+            Some(60),
+            "GUI shows the typed value live"
+        );
+        assert_eq!(state.persist_debounce, crate::app::PERSIST_DEBOUNCE_TICKS);
+
+        // The quiet-window ticks elapse with no further typing.
+        for _ in 0..crate::app::PERSIST_DEBOUNCE_TICKS {
+            let _ = update(&mut state, Message::PersistDebounce);
+        }
+
+        // A Persist request was flushed, so the value survives a restart.
+        let flush = drained_frames(&rx);
+        assert!(
+            flush.iter().any(is_persist),
+            "debounce must persist the typed edit even without Enter"
+        );
+        assert_eq!(state.persist_debounce, 0, "debounce cleared after flushing");
+    }
+
+    #[test]
+    fn further_typing_resets_the_persist_debounce() {
+        use crate::inspector::assign::numeric::EditField;
+        use protocol::ControlRef;
+        let (mut state, rx) = seeded();
+        state.selection = vec![ControlRef::Pad(0)];
+
+        let _ = update(
+            &mut state,
+            Message::NumericInput(EditField::PadHitNote, "6".into()),
+        );
+        // One quiet tick passes...
+        let _ = update(&mut state, Message::PersistDebounce);
+        assert_eq!(
+            state.persist_debounce,
+            crate::app::PERSIST_DEBOUNCE_TICKS - 1
+        );
+        // ...then the user types again, which must re-arm the full window.
+        let _ = update(
+            &mut state,
+            Message::NumericInput(EditField::PadHitNote, "60".into()),
+        );
+        assert_eq!(state.persist_debounce, crate::app::PERSIST_DEBOUNCE_TICKS);
+
+        let _ = drained_frames(&rx); // clear live previews
+        // Only one tick has effectively passed since the last keystroke: no flush yet.
+        let _ = update(&mut state, Message::PersistDebounce);
+        assert!(
+            !drained_frames(&rx).iter().any(is_persist),
+            "must not persist until the window is quiet"
+        );
+    }
+
+    #[test]
+    fn enter_cancels_a_pending_persist_debounce() {
+        use crate::inspector::assign::numeric::EditField;
+        use protocol::ControlRef;
+        let (mut state, rx) = seeded();
+        state.selection = vec![ControlRef::Pad(0)];
+
+        let _ = update(
+            &mut state,
+            Message::NumericInput(EditField::PadHitNote, "60".into()),
+        );
+        let _ = update(&mut state, Message::NumericCommit(EditField::PadHitNote));
+        assert_eq!(
+            state.persist_debounce, 0,
+            "Enter persists and disarms the debounce"
+        );
+
+        let _ = drained_frames(&rx);
+        // A late debounce tick must not fire a second, redundant persist.
+        let _ = update(&mut state, Message::PersistDebounce);
+        assert!(
+            drained_frames(&rx).is_empty(),
+            "no extra persist after Enter already committed"
+        );
     }
 
     #[test]
