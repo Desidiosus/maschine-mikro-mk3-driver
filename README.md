@@ -1,11 +1,29 @@
 # Maschine Mikro MK3 Linux Driver
+
 Native Instruments Maschine Mikro MK3 userspace MIDI driver for Linux.
+
+No Native Instruments software required. The project has three parts:
+
+- **Driver** — talks to the controller over HID and exposes it as virtual MIDI input and
+  output ports. Works with any MIDI software.
+- **Configuration GUI** — a desktop app for assigning controls and tuning the hardware.
+- **Bitwig controller script** — optional DAW integration built on top of the driver's
+  MIDI (modes, step sequencer, transport, clip launcher, and so on).
+
+The driver and GUI are useful on their own; the Bitwig script is only needed for Bitwig
+integration.
 
 Inspired by [maschine.rs](https://github.com/wrl/maschine.rs).
 
+![Configuration GUI showing the device diagram and the per-control Assign inspector](Screenshot.png)
+
+*The configuration GUI: click any control on the device diagram (or touch it on the
+hardware) and edit how it behaves. No config files to hand-write.*
+
 ## Getting Started
 
-Let's install dependencies first:
+Install the build dependencies first:
+
 - Debian/Ubuntu:
   ```
   sudo apt install build-essential pkg-config libasound2-dev libjack-dev libusb-1.0-0-dev libudev-dev
@@ -17,9 +35,9 @@ Let's install dependencies first:
 - Arch Linux:
   ```
   sudo pacman -S base-devel alsa-lib pipewire-jack libusb systemd-libs  # (or `jack2` instead of `pipewire-jack`)
-  ``` 
+  ```
 
-Then we can proceed with the repo:
+Then clone the repo, install the udev rule, and start the driver:
 
 ```shell
 git clone https://github.com/r00tman/maschine-mikro-mk3-driver.git; cd maschine-mikro-mk3-driver
@@ -28,194 +46,122 @@ sudo udevadm control --reload && sudo udevadm trigger
 cargo run -p driver --release
 ```
 
-This will init the controller in the default `backend = "midi"` mode.
-The MIDI backend always exposes virtual MIDI output and input ports. For raw-MIDI bridge setups such as Bitwig, enable `midi_bridge_virmidi = true` in your config and start the driver with that config.
-On startup, the driver also writes the configured hardware preferences to the controller before entering the main runtime loop:
+This starts the driver and exposes virtual MIDI input and output ports for the
+controller. The driver keeps running when the controller is unplugged and
+reconnects automatically when it returns.
 
-```toml
-pad_sensitivity = 50
-display_contrast = 50
-pad_velocity_curve = "linear"
+To configure the controller, launch the GUI:
+
+```shell
+cargo run -p gui
 ```
 
-`pad_sensitivity` and `display_contrast` accept `0..=100`.
-`pad_velocity_curve` is a global pad response curve applied to every pad note event.
+The GUI connects to an already-running driver, or starts one for you if none is
+running — so you can run the driver headless and only open the GUI when you want to
+change something.
 
-Pads have been tested to work with Hydrogen, EZdrummer 2/3, Addictive Drums 2 as plugins via REAPER+LinVst and standalone via Wine.
+Pads have been tested with Hydrogen, EZdrummer 2/3, and Addictive Drums 2 — as
+plugins via REAPER + LinVst and standalone via Wine.
 
-Note that you can use your custom config with your own MIDI mappings and other settings like this:
+> **Note:** Older versions of `98-maschine.rules` only granted access to users in the
+> `input` group. The current rule lets any user access the controller, which
+> simplifies setup (for example, Ubuntu has no `input` group by default).
+
+## Configuration
+
+Everything is configured from the GUI. Changes apply to the running driver
+immediately and are saved automatically — there are no config files to edit by hand.
+
+**Assigning controls.** Click a pad, button, encoder, or slider on the device
+diagram — or simply touch it on the hardware — to select it. The **Assign** panel
+then lets you set, per control:
+
+- **Type** — Note, CC, or Off (Off disables the control so it sends nothing).
+- **Channel** — the MIDI channel for that control.
+- **Note / CC number** — the value it sends.
+- **Hit / Press** — pads expose separate actions for the initial hit (with velocity)
+  and for continued pressure (polyphonic aftertouch).
+
+**Per-pad LED colours.** Each pad has its own idle and active colour, with a choice of
+colour source (for example, follow the DAW's MIDI output) and an optional cold-to-warm
+gradient that reflects how hard the pad is hit.
+
+**Device preferences.** The settings (gear) panel exposes hardware-side options with a
+live preview on the controller:
+
+- **Pad sensitivity** and **pad velocity curve** (how hard hits map to MIDI velocity).
+- **Display contrast.**
+- **Button backlight brightness** — keep the buttons faintly lit even when they would
+  otherwise be off.
+
+### Advanced: file-based overrides
+
+Power users can still drive the same settings from a TOML file. Defaults live in code;
+your file only contains the keys you override. See `default_config.toml` (regenerate
+with `cargo run --bin gen-default-config`) for every available key, then point the
+driver at your file:
+
 ```shell
 cargo run -p driver --release -- -c your_config.toml
 ```
 
-Defaults live in code; your `config.toml` contains only the keys you want to override. See `default_config.toml` (auto-generated by `cargo run --bin gen-default-config`) for every available key. Lines are commented out by default — uncomment any line in your own config to override that one value.
+### Build-time MIDI backend (ALSA or JACK)
 
-## Backend Configuration
+By default the driver builds against ALSA via `midir`. For the JACK backend instead, use:
 
-The runtime config uses a single MIDI backend. ALSA raw-MIDI bridging (for Bitwig via `snd-virmidi`) lives under the `[bridge]` section:
-
-```toml
-[bridge]
-midi_bridge_virmidi = false
-autoconnect_virmidi = true
-virmidi_client_name = ""
-virmidi_port = 0
-```
-
-The MIDI backend always creates both virtual MIDI output and virtual MIDI input ports for the controller.
-Leave `midi_bridge_virmidi = false` for the normal sequencer-port workflow.
-Set `midi_bridge_virmidi = true` when you need the raw-MIDI bridge, such as Bitwig integration through `snd-virmidi`.
-
-## Backlight / Night mode (dimly lit buttons)
-
-Maschine Mikro MK3 buttons support multiple brightness levels. You can enable a "backlight" mode so that buttons stay faintly illuminated even when they would normally be Off.
-
-In your config:
-
-```toml
-[hardware]
-backlight_buttons = true
-backlight_brightness = "dim" # "dim" | "normal" | "bright"
-```
-
-When enabled, any incoming "Off" state for **button LEDs** is treated as the configured backlight level. DAW-driven LED input is available through the MIDI backend's virtual input port. Brighter states still work normally.
-
-**Build-time MIDI API note:** This is separate from `backend = "midi"` above. By default the project builds against ALSA via `midir`. If you need the JACK `midir` backend instead, use:
 ```shell
 cargo run -p driver --release --features jack
 ```
-I tried to make a version that could do both, but due to 1) how `midir` handles backends during compile-time (no features = alsa, `["jack"]` features = jack) and 2) how rust handles dependencies with different feature flag sets ([feature unification](https://github.com/rust-lang/cargo/issues/10489)), it does not seem possible.
 
-**Note:** In previous versions, 98-maschine.rules was granting access to Maschine only to users in `input` group. This is no longer needed, the new version of the udev rules file allows Maschine to be accessed by any user. This simplifies installation, e.g., for Ubuntu users, as by default there's no `input` group there.
+`midir` selects its backend at compile time (no features = ALSA, `["jack"]` = JACK), and
+because of Rust [feature unification](https://github.com/rust-lang/cargo/issues/10489) a
+single binary cannot offer both.
 
 ## Soft-Off
 
-Press `Shift + Maschine` to toggle soft-off.
-While soft-off is active, the driver blanks the controller lights and screen and suppresses both outgoing control events and incoming MIDI feedback until you press the combo again to wake it.
+Press `Shift + Maschine` to toggle soft-off. While soft-off is active, the driver
+blanks the controller lights and screen and suppresses both outgoing control events and
+incoming MIDI feedback until you press the combo again to wake it.
 
-## Progress
+## What Works
 
-What works:
- - Pads (MIDI Notes)
- - All 41 Buttons (MIDI CC, including Encoder Press and Encoder Touch)
- - Encoder (MIDI CC, relative mode)
- - Slider/Touch Strip (MIDI CC)
- - All LEDs (DAW-driven LED input via the MIDI backend virtual input)
- - Screen (DAW integration via SysEx with the MIDI backend virtual input)
- - Mode System (Play, Step, Clip, Mixer)
- - Note Repeat
- - Fixed Velocity
- - Step Sequencer
- - Clip Launcher
- - Mixer Controls
+Basically everything — and more than the official driver exposes. For example, unpressed
+pad LEDs can be turned completely off, and every button has four brightness levels rather
+than just Off/On.
 
-So, basically everything, and even more than with the official driver.
-For example, it is now possible to turn unpressed pad LEDs completely off in the layout.
-Or it turns out that every button has 4 levels of brightness, not just Off/On as in the official MIDI Mode.
+**Driver and GUI** — works with any MIDI software:
 
-### Screen Integration
+- Pads (MIDI notes, velocity curves, polyphonic aftertouch)
+- All 41 buttons (MIDI CC, including encoder press and encoder touch)
+- Encoder (MIDI CC: relative, relative-offset, and absolute modes, reversible)
+- Slider / touch strip (MIDI CC, plus optional touch-on/off events)
+- All LEDs, including per-pad idle/active colours (driven from your DAW via the virtual MIDI input)
+- Screen text via a SysEx protocol on the virtual MIDI input
+- Soft-off, hot-plug recovery, and live configuration updates
+- Desktop configuration GUI (visual control assignment, per-pad colours, live device preferences)
 
-The OLED screen displays contextual information based on the current mode:
-- **Mode name** when switching modes
-- **Track name** in Play and Mixer modes
-- **Note name** when changing step sequencer note
-- **Feature status** when toggling Note Repeat or Fixed Velocity
+**Bitwig controller script** — DAW integration layered on top of the driver's MIDI:
 
-The screen is controlled via SysEx messages from the Bitwig controller script through the MIDI backend virtual input, allowing for real-time feedback without additional configuration.
+- Mode system (Play, Step, Clip, Mixer)
+- Note repeat and fixed velocity
+- Step sequencer, clip launcher, and mixer controls
+- Contextual OLED screen content (mode, track, and note names)
+- Pad playback feedback
 
-## MIDI Mapping
+## Default MIDI Map
 
-Every control is configured as a per-action override in your `config.toml`. The full list of available keys lives in the auto-generated `default_config.toml` — copy the sections you want and uncomment the lines you want to change.
+These are the factory defaults. You can change any of them in the GUI; they are listed
+here only as a reference for what the controller sends out of the box.
 
-Global default MIDI channel:
+**Pads** send Note On/Off. By default they run chromatically from note 36 at pad 1
+(bottom-left) up to note 51 at pad 16 (top-right) — left to right, bottom row to top row.
+This matches the usual drum-rack layout (pad 1 = C1 = 36).
 
-```toml
-[global]
-midi_channel = 0      # 0..=15; per-action `channel` can override
-```
+**Encoder** sends relative values (65+ clockwise, <64 counter-clockwise) on CC 1 by default.
 
-Pad notes (default scale: 48, 49, 50, 51, 44, ..., 39):
+**Slider / touch strip** sends absolute position (0–127) on CC 9 by default.
 
-```toml
-[pads.0.hit]
-type = "note"
-note = 48
-# channel = 1        # optional per-pad channel override
-```
-
-Pad aftertouch (poly-pressure) is **disabled by default**. Enable per pad:
-
-```toml
-[pads.0.pressure]
-type = "poly"
-# note inherits from [pads.0.hit] unless set
-# channel inherits from [global] unless set
-```
-
-Button CCs (snake_case names from the `Buttons` enum):
-
-```toml
-[buttons.play.press]
-type = "cc"
-cc = 42
-
-[buttons.stop.press]
-type = "cc"
-cc = 44
-```
-
-Encoder turn (relative-offset CC):
-
-```toml
-[encoder.turn]
-type = "cc"
-cc = 1
-```
-
-Slider position (absolute CC):
-
-```toml
-[slider.position]
-type = "cc"
-cc = 9
-```
-
-Slider touch is **disabled by default**. Enable as a Note or CC trigger:
-
-```toml
-[slider.touch]
-type = "cc"          # or "note"
-cc = 70              # or note = 60 when type = "note"
-on_value = 127
-off_value = 0
-```
-
-### Pads (MIDI Notes)
-Pads send Note On/Off messages. Notes are configurable via `[pads.<n>.hit]` in config.
-
-### Pad Velocity Curves
-
-Pad note velocity uses a single global curve configured with:
-
-```toml
-[hardware]
-pad_velocity_curve = "linear"
-```
-
-Supported values are:
-- `soft3`
-- `soft2`
-- `soft1`
-- `linear`
-- `hard1`
-- `hard2`
-- `hard3`
-
-Softer curves raise midrange velocities more aggressively. Harder curves do the opposite.
-Per-pad velocity curves are not implemented yet.
-
-### Buttons (MIDI CC)
-All buttons send configured CC messages on press (value 127) and release (value 0). Default map:
+**Buttons** send CC 127 on press and 0 on release:
 
 | Button | CC | Button | CC | Button | CC |
 |--------|----:|--------|----:|--------|----:|
@@ -235,18 +181,13 @@ All buttons send configured CC messages on press (value 127) and release (value 
 | Solo | 57 | Encoder Touch | 60 | | |
 | Mute | 58 | | | | |
 
-### Encoder
-Encoder sends relative values: 65+ for clockwise, <64 for counter-clockwise. Default CC is `1`.
-
-### Slider/Touch Strip
-Slider sends absolute position (0-127). Default CC is `9`.
-
 ## Controlling LEDs via MIDI Input
 
-This DAW-to-driver MIDI input path is always available with `backend = "midi"`.
+LEDs can be driven from your DAW through the driver's virtual MIDI input.
 
 ### Pad LEDs (Note On/Off)
-Send Note On/Off to the same notes configured in `pad_notes`. Velocity determines color:
+
+Send Note On/Off to a pad's configured note. Velocity selects the colour:
 
 | Velocity | Color | Velocity | Color |
 |----------|-------|----------|-------|
@@ -261,7 +202,9 @@ Send Note On/Off to the same notes configured in `pad_notes`. Velocity determine
 | 57-63 | Cyan | 0 | Off |
 
 ### Button LEDs (CC)
-Send CC to the same configured button CC numbers to control button brightness:
+
+Send CC to a button's configured CC number to set its brightness:
+
 - 0: Off
 - 1-42: Dim
 - 43-84: Normal
@@ -269,188 +212,25 @@ Send CC to the same configured button CC numbers to control button brightness:
 
 ## Bitwig Studio Integration
 
-A controller script is included for full Bitwig integration. Copy it to your Bitwig controller scripts folder:
+A controller script provides full Bitwig integration — the mode system (Play, Step, Clip,
+Mixer), step sequencer, clip launcher, mixer controls, transport, and pad playback feedback,
+all layered on top of the driver's MIDI.
 
-```shell
-mkdir -p ~/Bitwig\ Studio/Controller\ Scripts/MaschineMikroMK3
-cp bitwig/MaschineMikroMK3.control.js ~/Bitwig\ Studio/Controller\ Scripts/MaschineMikroMK3/
-```
-
-If you want to rebuild the Bitwig script from source, use Node.js 24 LTS. The `bitwig/` directory includes `.nvmrc` and `engine-strict=true`, so `nvm use` inside `bitwig/` is expected before running `npm install`, `npm update`, or `npm run build`.
-
-```shell
-cd bitwig
-nvm use
-npm install
-npm run build
-```
-
-### Connecting to Bitwig (PipeWire/ALSA)
-
-Since Bitwig uses ALSA **Raw MIDI** devices directly (not ALSA sequencer), you need to route through Virtual Raw MIDI.
-Bitwig setup uses `backend = "midi"` with `midi_bridge_virmidi = true` in your config. The driver can then auto-connect to `snd-virmidi` on startup.
-
-Use a config like:
-
-```toml
-backend = "midi"
-midi_bridge_virmidi = true
-autoconnect_virmidi = true
-virmidi_client_name = ""
-virmidi_port = 0
-```
-
-```shell
-# After enabling midi_bridge_virmidi = true in your config, start the driver
-cargo run -p driver --release -- -c your_config.toml
-```
-
-Then in Bitwig:
-1. Go to **Settings → Controllers → Add Controller**
-2. Select **Native Instruments → Maschine Mikro MK3 (Linux)**
-3. Set Input to **Virtual Raw MIDI/1**
-4. Set Output to **Virtual Raw MIDI/2**
-5. (Optional) Click on the controller name to customize pad LED feedback settings
-
-#### Optional: rename "Virtual Raw MIDI" to "Maschine Mikro MK3"
-
-The `snd-virmidi` kernel module supports renaming via the `id=` parameter. Example:
-
-```shell
-sudo modprobe -r snd_virmidi snd_seq_virmidi
-sudo modprobe snd-virmidi midi_devs=2 id="Maschine Mikro MK3"
-```
-
-### Mode System
-
-The controller supports four operational modes, each providing different functionality for the pads and other controls. The current mode is displayed on the OLED screen.
-
-| Mode | Button | Pad Function | Encoder Function |
-|------|--------|--------------|------------------|
-| **Play** | Keyboard | Play notes (normal) | Navigate tracks |
-| **Step** | Step | Toggle sequencer steps | Change step note |
-| **Clip** | Scene | Launch clips/scenes | Navigate scenes |
-| **Mixer** | Pattern | Track controls (select/mute/solo/arm) | Navigate tracks |
-
-**Switching Modes:**
-- Press **Pad Mode** to cycle through modes
-- Press **Keyboard**, **Step**, **Scene**, or **Pattern** to jump directly to that mode
-- Press **Shift + Pad Mode** to return to Play mode
-- Hold **Shift** + mode button for the original view toggle function
-
-### Note Repeat
-
-Press **Note Repeat** to enable auto-retriggering of held pad notes. While enabled, holding a pad will continuously retrigger that note at the selected interval.
-
-| Action | Function |
-|--------|----------|
-| Note Repeat | Toggle note repeat on/off |
-| Shift + Note Repeat | Cycle repeat rate (1/16 → 1/8 → 1/4) |
-
-### Fixed Velocity
-
-Press **Fixed Vel** to force all pad hits to use a fixed velocity (100 by default). This is useful for consistent drum programming or when you want uniform note levels.
-
-| Action | Function |
-|--------|----------|
-| Fixed Vel | Toggle fixed velocity on/off |
-| Shift + Fixed Vel | Show current fixed velocity value |
-
-### Step Sequencer Mode
-
-In Step mode, the 16 pads represent 16 steps in a drum sequencer pattern:
-
-- **Press a pad** to toggle that step on/off
-- **Rotate encoder** to change the note being sequenced (C1 to G9)
-- **Press Erase** to clear all steps
-- **Yellow pads** = steps with notes
-- **White pad** = current playhead position
-- **Off pads** = empty steps
-
-The step sequencer edits the cursor clip in your current track.
-
-### Mixer Mode
-
-In Mixer mode, pads control the first 4 tracks in a grid layout:
-
-| Row | Function | Colors |
-|-----|----------|--------|
-| Top (1-4) | Select track | Blue |
-| Row 2 (5-8) | Toggle mute | Orange |
-| Row 3 (9-12) | Toggle solo | Yellow |
-| Bottom (13-16) | Toggle arm | Red |
-
-### Clip Launcher Mode
-
-In Clip mode, pads trigger clips and scenes:
-
-| Row | Function |
-|-----|----------|
-| Top row (1-4) | Launch scenes 1-4 |
-| Other rows | Launch track clips |
-
-### Button Functions in Bitwig
-
-| Button | Function | Shift + Button |
-|--------|----------|----------------|
-| Play | Play/Pause | Return to arrangement |
-| Stop | Stop | Reset automation |
-| Rec | Toggle record | Toggle overdub |
-| Restart | Jump to start | Toggle loop |
-| Tap | Tap tempo | Toggle metronome |
-| Left | Rewind | Previous track |
-| Right | Fast forward | Next track |
-| Browse | Open/close browser | Insert device after |
-| Encoder | Mode-specific (see above) | Navigate tempo |
-| Encoder Press | Select in editor | Select in mixer |
-| Solo | Toggle solo | - |
-| Mute | Toggle mute | - |
-| Sampling | Toggle arm | - |
-| Volume | Undo | Redo |
-| Follow | Zoom to selection | Zoom to fit |
-| Duplicate | Duplicate | Duplicate object |
-| Erase | Delete (or clear steps in Step mode) | Cut |
-| Plugin | Next device | Previous device |
-| Slider | Track volume | - |
-| Note Repeat | Toggle note repeat | Cycle repeat rate |
-| Fixed Vel | Toggle fixed velocity | Show velocity value |
-| Pad Mode | Cycle modes | Return to Play mode |
-| Keyboard | Play mode | Toggle note editor |
-| Step | Step mode | Toggle automation editor |
-| Scene | Clip mode | Toggle mixer |
-| Pattern | Mixer mode | Return to arrangement |
-
-### Pad Playback Feedback (Bitwig 6+)
-
-The controller script includes visual feedback on pads during clip/sequence playback. This feature uses the `playingNotes()` API introduced in Bitwig Studio 6 beta. The script will work on older versions but without playback feedback.
-
-**Example use case:** When you have a drum loop playing in a clip, you'll see the pads light up in sync with the beat, showing exactly which drums are being triggered. This helps you visualize the rhythm and jam along with live pads.
-
-#### Customizable Settings
-
-Go to **Settings → Controllers → Maschine Mikro MK3 (Linux)** to customize:
-
-| Setting | Options | Description |
-|---------|---------|-------------|
-| **Playback Feedback** | Enabled / Disabled | Show visual feedback for notes playing from clips |
-| **Manual Hit Feedback** | Enabled / Disabled | Show visual feedback when you press pads manually |
-| **Playback Color Mode** | Track Color / Fixed Color | Use track color or a fixed color for playback |
-| **Fixed Playback Color** | Red, Orange, Yellow, Green, Cyan, Blue, Purple, Magenta, White | Color to use when Fixed Color mode is selected |
-| **Manual Hit Color** | Red, Orange, Yellow, Green, Cyan, Blue, Purple, Magenta, White | Color for manually pressed pads (default: Blue) |
-
-**Track Color Mode:** Each track has its own color in Bitwig, making it easy to identify which track/drums are active.
-
-**Fixed Color Mode:** All playback uses the same color regardless of track - useful if you prefer consistency.
+Setup and the complete control reference live in **[docs/bitwig.md](docs/bitwig.md)**.
 
 ## Goal
 
-This project provides a complete MIDI implementation for the Maschine Mikro MK3 on Linux, including:
+This project provides a complete MIDI implementation for the Maschine Mikro MK3 on Linux,
+including:
+
 - Full hardware support (pads, buttons, encoder, slider, LEDs, screen)
+- A desktop configuration GUI for assigning controls and tuning the hardware
 - Advanced DAW integration with Bitwig Studio
 - Performance features like Note Repeat and Fixed Velocity
 - Multiple operational modes (Play, Step Sequencer, Clip Launcher, Mixer)
 
-The driver works at the HID level without requiring Native Instruments' proprietary software, making it a truly open-source alternative that works natively on Linux.
+The driver works at the HID level without requiring Native Instruments' proprietary
+software, making it a truly open-source alternative that works natively on Linux.
 
 Contributions are welcome!
 
