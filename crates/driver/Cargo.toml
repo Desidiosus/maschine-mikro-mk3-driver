@@ -12,14 +12,13 @@ protocol.workspace = true
 arc-swap.workspace = true
 hidapi.workspace = true
 num.workspace = true
-midly.workspace = true
 clap.workspace = true
 config.workspace = true
 serde.workspace = true
 toml.workspace = true
 libc.workspace = true
 
-midir = { version = "0.10.4", features = ["default"] }
+midir = { version = "0.11.0", features = ["default"] }
 
 
 [[bin]]

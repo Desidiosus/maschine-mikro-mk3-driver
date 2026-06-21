@@ -12,7 +12,7 @@
   },
   "devDependencies": {
     "@rollup/plugin-terser": "^1.0.0",
-    "rollup": "^4.60.3"
+    "rollup": "^4.62.2"
   },
   "author": "",
   "license": "MIT"
