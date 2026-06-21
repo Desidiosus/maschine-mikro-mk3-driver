@@ -187,25 +187,46 @@ LEDs can be driven from your DAW through the driver's virtual MIDI input.
 
 ### Pad LEDs (Note On/Off)
 
-Send Note On/Off to a pad's configured note. Velocity selects the colour:
+Each pad's LED has a **source**, set per pad in the GUI:
+
+- **MIDI Out** (default) — the LED reflects the pad's own hits.
+- **MIDI In** — the LED is driven by incoming MIDI from your DAW.
+- **Off** — the LED stays dark.
+
+A pad only responds to DAW MIDI when its source is **MIDI In**, so the incoming and
+outgoing paths never fight over the same LED. With that set, send Note On/Off to the pad's
+configured note; Note Off (or velocity 0) turns it off.
+
+How the colour is chosen depends on the pad's **colour mode**:
+
+- **Single** — one fixed colour (brighter while held).
+- **Dual** — one colour while held, another while idle.
+- **Velocity** (default for the MIDI In source) — the velocity selects a fixed colour, so
+  your DAW can request a specific colour per note:
 
 | Velocity | Color | Velocity | Color |
 |----------|-------|----------|-------|
-| 1-7 | Red | 64-70 | Turquoise |
-| 8-14 | Orange | 71-77 | Blue |
-| 15-21 | Light Orange | 78-84 | Plum |
-| 22-28 | Warm Yellow | 85-91 | Violet |
-| 29-35 | Yellow | 92-98 | Purple |
-| 36-42 | Lime | 99-105 | Magenta |
-| 43-49 | Green | 106-112 | Fuchsia |
-| 50-56 | Mint | 113-127 | White |
-| 57-63 | Cyan | 0 | Off |
+| 0 | Off | 64-70 | Turquoise |
+| 1-7 | Red | 71-77 | Blue |
+| 8-14 | Orange | 78-84 | Plum |
+| 15-21 | Light Orange | 85-91 | Violet |
+| 22-28 | Warm Yellow | 92-98 | Purple |
+| 29-35 | Yellow | 99-105 | Magenta |
+| 36-42 | Lime | 106-112 | Fuchsia |
+| 43-49 | Green | 113-127 | White |
+| 50-56 | Mint | | |
+| 57-63 | Cyan | | |
+
+> **MIDI In vs MIDI Out velocity.** The table above applies to the **MIDI In** source,
+> where velocity is a colour selector. The **MIDI Out** source instead reads velocity as
+> hit strength and maps it along a cool-to-warm gradient (Violet when soft → Red when hard),
+> so harder hits glow warmer. The two interpretations are independent.
 
 ### Button LEDs (CC)
 
 Send CC to a button's configured CC number to set its brightness:
 
-- 0: Off
+- 0: Off (or the configured backlight level when button backlight is enabled)
 - 1-42: Dim
 - 43-84: Normal
 - 85-127: Bright

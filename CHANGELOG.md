@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Slider touch events** — the touch strip's touch-on / touch-off can be mapped to a note or CC, independent of the position value.
 - **New Slider LED modes** — added support for missing slider LED modes `pan` and `dot`. 
 - **Hardware preferences** — device-side settings (pad sensitivity, screen brightness, button backlight brightness) can be configured.
-- **Per-pad LED colours** — set each pad's idle and active colour, with an optional cold-to-warm gradient that reflects how hard the pad is hit.
+- **Per-pad LED colours** — set each pad's idle and active colour. Pad LEDs can follow either the pad's own hits or incoming MIDI from your DAW (chosen per pad). For hits, an optional cool-to-warm velocity gradient reflects how hard the pad is struck; for DAW-driven LEDs, note velocity selects a specific colour (compatible with the Bitwig script).
 - **Encoder turn modes** — added support for all encoder turn modes (relative, relative offset, absolute) with support for reversing the direction.
 - **"Off" action** — disable any individual control so it sends nothing.
 - **Generated reference config** — a `default_config.toml` containing every available setting is checked in and used by docs and the `-c` flag.

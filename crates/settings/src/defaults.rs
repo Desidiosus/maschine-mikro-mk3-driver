@@ -102,16 +102,18 @@ mod tests {
 
     #[test]
     fn default_pad_led_preserves_blue_on_hit() {
-        use maschine_library::lights::{Brightness, PadColors};
+        use maschine_library::lights::{Brightness, PadColors, pad_color_from_velocity_gradient};
         let pads = default_pads();
         let led = pads[0].led;
         assert_eq!(led.source, crate::PadLedSource::MidiOut);
         assert_eq!(
-            led.midi_out.resolve(true, 0),
+            led.midi_out
+                .resolve(true, 0, pad_color_from_velocity_gradient),
             (PadColors::Blue, Brightness::Normal)
         );
         assert_eq!(
-            led.midi_out.resolve(false, 0),
+            led.midi_out
+                .resolve(false, 0, pad_color_from_velocity_gradient),
             (PadColors::Off, Brightness::Off)
         );
         assert_eq!(led.midi_in.mode, crate::PadLedMode::Velocity);

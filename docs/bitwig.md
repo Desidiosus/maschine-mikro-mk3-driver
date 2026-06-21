@@ -184,6 +184,11 @@ on older versions but without playback feedback.
 the beat, showing exactly which drums are being triggered — handy for visualising the rhythm
 and jamming along live.
 
+> **Pad LEDs must be set to "For MIDI In".** The script lights pads by sending MIDI to the
+> driver, so a pad only shows this feedback when its LED source is **MIDI In** (the default is
+> **MIDI Out**). Set the pads you want lit to "For MIDI In" in the configuration GUI. The
+> script sends a specific velocity per colour, matching the driver's MIDI-in colour table.
+
 ### Customizable Settings
 
 Go to **Settings → Controllers → Maschine Mikro MK3 (Linux)** to customise:

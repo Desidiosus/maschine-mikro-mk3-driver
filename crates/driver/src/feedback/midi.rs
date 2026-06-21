@@ -122,7 +122,7 @@ mod tests {
         assert!(outputs.take_lights_dirty());
         assert_eq!(
             outputs.with_lights(|l| l.get_pad(0)),
-            (PadColors::Lime, Brightness::Normal)
+            (PadColors::Turquoise, Brightness::Normal)
         );
     }
 
@@ -181,7 +181,7 @@ mod tests {
 
         assert_eq!(
             outputs.with_lights(|l| l.get_pad(0)),
-            (PadColors::Lime, Brightness::Normal)
+            (PadColors::Turquoise, Brightness::Normal)
         );
     }
 

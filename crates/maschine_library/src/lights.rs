@@ -91,7 +91,11 @@ impl std::fmt::Display for PadColors {
 /// Map a 7-bit MIDI velocity to a pad color across a cool-to-warm hue gradient
 /// (`Violet` at low velocity through blue, cyan, green, yellow and orange to
 /// `Red` at the top). `0` is `Off`.
-pub fn pad_color_from_velocity(velocity: u8) -> PadColors {
+///
+/// This is the **hit-strength** interpretation used by the MIDI-out (local
+/// feedback) source: a harder hit glows warmer. For the MIDI-in source, where
+/// the velocity selects a specific color, use [`pad_color_from_velocity_index`].
+pub fn pad_color_from_velocity_gradient(velocity: u8) -> PadColors {
     match velocity {
         0 => PadColors::Off,
         1..=10 => PadColors::Violet,
@@ -106,6 +110,38 @@ pub fn pad_color_from_velocity(velocity: u8) -> PadColors {
         95..=105 => PadColors::LightOrange,
         106..=116 => PadColors::Orange,
         _ => PadColors::Red,
+    }
+}
+
+/// Map a 7-bit MIDI velocity to a pad color by selecting one of 17 discrete
+/// colors in fixed bands (`Red` near the bottom through the full hue wheel to
+/// `White` at the top). `0` is `Off`.
+///
+/// This is the **color-selector** interpretation used by the MIDI-in source:
+/// the DAW (or controller script) sends a velocity in a known band to request a
+/// specific color. The bands here are the stable contract the Bitwig script
+/// relies on; for the hit-strength gradient used by the MIDI-out source see
+/// [`pad_color_from_velocity_gradient`].
+pub fn pad_color_from_velocity_index(velocity: u8) -> PadColors {
+    match velocity {
+        0 => PadColors::Off,
+        1..=7 => PadColors::Red,
+        8..=14 => PadColors::Orange,
+        15..=21 => PadColors::LightOrange,
+        22..=28 => PadColors::WarmYellow,
+        29..=35 => PadColors::Yellow,
+        36..=42 => PadColors::Lime,
+        43..=49 => PadColors::Green,
+        50..=56 => PadColors::Mint,
+        57..=63 => PadColors::Cyan,
+        64..=70 => PadColors::Turquoise,
+        71..=77 => PadColors::Blue,
+        78..=84 => PadColors::Plum,
+        85..=91 => PadColors::Violet,
+        92..=98 => PadColors::Purple,
+        99..=105 => PadColors::Magenta,
+        106..=112 => PadColors::Fuchsia,
+        _ => PadColors::White,
     }
 }
 
@@ -536,8 +572,20 @@ mod pad_colors_tests {
     }
 
     #[test]
-    fn pad_color_from_velocity_maps_endpoints() {
-        assert_eq!(super::pad_color_from_velocity(0), PadColors::Off);
-        assert_eq!(super::pad_color_from_velocity(127), PadColors::Red);
+    fn pad_color_from_velocity_gradient_maps_endpoints() {
+        assert_eq!(super::pad_color_from_velocity_gradient(0), PadColors::Off);
+        assert_eq!(
+            super::pad_color_from_velocity_gradient(1),
+            PadColors::Violet
+        );
+        assert_eq!(super::pad_color_from_velocity_gradient(127), PadColors::Red);
+    }
+
+    #[test]
+    fn pad_color_from_velocity_index_maps_bands() {
+        assert_eq!(super::pad_color_from_velocity_index(0), PadColors::Off);
+        assert_eq!(super::pad_color_from_velocity_index(4), PadColors::Red);
+        assert_eq!(super::pad_color_from_velocity_index(74), PadColors::Blue);
+        assert_eq!(super::pad_color_from_velocity_index(120), PadColors::White);
     }
 }

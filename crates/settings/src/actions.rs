@@ -1,4 +1,6 @@
-use maschine_library::lights::{Brightness, PadColors, pad_color_from_velocity};
+use maschine_library::lights::{
+    Brightness, PadColors, pad_color_from_velocity_gradient, pad_color_from_velocity_index,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::MidiChannel;
@@ -161,7 +163,9 @@ pub enum PadLedMode {
     Single,
     /// Two colors: `dual_off` when idle, `dual_on` when hit (both normal brightness).
     Dual,
-    /// Velocity→hue gradient on hit, dark when idle.
+    /// Velocity picks the color on hit, dark when idle. The MIDI-out source reads
+    /// velocity as hit strength (cool-to-warm gradient); the MIDI-in source reads
+    /// it as a color selector (fixed bands). See `PadLedConfig::resolve`.
     #[default]
     Velocity,
 }
@@ -239,8 +243,16 @@ impl PadLedColorMode {
 
     /// Resolve to a concrete `(color, brightness)` for the LED state. `on` is the
     /// note-on / hit state; `velocity` is the hit (or incoming-note) velocity,
-    /// used only by `Velocity`. An `Off` color always yields a dark LED.
-    pub fn resolve(&self, on: bool, velocity: u8) -> (PadColors, Brightness) {
+    /// used only by `Velocity`. `velocity_color` maps that velocity to a color —
+    /// the source decides which interpretation applies (hit-strength gradient for
+    /// MIDI out, color-selector index for MIDI in). An `Off` color always yields a
+    /// dark LED.
+    pub fn resolve(
+        &self,
+        on: bool,
+        velocity: u8,
+        velocity_color: fn(u8) -> PadColors,
+    ) -> (PadColors, Brightness) {
         let (color, brightness) = match self.mode {
             PadLedMode::Single => (
                 self.single,
@@ -256,7 +268,7 @@ impl PadLedColorMode {
             ),
             PadLedMode::Velocity => {
                 if on {
-                    (pad_color_from_velocity(velocity), Brightness::Normal)
+                    (velocity_color(velocity), Brightness::Normal)
                 } else {
                     (PadColors::Off, Brightness::Off)
                 }
@@ -294,8 +306,14 @@ impl PadLedConfig {
     pub fn resolve(&self, on: bool, velocity: u8) -> (PadColors, Brightness) {
         match self.source {
             PadLedSource::Off => (PadColors::Off, Brightness::Off),
-            PadLedSource::MidiIn => self.midi_in.resolve(on, velocity),
-            PadLedSource::MidiOut => self.midi_out.resolve(on, velocity),
+            PadLedSource::MidiIn => {
+                self.midi_in
+                    .resolve(on, velocity, pad_color_from_velocity_index)
+            }
+            PadLedSource::MidiOut => {
+                self.midi_out
+                    .resolve(on, velocity, pad_color_from_velocity_gradient)
+            }
         }
     }
 }
@@ -564,26 +582,50 @@ cc = 1
 
     #[test]
     fn pad_led_resolve_single_is_dim_idle_normal_hit() {
-        use maschine_library::lights::Brightness;
+        use maschine_library::lights::{Brightness, pad_color_from_velocity_gradient};
         let m = PadLedColorMode::single(PadColors::Green);
-        assert_eq!(m.resolve(false, 0), (PadColors::Green, Brightness::Dim));
-        assert_eq!(m.resolve(true, 0), (PadColors::Green, Brightness::Normal));
+        let map = pad_color_from_velocity_gradient;
+        assert_eq!(
+            m.resolve(false, 0, map),
+            (PadColors::Green, Brightness::Dim)
+        );
+        assert_eq!(
+            m.resolve(true, 0, map),
+            (PadColors::Green, Brightness::Normal)
+        );
     }
 
     #[test]
     fn pad_led_resolve_dual_switches_color_at_normal() {
-        use maschine_library::lights::Brightness;
+        use maschine_library::lights::{Brightness, pad_color_from_velocity_gradient};
         let m = PadLedColorMode::dual(PadColors::Blue, PadColors::Off);
+        let map = pad_color_from_velocity_gradient;
         // off-color Off collapses to a dark LED.
-        assert_eq!(m.resolve(false, 0), (PadColors::Off, Brightness::Off));
-        assert_eq!(m.resolve(true, 0), (PadColors::Blue, Brightness::Normal));
+        assert_eq!(m.resolve(false, 0, map), (PadColors::Off, Brightness::Off));
+        assert_eq!(
+            m.resolve(true, 0, map),
+            (PadColors::Blue, Brightness::Normal)
+        );
     }
 
     #[test]
-    fn pad_led_resolve_velocity_is_dark_idle_gradient_hit() {
-        use maschine_library::lights::Brightness;
+    fn pad_led_resolve_velocity_uses_supplied_mapping() {
+        use maschine_library::lights::{
+            Brightness, pad_color_from_velocity_gradient, pad_color_from_velocity_index,
+        };
         let m = PadLedColorMode::velocity();
-        assert_eq!(m.resolve(false, 100), (PadColors::Off, Brightness::Off));
-        assert_eq!(m.resolve(true, 64), (PadColors::Lime, Brightness::Normal));
+        assert_eq!(
+            m.resolve(false, 100, pad_color_from_velocity_gradient),
+            (PadColors::Off, Brightness::Off)
+        );
+        // Same velocity, different interpretation per source.
+        assert_eq!(
+            m.resolve(true, 64, pad_color_from_velocity_gradient),
+            (PadColors::Lime, Brightness::Normal)
+        );
+        assert_eq!(
+            m.resolve(true, 64, pad_color_from_velocity_index),
+            (PadColors::Turquoise, Brightness::Normal)
+        );
     }
 }
