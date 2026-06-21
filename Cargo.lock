@@ -1013,7 +1013,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
 name = "driver"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arc-swap",
  "clap",
@@ -1539,7 +1539,7 @@ dependencies = [
 
 [[package]]
 name = "gui"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "futures",
  "iced",
@@ -2280,7 +2280,7 @@ dependencies = [
 
 [[package]]
 name = "maschine_library"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "hidapi",
  "num",
@@ -3232,7 +3232,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "protocol"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "ciborium",
  "serde",
@@ -3629,7 +3629,7 @@ dependencies = [
 
 [[package]]
 name = "settings"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "ciborium",
  "maschine_library",
