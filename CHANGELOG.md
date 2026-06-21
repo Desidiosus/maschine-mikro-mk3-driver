@@ -9,29 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Desktop GUI
+- **New configuration app** — a graphical desktop app for setting up the controller without hand-editing `config.toml`. It's similar to the NI Controller Editor application. The GUI will connect to an already running driver or launch the driver if it's not running. This allows running the driver independently of the configuration GUI.
+- **Visual control editing** — click a pad, button, encoder, or slider on the diagram (or simply touch it on the hardware) to edit its note, CC, MIDI channel, and behaviour. Changes apply to the running driver immediately and are saved automatically.
+- **Per-pad LED colours** — pick each pad's idle and active colour from the GUI, including the velocity gradient.
+- **Device preferences with live preview** — adjust pad sensitivity, screen brightness, and button backlight and see the effect on the hardware as you change them.
+- **Connection and activity display** — the top bar shows whether the controller is connected and lights up on MIDI activity.
+
 #### Driver
 - **Soft-off mode** — press `Shift + Maschine` to blank the lights and screen and silence all output without quitting the driver; press again to restore the previous state. Useful for stepping away from the controller without unplugging it.
 - **Per-control configuration** — every pad, button, encoder, and slider action can now be customised independently in `config.toml` (note number, MIDI channel, CC number, behaviour). Pads are keyed by physical pad number (1–16); buttons by their printed names.
 - **Pad velocity curves** — shape how hard hits translate to MIDI velocity (linear, soft, hard).
 - **Pad aftertouch** — pad pressure is now sent as polyphonic aftertouch when configured.
 - **Slider touch events** — the touch strip's touch-on / touch-off can be mapped to a note or CC, independent of the position value.
-- **Hardware preferences** — device-side settings (pad sensitivity, screen brightness) can be configured.
+- **New Slider LED modes** — added support for missing slider LED modes `pan` and `dot`. 
+- **Hardware preferences** — device-side settings (pad sensitivity, screen brightness, button backlight brightness) can be configured.
+- **Per-pad LED colours** — set each pad's idle and active colour, with an optional cold-to-warm gradient that reflects how hard the pad is hit.
+- **Encoder turn modes** — added support for all encoder turn modes (relative, relative offset, absolute) with support for reversing the direction.
+- **"Off" action** — disable any individual control so it sends nothing.
 - **Generated reference config** — a `default_config.toml` containing every available setting is checked in and used by docs and the `-c` flag.
-
-#### Slider LED Rendering
-- New `[slider.led]` settings: choose `bar`, `pan`, or `dot` rendering, with an optional stylized trail (leading led brighter than the rest).
-- Slider LEDs auto-blank after a configurable idle delay (default is 5s).
-- Rainbow slider sweep added to the self-test.
-
-#### Encoder Value Modes
-- `[encoder.turn.mode]` selects one of three NI-style modes:
-  - `kind = "relative", step = 1` — NI standard: `step` for CW, `128 - step` for CCW. **New default.**
-  - `kind = "relative_offset", step = 1` — previous default: `64 + delta * step` clamped to `[0, 127]`.
-  - `kind = "absolute", lo = 0, hi = 127, step = 1, wrap = false` — accumulated counter, optional wrap. Counter syncs from incoming CC echoes (runtime-only, not persisted across driver restarts).
 
 ### Changed
 - **Configuration file format is new** — flat keys have been replaced by a nested per-control schema. Existing `config.toml` files from 0.4.0 will not load as-is; see `default_config.toml` for the new layout.
-- **Encoder wire format default changed** — configs omitting `[encoder.turn.mode]` now deserialize to `Relative { step: 1 }`, which sends `1` CW / `127` CCW instead of the previous `65` / `63`. To keep the previous behaviour, set `mode = { kind = "relative_offset", step = 1 }` under `[encoder.turn]`.
+- **Default encoder turn mode** — default encoder turn mode is now Relative, which sends `1` on CW turn and `127` on CCW turn. For previous default, switch to Relative Offset mode.
+- **Button backlight is now a single brightness slider** instead of a fixed list of presets.
+- Driver now keeps running when the controller is unplugged or busy and recovers automatically when it comes back, instead of exiting.
 - Internal restructure of the driver into smaller modules and a shared library crate; no user-visible behaviour change beyond what's listed above.
 - Driver now blanks the lights and screen when it exits (e.g. on `Ctrl+C`) instead of leaving the controller frozen in its last state.
 
@@ -41,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Infrastructure
 - CI now builds with Node.js 24 to match `bitwig/.nvmrc` and the `engines.node` constraint (`>=24 <25`); previously `npm ci` failed under `engine-strict=true`.
+- Releases now include the desktop GUI binary alongside the driver and Bitwig script.
+- CI builds and tests the full workspace and enforces formatting and linting on every push and pull request.
 
 ## [0.4.0] - 2026-01-20
 
