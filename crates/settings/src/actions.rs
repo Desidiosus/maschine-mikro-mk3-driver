@@ -476,7 +476,7 @@ mod tests {
     fn slider_led_mode_pan_round_trips_as_lowercase() {
         let led = SliderLedSettings {
             mode: SliderLedMode::Pan,
-            color: maschine_library::lights::PadColors::Cyan,
+            color: PadColors::Cyan,
             stylized: true,
             auto_off_ms: 1234,
         };

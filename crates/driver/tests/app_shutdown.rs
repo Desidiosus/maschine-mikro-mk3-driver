@@ -47,8 +47,8 @@ impl HidIo for CapturingHid {
     }
 }
 
-fn test_settings() -> driver::settings::Settings {
-    let mut s = driver::settings::Settings::default();
+fn test_settings() -> settings::Settings {
+    let mut s = settings::Settings::default();
     s.global.client_name = "Client".into();
     s.global.port_name = "Port".into();
     s.global.port_name_in = "Input".into();

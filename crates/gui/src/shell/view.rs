@@ -25,12 +25,12 @@ pub(crate) fn top_bar(state: &State) -> Element<'_, Message> {
     .padding(6)
     .style(|_t: &iced::Theme, status| {
         let bg = match status {
-            iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed => {
+            button::Status::Hovered | button::Status::Pressed => {
                 iced::Color::from_rgb(0.24, 0.24, 0.29)
             }
             _ => iced::Color::from_rgb(0.17, 0.17, 0.21),
         };
-        iced::widget::button::Style {
+        button::Style {
             background: Some(iced::Background::Color(bg)),
             border: iced::Border {
                 color: iced::Color::from_rgb(0.35, 0.35, 0.40),
@@ -57,7 +57,7 @@ pub(crate) fn top_bar(state: &State) -> Element<'_, Message> {
         .padding([6, 10]),
     )
     .width(Length::Fill)
-    .style(|_t: &iced::Theme| iced::widget::container::Style {
+    .style(|_t: &iced::Theme| container::Style {
         background: Some(iced::Background::Color(iced::Color::from_rgb(
             0.10, 0.10, 0.12,
         ))),

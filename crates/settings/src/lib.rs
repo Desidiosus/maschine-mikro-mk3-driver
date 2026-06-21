@@ -123,7 +123,7 @@ impl Settings {
         // variant must fail to compile here (forcing a validation decision)
         // rather than silently skip range checks via a catch-all early return.
         for (i, pad) in self.pads.iter().enumerate() {
-            let key = crate::pads_by_index::internal_to_config_key(i);
+            let key = pads_by_index::internal_to_config_key(i);
             match &pad.hit {
                 PadHitAction::Note { note, .. } => check(&format!("pad {key} note"), *note)?,
                 PadHitAction::Off => {}
@@ -177,7 +177,7 @@ impl Settings {
             EncoderTurnAction::Off => {}
             EncoderTurnAction::Cc { cc, mode, .. } => {
                 check("encoder cc", *cc)?;
-                if let actions::CcValueMode::Absolute { lo, hi, .. } = mode {
+                if let CcValueMode::Absolute { lo, hi, .. } = mode {
                     if lo > hi {
                         return Err(format!(
                             "encoder Absolute mode: lo ({lo}) must be <= hi ({hi})"
@@ -213,9 +213,9 @@ mod validate_tests {
 
     #[test]
     fn midi_channel_try_from_opt_clamps_range() {
-        assert!(crate::MidiChannel::try_from_opt(0).is_some());
-        assert!(crate::MidiChannel::try_from_opt(15).is_some());
-        assert!(crate::MidiChannel::try_from_opt(16).is_none());
+        assert!(MidiChannel::try_from_opt(0).is_some());
+        assert!(MidiChannel::try_from_opt(15).is_some());
+        assert!(MidiChannel::try_from_opt(16).is_none());
     }
 
     fn settings_with_encoder_mode(mode: CcValueMode) -> Settings {
@@ -326,7 +326,7 @@ mod validate_tests {
     #[test]
     fn validate_rejects_out_of_range_pad_note() {
         let mut s = Settings::default();
-        s.pads[0].hit = crate::actions::PadHitAction::Note {
+        s.pads[0].hit = PadHitAction::Note {
             channel: None,
             note: 200,
         };
@@ -336,7 +336,7 @@ mod validate_tests {
     #[test]
     fn validate_rejects_out_of_range_button_cc() {
         let mut s = Settings::default();
-        s.buttons.0[0].press = crate::actions::ButtonPressAction::Cc {
+        s.buttons.0[0].press = ButtonPressAction::Cc {
             channel: None,
             cc: 240,
         };
@@ -346,7 +346,7 @@ mod validate_tests {
     #[test]
     fn validate_rejects_out_of_range_slider_touch_on_value() {
         let mut s = Settings::default();
-        s.slider.touch = crate::actions::SliderTouchAction::Cc {
+        s.slider.touch = SliderTouchAction::Cc {
             channel: None,
             cc: 70,
             on_value: 200,
@@ -358,11 +358,11 @@ mod validate_tests {
     #[test]
     fn validate_accepts_max_legal_data_bytes() {
         let mut s = Settings::default();
-        s.pads[0].hit = crate::actions::PadHitAction::Note {
+        s.pads[0].hit = PadHitAction::Note {
             channel: None,
             note: 127,
         };
-        s.slider.touch = crate::actions::SliderTouchAction::Note {
+        s.slider.touch = SliderTouchAction::Note {
             channel: None,
             note: 127,
             on_value: 127,

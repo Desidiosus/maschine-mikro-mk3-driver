@@ -14,7 +14,7 @@ pub(crate) fn tab_button<'a>(
     button(text(label.to_string()).size(13))
         .padding([6, 18])
         .on_press(on_press)
-        .style(move |_t: &Theme, _s| iced::widget::button::Style {
+        .style(move |_t: &Theme, _s| button::Style {
             background: Some(Background::Color(if active {
                 Color::from_rgb(0.20, 0.20, 0.25)
             } else {
@@ -52,6 +52,6 @@ pub(crate) fn divider<'a>() -> Element<'a, Message> {
 }
 
 /// Wrap a row of tabs with a bottom rule so it reads as a tab bar.
-pub(crate) fn tab_bar<'a>(tabs: iced::widget::Row<'a, Message>) -> Element<'a, Message> {
+pub(crate) fn tab_bar(tabs: iced::widget::Row<Message>) -> Element<Message> {
     column![tabs.spacing(2), divider()].spacing(0).into()
 }

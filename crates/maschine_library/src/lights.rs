@@ -223,7 +223,7 @@ impl Lights {
     /// Any non-zero raw value <= 5 pins to 0 by the `.max(0)` clamp, so a touch
     /// at the very bottom of the strip lights at least LED[0].
     fn head_from_raw(raw: u8) -> usize {
-        (((raw as i32 + 4) * 25 / 200 - 1).clamp(0, 24)) as usize
+        ((raw as i32 + 4) * 25 / 200 - 1).clamp(0, 24) as usize
     }
 
     /// Render the 25-LED slider bar in "bar" mode from a raw touch reading
@@ -452,7 +452,7 @@ mod tests {
         let raw = 150u8;
         lights.render_slider_pan(raw, PadColors::Magenta, false);
 
-        let lit_count = (((raw as i32 + 4) * 25 / 200 - 1).max(0)) as usize;
+        let lit_count = ((raw as i32 + 4) * 25 / 200 - 1).max(0) as usize;
         assert!(lit_count > 12, "test precondition: pick a raw above center");
 
         let lit = ((PadColors::Magenta as u8) << 2) | (Brightness::Normal as u8 & 0b11);
@@ -472,7 +472,7 @@ mod tests {
         let raw = 50u8;
         lights.render_slider_pan(raw, PadColors::Cyan, false);
 
-        let lit_count = (((raw as i32 + 4) * 25 / 200 - 1).max(0)) as usize;
+        let lit_count = ((raw as i32 + 4) * 25 / 200 - 1).max(0) as usize;
         assert!(lit_count < 12, "test precondition: pick a raw below center");
 
         let lit = ((PadColors::Cyan as u8) << 2) | (Brightness::Normal as u8 & 0b11);
@@ -491,7 +491,7 @@ mod tests {
         let mut lights = Lights::new();
         let raw = 150u8;
         lights.render_slider_pan(raw, PadColors::Plum, true);
-        let lit_count = (((raw as i32 + 4) * 25 / 200 - 1).max(0)) as usize;
+        let lit_count = ((raw as i32 + 4) * 25 / 200 - 1).max(0) as usize;
 
         let head = ((PadColors::Plum as u8) << 2) | (Brightness::Normal as u8 & 0b11);
         let trail = ((PadColors::Plum as u8) << 2) | (Brightness::Dim as u8 & 0b11);
@@ -523,7 +523,7 @@ mod tests {
         let mut lights = Lights::new();
         let raw = 100u8;
         lights.render_slider_dot(raw, PadColors::Yellow);
-        let lit_count = (((raw as i32 + 4) * 25 / 200 - 1).max(0)) as usize;
+        let lit_count = ((raw as i32 + 4) * 25 / 200 - 1).max(0) as usize;
 
         let lit = ((PadColors::Yellow as u8) << 2) | (Brightness::Normal as u8 & 0b11);
         for i in 0..25 {
@@ -542,12 +542,12 @@ mod tests {
         use std::cell::RefCell;
         struct Capture(RefCell<Vec<u8>>);
         impl crate::hid::HidIo for Capture {
+            fn read_timeout(&self, _buf: &mut [u8], _ms: i32) -> hidapi::HidResult<usize> {
+                Ok(0)
+            }
             fn write(&self, buf: &[u8]) -> hidapi::HidResult<usize> {
                 self.0.borrow_mut().extend_from_slice(buf);
                 Ok(buf.len())
-            }
-            fn read_timeout(&self, _buf: &mut [u8], _ms: i32) -> hidapi::HidResult<usize> {
-                Ok(0)
             }
             fn send_feature_report(&self, _data: &[u8]) -> hidapi::HidResult<()> {
                 Ok(())

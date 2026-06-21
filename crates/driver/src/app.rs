@@ -141,7 +141,7 @@ pub fn run(loaded: crate::settings::LoadedConfig) -> DriverResult<()> {
                 }
             }
             Err(_) => {
-                std::thread::sleep(std::time::Duration::from_secs(2));
+                std::thread::sleep(Duration::from_secs(2));
             }
         }
     }

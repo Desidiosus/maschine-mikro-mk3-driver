@@ -31,7 +31,7 @@ pub(crate) fn num_row<'a>(
     active: Option<&str>,
 ) -> Element<'a, Message> {
     row![
-        text(label.to_string()).width(iced::Length::Fixed(90.0)),
+        text(label.to_string()).width(Length::Fixed(90.0)),
         numeric_field(field, value, active),
     ]
     .spacing(8)
@@ -489,7 +489,7 @@ fn led_section<'a>(led: SliderLedSettings, auto_off_active: Option<&str>) -> Ele
             text_input("0", &auto_off_value)
                 .on_input(|s| Message::NumericInput(EditField::SliderAutoOff, s))
                 .on_submit(Message::NumericCommit(EditField::SliderAutoOff))
-                .width(iced::Length::Fixed(100.0)),
+                .width(Length::Fixed(100.0)),
         ]
         .spacing(8),
     ]

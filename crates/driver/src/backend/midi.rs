@@ -608,7 +608,7 @@ mod tests {
     fn off_actions_emit_nothing() {
         let mut s = Settings::default();
         s.encoder.turn = EncoderTurnAction::Off;
-        s.slider.position = crate::settings::actions::SliderPositionAction::Off;
+        s.slider.position = SliderPositionAction::Off;
         s.buttons.0[0].press = ButtonPressAction::Off;
         s.pads.0[0].hit = PadHitAction::Off;
 
@@ -668,45 +668,45 @@ mod tests {
 
     #[test]
     fn step_absolute_advances_within_range() {
-        let v = super::step_absolute(0, 1, 0, 127, 1, false);
+        let v = step_absolute(0, 1, 0, 127, 1, false);
         assert_eq!(v, 1);
-        let v = super::step_absolute(v, 1, 0, 127, 1, false);
+        let v = step_absolute(v, 1, 0, 127, 1, false);
         assert_eq!(v, 2);
     }
 
     #[test]
     fn step_absolute_step3_scales_delta() {
-        let v = super::step_absolute(10, 1, 0, 127, 3, false);
+        let v = step_absolute(10, 1, 0, 127, 3, false);
         assert_eq!(v, 13);
     }
 
     #[test]
     fn step_absolute_clamps_at_hi() {
-        let v = super::step_absolute(10, 1, 0, 10, 1, false);
+        let v = step_absolute(10, 1, 0, 10, 1, false);
         assert_eq!(v, 10);
     }
 
     #[test]
     fn step_absolute_clamps_at_lo() {
-        let v = super::step_absolute(0, -1, 0, 10, 1, false);
+        let v = step_absolute(0, -1, 0, 10, 1, false);
         assert_eq!(v, 0);
     }
 
     #[test]
     fn step_absolute_wraps_at_hi() {
-        let v = super::step_absolute(10, 1, 0, 10, 1, true);
+        let v = step_absolute(10, 1, 0, 10, 1, true);
         assert_eq!(v, 0);
     }
 
     #[test]
     fn step_absolute_wraps_at_lo() {
-        let v = super::step_absolute(0, -1, 0, 10, 1, true);
+        let v = step_absolute(0, -1, 0, 10, 1, true);
         assert_eq!(v, 10);
     }
 
     #[test]
     fn step_absolute_handles_multi_detent_delta() {
-        let v = super::step_absolute(0, 2, 0, 127, 1, false);
+        let v = step_absolute(0, 2, 0, 127, 1, false);
         assert_eq!(v, 2);
     }
 
@@ -773,9 +773,9 @@ mod tests {
     fn encoder_absolute_negative_step_reverses_direction() {
         // From the default value (0) a CW turn with a -1 step decrements, so
         // without wrap it stays clamped at the low bound.
-        let v = super::step_absolute(10, 1, 0, 127, -1, false);
+        let v = step_absolute(10, 1, 0, 127, -1, false);
         assert_eq!(v, 9);
-        let v = super::step_absolute(10, -1, 0, 127, -1, false);
+        let v = step_absolute(10, -1, 0, 127, -1, false);
         assert_eq!(v, 11);
     }
 

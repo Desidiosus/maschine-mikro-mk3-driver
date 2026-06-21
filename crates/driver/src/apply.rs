@@ -120,11 +120,7 @@ pub fn apply_device_registers<D: HidIo>(effects: &SideEffects, device: &D) -> Dr
 /// Re-render the output overlays (button backlight, pad idle LEDs) the `effects`
 /// request. These write to `outputs`, so the loop defers them while soft-off
 /// blanks the device and flushes them on wake.
-pub fn apply_output_overlays(
-    effects: &SideEffects,
-    settings: &crate::settings::Settings,
-    outputs: &DeviceOutputs,
-) {
+pub fn apply_output_overlays(effects: &SideEffects, settings: &Settings, outputs: &DeviceOutputs) {
     if effects.refresh_backlight {
         crate::app::refresh_button_backlight(outputs, settings);
     }
@@ -137,7 +133,7 @@ pub fn apply_output_overlays(
 /// caller that does not need to defer overlays).
 pub fn apply_side_effects<D: HidIo>(
     effects: &SideEffects,
-    settings: &crate::settings::Settings,
+    settings: &Settings,
     device: &D,
     outputs: &DeviceOutputs,
 ) -> DriverResult<()> {

@@ -1,8 +1,8 @@
 use maschine_library::controls::Buttons;
 use maschine_library::lights::{BUTTON_BACKLIGHT_LEVEL, Brightness, PadColors};
 
-fn test_settings(midi_bridge_virmidi: bool) -> driver::settings::Settings {
-    let mut s = driver::settings::Settings::default();
+fn test_settings(midi_bridge_virmidi: bool) -> settings::Settings {
+    let mut s = settings::Settings::default();
     s.bridge.midi_bridge_virmidi = midi_bridge_virmidi;
     s.hardware.led_brightness = 5;
     s.global.client_name = "Client".into();
@@ -120,8 +120,8 @@ fn slider_move_renders_bar_mode_with_default_color() {
 #[test]
 fn slider_move_with_pan_mode_lights_around_center() {
     let mut settings = test_settings(false);
-    settings.slider.led.mode = driver::settings::SliderLedMode::Pan;
-    settings.slider.led.color = maschine_library::lights::PadColors::Cyan;
+    settings.slider.led.mode = settings::SliderLedMode::Pan;
+    settings.slider.led.color = PadColors::Cyan;
 
     let outputs = driver::outputs::DeviceOutputs::new();
     let event = driver::events::ControlEvent::SliderMoved {
@@ -131,8 +131,7 @@ fn slider_move_with_pan_mode_lights_around_center() {
 
     driver::feedback::local::apply_local_output_feedback(&outputs, &settings, &event).unwrap();
 
-    let lit = ((maschine_library::lights::PadColors::Cyan as u8) << 2)
-        | (Brightness::Normal as u8 & 0b11);
+    let lit = ((PadColors::Cyan as u8) << 2) | (Brightness::Normal as u8 & 0b11);
 
     outputs.with_lights(|lights| {
         for i in 0..12 {

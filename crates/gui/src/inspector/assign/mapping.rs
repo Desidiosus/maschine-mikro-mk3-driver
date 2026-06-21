@@ -89,9 +89,9 @@ pub(crate) fn with_wrap(mode: &settings::CcValueMode, wrap: bool) -> settings::C
 /// via `f` — `number` is the note for `Note` and the cc for `Cc`. `Disabled` is
 /// returned unchanged.
 pub(crate) fn touch_map(
-    t: &settings::SliderTouchAction,
+    t: &SliderTouchAction,
     f: impl FnOnce(&mut Option<settings::MidiChannel>, &mut u8, &mut u8, &mut u8),
-) -> settings::SliderTouchAction {
+) -> SliderTouchAction {
     use settings::SliderTouchAction::*;
     match t {
         Disabled => Disabled,
@@ -130,28 +130,19 @@ pub(crate) fn touch_map(
     }
 }
 
-pub(crate) fn touch_with_number(
-    t: &settings::SliderTouchAction,
-    n: u8,
-) -> settings::SliderTouchAction {
+pub(crate) fn touch_with_number(t: &SliderTouchAction, n: u8) -> SliderTouchAction {
     touch_map(t, |_, num, _, _| *num = n)
 }
 
-pub(crate) fn touch_with_on(t: &settings::SliderTouchAction, v: u8) -> settings::SliderTouchAction {
+pub(crate) fn touch_with_on(t: &SliderTouchAction, v: u8) -> SliderTouchAction {
     touch_map(t, |_, _, on, _| *on = v)
 }
 
-pub(crate) fn touch_with_off(
-    t: &settings::SliderTouchAction,
-    v: u8,
-) -> settings::SliderTouchAction {
+pub(crate) fn touch_with_off(t: &SliderTouchAction, v: u8) -> SliderTouchAction {
     touch_map(t, |_, _, _, off| *off = v)
 }
 
-pub(crate) fn touch_with_channel(
-    t: &settings::SliderTouchAction,
-    ch: Option<u8>,
-) -> settings::SliderTouchAction {
+pub(crate) fn touch_with_channel(t: &SliderTouchAction, ch: Option<u8>) -> SliderTouchAction {
     let channel = ch.and_then(|v| settings::MidiChannel::try_from(v).ok());
     touch_map(t, |c, _, _, _| *c = channel)
 }
@@ -334,8 +325,8 @@ impl State {
         let i = self.selected_pads().first().copied()? as usize;
         let s = self.settings.as_ref()?;
         match s.pads[i].hit {
-            settings::PadHitAction::Note { note, .. } => Some(note),
-            settings::PadHitAction::Off => None,
+            PadHitAction::Note { note, .. } => Some(note),
+            PadHitAction::Off => None,
         }
     }
 
@@ -343,8 +334,8 @@ impl State {
         let i = self.selected_pads().first().copied()? as usize;
         let s = self.settings.as_ref()?;
         match s.pads[i].hit {
-            settings::PadHitAction::Note { channel, .. } => channel.map(|c| c.as_u8()),
-            settings::PadHitAction::Off => None,
+            PadHitAction::Note { channel, .. } => channel.map(|c| c.as_u8()),
+            PadHitAction::Off => None,
         }
     }
 
@@ -352,8 +343,8 @@ impl State {
         let i = self.selected_buttons().first().copied()? as usize;
         let s = self.settings.as_ref()?;
         match s.buttons[i].press {
-            settings::ButtonPressAction::Cc { cc, .. } => Some(cc),
-            settings::ButtonPressAction::Off => None,
+            ButtonPressAction::Cc { cc, .. } => Some(cc),
+            ButtonPressAction::Off => None,
         }
     }
 
@@ -361,8 +352,8 @@ impl State {
         let i = self.selected_buttons().first().copied()? as usize;
         let s = self.settings.as_ref()?;
         match s.buttons[i].press {
-            settings::ButtonPressAction::Cc { channel, .. } => channel.map(|c| c.as_u8()),
-            settings::ButtonPressAction::Off => None,
+            ButtonPressAction::Cc { channel, .. } => channel.map(|c| c.as_u8()),
+            ButtonPressAction::Off => None,
         }
     }
 
@@ -394,16 +385,16 @@ impl State {
     /// Shared CC number across selected buttons (only meaningful when all are CC).
     pub(crate) fn buttons_cc(&self) -> MultiValue<u8> {
         self.fold_selected(&self.selected_buttons(), |s, i| match s.buttons[i].press {
-            settings::ButtonPressAction::Cc { cc, .. } => Some(cc),
-            settings::ButtonPressAction::Off => None,
+            ButtonPressAction::Cc { cc, .. } => Some(cc),
+            ButtonPressAction::Off => None,
         })
     }
 
     /// Shared channel (displayed 1..=16) across selected buttons.
     pub(crate) fn buttons_channel(&self) -> MultiValue<u8> {
         self.fold_selected(&self.selected_buttons(), |s, i| match s.buttons[i].press {
-            settings::ButtonPressAction::Cc { channel, .. } => Some(displayed_channel(channel)),
-            settings::ButtonPressAction::Off => None,
+            ButtonPressAction::Cc { channel, .. } => Some(displayed_channel(channel)),
+            ButtonPressAction::Off => None,
         })
     }
 
@@ -418,16 +409,16 @@ impl State {
     /// Shared Hit note across selected pads (only meaningful when all are Note).
     pub(crate) fn pads_hit_note(&self) -> MultiValue<u8> {
         self.fold_selected(&self.selected_pads(), |s, i| match s.pads[i].hit {
-            settings::PadHitAction::Note { note, .. } => Some(note),
-            settings::PadHitAction::Off => None,
+            PadHitAction::Note { note, .. } => Some(note),
+            PadHitAction::Off => None,
         })
     }
 
     /// Shared Hit channel (displayed 1..=16) across selected pads.
     pub(crate) fn pads_hit_channel(&self) -> MultiValue<u8> {
         self.fold_selected(&self.selected_pads(), |s, i| match s.pads[i].hit {
-            settings::PadHitAction::Note { channel, .. } => Some(displayed_channel(channel)),
-            settings::PadHitAction::Off => None,
+            PadHitAction::Note { channel, .. } => Some(displayed_channel(channel)),
+            PadHitAction::Off => None,
         })
     }
 
@@ -445,32 +436,32 @@ impl State {
     /// Shared Press note (displayed; `None` → 0) across selected pads.
     pub(crate) fn pads_press_note(&self) -> MultiValue<u8> {
         self.fold_selected(&self.selected_pads(), |s, i| match s.pads[i].pressure {
-            settings::PadPressureAction::Poly { note, .. } => Some(note.unwrap_or(0)),
-            settings::PadPressureAction::Disabled => None,
+            PadPressureAction::Poly { note, .. } => Some(note.unwrap_or(0)),
+            PadPressureAction::Disabled => None,
         })
     }
 
     /// Shared Press channel (displayed 1..=16) across selected pads.
     pub(crate) fn pads_press_channel(&self) -> MultiValue<u8> {
         self.fold_selected(&self.selected_pads(), |s, i| match s.pads[i].pressure {
-            settings::PadPressureAction::Poly { channel, .. } => Some(displayed_channel(channel)),
-            settings::PadPressureAction::Disabled => None,
+            PadPressureAction::Poly { channel, .. } => Some(displayed_channel(channel)),
+            PadPressureAction::Disabled => None,
         })
     }
 
     pub(crate) fn encoder_cc(&self) -> Option<u8> {
         let s = self.settings.as_ref()?;
         match s.encoder.turn {
-            settings::EncoderTurnAction::Cc { cc, .. } => Some(cc),
-            settings::EncoderTurnAction::Off => None,
+            EncoderTurnAction::Cc { cc, .. } => Some(cc),
+            EncoderTurnAction::Off => None,
         }
     }
 
     pub(crate) fn encoder_mode(&self) -> Option<settings::CcValueMode> {
         let s = self.settings.as_ref()?;
         match &s.encoder.turn {
-            settings::EncoderTurnAction::Cc { mode, .. } => Some(mode.clone()),
-            settings::EncoderTurnAction::Off => None,
+            EncoderTurnAction::Cc { mode, .. } => Some(mode.clone()),
+            EncoderTurnAction::Off => None,
         }
     }
 
@@ -485,7 +476,7 @@ impl State {
         let Some(s) = self.settings.as_ref() else {
             return;
         };
-        let settings::EncoderTurnAction::Cc {
+        let EncoderTurnAction::Cc {
             channel,
             cc: cur_cc,
             mode: cur_mode,
@@ -493,7 +484,7 @@ impl State {
         else {
             return;
         };
-        let turn = settings::EncoderTurnAction::Cc {
+        let turn = EncoderTurnAction::Cc {
             channel: *channel,
             cc: cc.unwrap_or(*cur_cc),
             mode: mode.unwrap_or_else(|| cur_mode.clone()),
@@ -505,11 +496,11 @@ impl State {
         let Some(s) = self.settings.as_ref() else {
             return;
         };
-        let settings::EncoderTurnAction::Cc { cc, mode, .. } = &s.encoder.turn else {
+        let EncoderTurnAction::Cc { cc, mode, .. } = &s.encoder.turn else {
             return;
         };
         let channel = ch.and_then(|v| settings::MidiChannel::try_from(v).ok());
-        let turn = settings::EncoderTurnAction::Cc {
+        let turn = EncoderTurnAction::Cc {
             channel,
             cc: *cc,
             mode: mode.clone(),
@@ -520,52 +511,42 @@ impl State {
     pub(crate) fn slider_position(&self) -> Option<(u8, Option<u8>)> {
         let s = self.settings.as_ref()?;
         match s.slider.position {
-            settings::SliderPositionAction::Cc { channel, cc } => {
-                Some((cc, channel.map(|c| c.as_u8())))
-            }
-            settings::SliderPositionAction::Off => None,
+            SliderPositionAction::Cc { channel, cc } => Some((cc, channel.map(|c| c.as_u8()))),
+            SliderPositionAction::Off => None,
         }
     }
 
-    pub(crate) fn slider_touch(&self) -> Option<settings::SliderTouchAction> {
+    pub(crate) fn slider_touch(&self) -> Option<SliderTouchAction> {
         Some(self.settings.as_ref()?.slider.touch.clone())
     }
 
-    pub(crate) fn apply_slider_touch(
-        &mut self,
-        action: settings::SliderTouchAction,
-        persist: bool,
-    ) {
+    pub(crate) fn apply_slider_touch(&mut self, action: SliderTouchAction, persist: bool) {
         self.send_apply(slider_delta(None, Some(action), None), persist);
     }
 
-    pub(crate) fn apply_slider_led(
-        &mut self,
-        edit: settings::partial::PartialSliderLedSettings,
-        persist: bool,
-    ) {
+    pub(crate) fn apply_slider_led(&mut self, edit: PartialSliderLedSettings, persist: bool) {
         self.send_apply(slider_delta(None, None, Some(edit)), persist);
     }
 
     pub(crate) fn set_encoder_button_type(&mut self, btn: u8, t: CcType) {
         let press = match t {
             CcType::ControlChange => default_button_press(btn),
-            CcType::Off => settings::ButtonPressAction::Off,
+            CcType::Off => ButtonPressAction::Off,
         };
         self.send_apply(button_delta(&[btn], press), true);
     }
 
     pub(crate) fn button_cc_at(&self, btn: u8) -> Option<u8> {
         match self.settings.as_ref()?.buttons.0[btn as usize].press {
-            settings::ButtonPressAction::Cc { cc, .. } => Some(cc),
-            settings::ButtonPressAction::Off => None,
+            ButtonPressAction::Cc { cc, .. } => Some(cc),
+            ButtonPressAction::Off => None,
         }
     }
 
     pub(crate) fn button_channel_at(&self, btn: u8) -> Option<u8> {
         match self.settings.as_ref()?.buttons.0[btn as usize].press {
-            settings::ButtonPressAction::Cc { channel, .. } => channel.map(|c| c.as_u8()),
-            settings::ButtonPressAction::Off => None,
+            ButtonPressAction::Cc { channel, .. } => channel.map(|c| c.as_u8()),
+            ButtonPressAction::Off => None,
         }
     }
 
@@ -582,7 +563,7 @@ impl State {
         let ch = channel.unwrap_or(cur_ch);
         let channel = ch.and_then(settings::MidiChannel::try_from_opt);
         self.send_apply(
-            button_delta(&[btn], settings::ButtonPressAction::Cc { channel, cc }),
+            button_delta(&[btn], ButtonPressAction::Cc { channel, cc }),
             persist,
         );
     }
@@ -597,17 +578,15 @@ impl State {
         let s = self.settings.as_ref()?;
         Some(pads_map(&self.selected_pads(), |i| {
             match &s.pads[i as usize].hit {
-                settings::PadHitAction::Note { channel, note } => {
-                    Some(settings::partial::PartialPadConfig {
-                        hit: Some(settings::PadHitAction::Note {
-                            channel: set_channel.unwrap_or(*channel),
-                            note: set_note.unwrap_or(*note),
-                        }),
-                        pressure: None,
-                        led: None,
-                    })
-                }
-                settings::PadHitAction::Off => None,
+                PadHitAction::Note { channel, note } => Some(PartialPadConfig {
+                    hit: Some(PadHitAction::Note {
+                        channel: set_channel.unwrap_or(*channel),
+                        note: set_note.unwrap_or(*note),
+                    }),
+                    pressure: None,
+                    led: None,
+                }),
+                PadHitAction::Off => None,
             }
         }))
     }
@@ -622,17 +601,15 @@ impl State {
         let s = self.settings.as_ref()?;
         Some(pads_map(&self.selected_pads(), |i| {
             match &s.pads[i as usize].pressure {
-                settings::PadPressureAction::Poly { channel, note } => {
-                    Some(settings::partial::PartialPadConfig {
-                        hit: None,
-                        pressure: Some(settings::PadPressureAction::Poly {
-                            channel: set_channel.unwrap_or(*channel),
-                            note: set_note.unwrap_or(*note),
-                        }),
-                        led: None,
-                    })
-                }
-                settings::PadPressureAction::Disabled => None,
+                PadPressureAction::Poly { channel, note } => Some(PartialPadConfig {
+                    hit: None,
+                    pressure: Some(PadPressureAction::Poly {
+                        channel: set_channel.unwrap_or(*channel),
+                        note: set_note.unwrap_or(*note),
+                    }),
+                    led: None,
+                }),
+                PadPressureAction::Disabled => None,
             }
         }))
     }
@@ -778,15 +755,13 @@ impl State {
         let s = self.settings.as_ref()?;
         Some(buttons_map(&self.selected_buttons(), |i| {
             match &s.buttons[i as usize].press {
-                settings::ButtonPressAction::Cc { channel, cc } => {
-                    Some(settings::partial::PartialButtonConfig {
-                        press: Some(settings::ButtonPressAction::Cc {
-                            channel: set_channel.unwrap_or(*channel),
-                            cc: set_cc.unwrap_or(*cc),
-                        }),
-                    })
-                }
-                settings::ButtonPressAction::Off => None,
+                ButtonPressAction::Cc { channel, cc } => Some(PartialButtonConfig {
+                    press: Some(ButtonPressAction::Cc {
+                        channel: set_channel.unwrap_or(*channel),
+                        cc: set_cc.unwrap_or(*cc),
+                    }),
+                }),
+                ButtonPressAction::Off => None,
             }
         }))
     }

@@ -111,7 +111,7 @@ pub fn prefs_overlay(state: &State) -> Element<'_, Message> {
     };
     let h = &settings.hardware;
 
-    fn labeled<'a>(label: String, control: Element<'a, Message>) -> iced::widget::Row<'a, Message> {
+    fn labeled(label: String, control: Element<Message>) -> iced::widget::Row<Message> {
         row![text(label).width(Length::Fixed(160.0)), control]
             .spacing(12)
             .align_y(iced::alignment::Vertical::Center)

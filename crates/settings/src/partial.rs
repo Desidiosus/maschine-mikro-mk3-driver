@@ -575,11 +575,8 @@ mode = "pan"
         let partial: PartialSettings = toml::from_str(toml_str).unwrap();
         let merged = Settings::default().merge_overrides(partial);
 
-        assert_eq!(merged.slider.led.mode, crate::actions::SliderLedMode::Pan);
-        assert_eq!(
-            merged.slider.led.color,
-            maschine_library::lights::PadColors::White
-        );
+        assert_eq!(merged.slider.led.mode, SliderLedMode::Pan);
+        assert_eq!(merged.slider.led.color, PadColors::White);
         assert!(!merged.slider.led.stylized);
     }
 
@@ -593,12 +590,9 @@ stylized = true
         let partial: PartialSettings = toml::from_str(toml_str).unwrap();
         let merged = Settings::default().merge_overrides(partial);
 
-        assert_eq!(
-            merged.slider.led.color,
-            maschine_library::lights::PadColors::Cyan
-        );
+        assert_eq!(merged.slider.led.color, PadColors::Cyan);
         assert!(merged.slider.led.stylized);
-        assert_eq!(merged.slider.led.mode, crate::actions::SliderLedMode::Bar);
+        assert_eq!(merged.slider.led.mode, SliderLedMode::Bar);
     }
 
     #[test]
@@ -623,7 +617,7 @@ auto_off_ms = 0
         let merged = Settings::default().merge_overrides(partial);
 
         assert_eq!(merged.slider.led.auto_off_ms, 0);
-        assert_eq!(merged.slider.led.mode, crate::actions::SliderLedMode::Bar);
+        assert_eq!(merged.slider.led.mode, SliderLedMode::Bar);
     }
 
     #[test]
@@ -676,7 +670,7 @@ source = "midi_in"
         let partial: PartialSettings = toml::from_str(toml_str).unwrap();
         let merged = Settings::default().merge_overrides(partial);
         // TOML key 1 → internal pad 12 (row flip).
-        assert_eq!(merged.pads[12].led.source, crate::PadLedSource::MidiIn);
+        assert_eq!(merged.pads[12].led.source, PadLedSource::MidiIn);
         // Other LED fields keep their defaults.
         assert_eq!(
             merged.pads[12].led.midi_out,
@@ -696,21 +690,15 @@ single = "red"
         let partial: PartialSettings = toml::from_str(toml_str).unwrap();
         let merged = Settings::default().merge_overrides(partial);
         assert_eq!(merged.pads[12].led.midi_in.mode, crate::PadLedMode::Single);
-        assert_eq!(
-            merged.pads[12].led.midi_in.single,
-            maschine_library::lights::PadColors::Red
-        );
-        assert_eq!(merged.pads[12].led.source, crate::PadLedSource::MidiOut);
+        assert_eq!(merged.pads[12].led.midi_in.single, PadColors::Red);
+        assert_eq!(merged.pads[12].led.source, PadLedSource::MidiOut);
     }
 
     #[test]
     fn diff_from_defaults_round_trips_pad_led() {
         let mut s = Settings::default();
-        s.pads[3].led.source = crate::PadLedSource::MidiIn;
-        s.pads[3].led.midi_in = crate::PadLedColorMode::dual(
-            maschine_library::lights::PadColors::Green,
-            maschine_library::lights::PadColors::Turquoise,
-        );
+        s.pads[3].led.source = PadLedSource::MidiIn;
+        s.pads[3].led.midi_in = PadLedColorMode::dual(PadColors::Green, PadColors::Turquoise);
         let partial = s.diff_from_defaults();
         assert!(partial.pads.is_some(), "changed pad LED is captured");
         let round_tripped = Settings::default().merge_overrides(partial);

@@ -7,7 +7,7 @@ use crate::message::Message;
 pub(crate) fn inspector(state: &State) -> Element<'_, Message> {
     let assign_tab = container(text("Assign").size(13).color(iced::Color::WHITE))
         .padding([6, 18])
-        .style(|_t: &iced::Theme| iced::widget::container::Style {
+        .style(|_t: &iced::Theme| container::Style {
             background: Some(iced::Background::Color(iced::Color::from_rgb(
                 0.20, 0.20, 0.25,
             ))),
@@ -39,7 +39,7 @@ pub(crate) fn inspector(state: &State) -> Element<'_, Message> {
         .width(Length::Fixed(340.0))
         .height(Length::Fill)
         .padding(8)
-        .style(|_t: &iced::Theme| iced::widget::container::Style {
+        .style(|_t: &iced::Theme| container::Style {
             background: Some(iced::Background::Color(iced::Color::from_rgb(
                 0.12, 0.12, 0.14,
             ))),

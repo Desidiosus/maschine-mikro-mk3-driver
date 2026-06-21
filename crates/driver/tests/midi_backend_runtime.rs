@@ -1,7 +1,7 @@
 use std::path::Path;
 
-fn test_settings() -> driver::settings::Settings {
-    let mut s = driver::settings::Settings::default();
+fn test_settings() -> Settings {
+    let mut s = Settings::default();
     s.global.client_name = "Client".into();
     s.global.port_name = "Port".into();
     s.global.port_name_in = "Input".into();
@@ -17,11 +17,11 @@ fn runtime_constructor_creates_midi_backend_when_seq_available() {
 
     let outputs = driver::outputs::DeviceOutputs::new();
     let soft_off = driver::soft_off::SoftOffSync::new();
-    driver::backend::midi::MidiBackend::new(
+    MidiBackend::new(
         &driver::shared_settings::new_shared(test_settings()),
         &outputs,
         soft_off,
-        driver::runtime_state::RuntimeState::default(),
+        RuntimeState::default(),
         driver::ipc::new_subscriber(),
     )
     .unwrap();

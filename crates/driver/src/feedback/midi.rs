@@ -168,8 +168,8 @@ mod tests {
         let outputs = DeviceOutputs::new();
         let mut settings = Settings::default();
         settings.pads[0].led.source = settings::PadLedSource::MidiIn;
-        settings.pads[0].hit = crate::settings::actions::PadHitAction::Note {
-            channel: crate::settings::MidiChannel::try_from(2).ok(),
+        settings.pads[0].hit = settings::actions::PadHitAction::Note {
+            channel: settings::MidiChannel::try_from(2).ok(),
             note: 60,
         };
         apply_incoming_midi_message(
@@ -242,7 +242,7 @@ mod tests {
         let outputs = DeviceOutputs::new();
         let mut settings = Settings::default();
         settings.encoder.turn = EncoderTurnAction::Cc {
-            channel: crate::settings::MidiChannel::try_from(0).ok(),
+            channel: settings::MidiChannel::try_from(0).ok(),
             cc: 1,
             mode: CcValueMode::Absolute {
                 lo: 0,
