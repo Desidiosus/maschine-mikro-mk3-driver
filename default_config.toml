@@ -35,6 +35,10 @@
 # virmidi_client_name = ""
 # virmidi_port = 0
 
+[driver]
+# soft_off_enabled = true
+# self_test_on_launch = true
+
 [pads.1.hit]
 # type = "note"
 # note = 36
