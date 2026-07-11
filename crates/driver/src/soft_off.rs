@@ -79,6 +79,23 @@ impl SoftOffState {
         self.sync.clone()
     }
 
+    /// Restore a soft-off-blanked device and clear all soft-off state: the active
+    /// flag, combo-release suppression, and the latched combo-hold tracking. Used
+    /// when the feature is disabled mid-session, and at session start so a device
+    /// unplugged while asleep never resumes in a phantom-sleep state.
+    /// No-op when soft-off is not currently active.
+    pub fn force_wake(&mut self, outputs: &DeviceOutputs) {
+        if self.active {
+            self.wake(outputs);
+            self.suppress_combo_releases_until_clear = false;
+            // Drop the tracked combo hold: once soft-off is disabled the button
+            // releases are forwarded, not observed, so latched press state would
+            // otherwise make the first combo after re-enable miss its toggle edge.
+            self.shift_pressed = false;
+            self.maschine_pressed = false;
+        }
+    }
+
     #[cfg(test)]
     fn is_active(&self) -> bool {
         self.active
@@ -316,6 +333,76 @@ mod tests {
     }
 
     #[test]
+    fn force_wake_restores_blanked_outputs() {
+        let outputs = DeviceOutputs::new();
+        let mut soft_off = SoftOffState::new(SoftOffSync::new());
+
+        outputs.with_lights_mut(|lights| {
+            lights.set_pad(0, PadColors::Green, Brightness::Bright);
+        });
+
+        // Sleep via the combo, then force-wake as the disable path would.
+        soft_off.observe_event(&outputs, &button_event(Buttons::Shift, true));
+        soft_off.observe_event(&outputs, &button_event(Buttons::Maschine, true));
+        assert!(soft_off.is_active());
+
+        soft_off.force_wake(&outputs);
+        assert!(!soft_off.is_active());
+        let (color, _brightness) = outputs.with_lights(|lights| lights.get_pad(0));
+        assert_eq!(color, PadColors::Green);
+    }
+
+    #[test]
+    fn force_wake_clears_the_shared_active_flag() {
+        let outputs = DeviceOutputs::new();
+        let sync = SoftOffSync::new();
+        let mut soft_off = SoftOffState::new(sync.clone());
+
+        soft_off.observe_event(&outputs, &button_event(Buttons::Shift, true));
+        soft_off.observe_event(&outputs, &button_event(Buttons::Maschine, true));
+        assert!(sync.is_active(), "combo sleep raises the shared flag");
+
+        // The session-start reconcile and the disable path both rely on this: the
+        // MIDI thread and the loop read this shared flag to drop feedback and defer
+        // overlays, so force_wake must clear it, not just the local `active` field.
+        soft_off.force_wake(&outputs);
+        assert!(!sync.is_active());
+    }
+
+    #[test]
+    fn force_wake_is_noop_when_awake() {
+        let outputs = DeviceOutputs::new();
+        let mut soft_off = SoftOffState::new(SoftOffSync::new());
+        assert!(!soft_off.is_active());
+        soft_off.force_wake(&outputs); // must not panic or toggle state
+        assert!(!soft_off.is_active());
+    }
+
+    #[test]
+    fn force_wake_resets_latched_combo_so_next_press_toggles() {
+        let outputs = DeviceOutputs::new();
+        let mut soft_off = SoftOffState::new(SoftOffSync::new());
+
+        // Sleep via the combo, but the user keeps both buttons physically held.
+        soft_off.observe_event(&outputs, &button_event(Buttons::Shift, true));
+        soft_off.observe_event(&outputs, &button_event(Buttons::Maschine, true));
+        assert!(soft_off.is_active());
+
+        // Disable soft-off from the GUI while the combo is still held.
+        soft_off.force_wake(&outputs);
+        assert!(!soft_off.is_active());
+
+        // The releases arrive while soft-off is disabled, so the loop forwards
+        // them without calling observe_event — the tracked hold must not stay
+        // latched. Re-enabled, a fresh combo press has to toggle sleep again.
+        soft_off.observe_event(&outputs, &button_event(Buttons::Shift, true));
+        let outcome = soft_off.observe_event(&outputs, &button_event(Buttons::Maschine, true));
+
+        assert_eq!(outcome, SoftOffOutcome::Swallow);
+        assert!(soft_off.is_active());
+    }
+
+    #[test]
     fn release_events_are_suppressed_until_combo_buttons_clear() {
         let outputs = DeviceOutputs::new();
         let mut soft_off = SoftOffState::new(SoftOffSync::new());
@@ -338,5 +425,33 @@ mod tests {
             soft_off.observe_event(&outputs, &button_event(Buttons::Play, false)),
             SoftOffOutcome::Forward
         );
+    }
+
+    #[test]
+    fn force_wake_clears_suppression_so_next_combo_still_toggles() {
+        let outputs = DeviceOutputs::new();
+        let mut soft_off = SoftOffState::new(SoftOffSync::new());
+
+        outputs.with_lights_mut(|lights| {
+            lights.set_pad(0, PadColors::Green, Brightness::Bright);
+        });
+
+        // Sleep via the combo, then release the buttons as a user physically would.
+        soft_off.observe_event(&outputs, &button_event(Buttons::Shift, true));
+        soft_off.observe_event(&outputs, &button_event(Buttons::Maschine, true));
+        assert!(soft_off.is_active());
+        soft_off.observe_event(&outputs, &button_event(Buttons::Maschine, false));
+        soft_off.observe_event(&outputs, &button_event(Buttons::Shift, false));
+
+        // Disable soft-off via the GUI while asleep.
+        soft_off.force_wake(&outputs);
+        assert!(!soft_off.is_active());
+
+        // Re-enabled; user presses the combo fresh to sleep again.
+        soft_off.observe_event(&outputs, &button_event(Buttons::Shift, true));
+        let outcome = soft_off.observe_event(&outputs, &button_event(Buttons::Maschine, true));
+
+        assert_eq!(outcome, SoftOffOutcome::Swallow);
+        assert!(soft_off.is_active());
     }
 }
