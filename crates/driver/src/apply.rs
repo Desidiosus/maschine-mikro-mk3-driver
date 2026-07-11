@@ -34,6 +34,9 @@ pub struct SideEffects {
     /// Only the changed pads are touched, so an edit never clobbers an unrelated
     /// pad that is currently lit by live feedback.
     pub refresh_pad_leds: u16,
+    /// Set when a delta disables soft-off (`soft_off_enabled` true → false).
+    /// The loop thread wakes a currently-asleep device so it isn't left blanked.
+    pub wake_soft_off: bool,
 }
 
 /// Merge `delta` onto the live settings, validate, (when `persist`) persist the
@@ -83,6 +86,7 @@ pub fn apply_delta(
             .enumerate()
             .filter(|(_, (a, b))| a.led != b.led)
             .fold(0u16, |mask, (i, _)| mask | (1 << i)),
+        wake_soft_off: current.driver.soft_off_enabled && !merged.driver.soft_off_enabled,
     };
 
     Ok(effects)
@@ -298,6 +302,7 @@ mod tests {
             button_brightness: None,
             refresh_backlight: false,
             refresh_pad_leds: 0,
+            wake_soft_off: false,
         };
         apply_side_effects(&effects, &settings, &device, &outputs).unwrap();
 
@@ -322,6 +327,7 @@ mod tests {
             button_brightness: Some(7),
             refresh_backlight: false,
             refresh_pad_leds: 0,
+            wake_soft_off: false,
         };
         apply_side_effects(&effects, &settings, &device, &outputs).unwrap();
 
@@ -418,5 +424,44 @@ mod tests {
         assert!(effects.refresh_backlight);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn disabling_soft_off_requests_wake() {
+        let handle = new_shared(Settings::default());
+        let base = Settings::default();
+        let path = std::path::Path::new("/nonexistent/driver-test.toml");
+
+        let delta = crate::settings::PartialSettings {
+            driver: Some(settings::partial::PartialDriverSettings {
+                soft_off_enabled: Some(false),
+                self_test_on_launch: None,
+            }),
+            ..Default::default()
+        };
+
+        let effects = apply_delta(&handle, delta, &base, path, false).unwrap();
+        assert!(effects.wake_soft_off);
+    }
+
+    #[test]
+    fn enabling_soft_off_does_not_request_wake() {
+        // Start from a state where soft-off is already disabled.
+        let mut start = Settings::default();
+        start.driver.soft_off_enabled = false;
+        let handle = new_shared(start);
+        let base = Settings::default();
+        let path = std::path::Path::new("/nonexistent/driver-test.toml");
+
+        let delta = crate::settings::PartialSettings {
+            driver: Some(settings::partial::PartialDriverSettings {
+                soft_off_enabled: Some(true),
+                self_test_on_launch: None,
+            }),
+            ..Default::default()
+        };
+
+        let effects = apply_delta(&handle, delta, &base, path, false).unwrap();
+        assert!(!effects.wake_soft_off);
     }
 }
