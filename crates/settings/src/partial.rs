@@ -18,6 +18,7 @@ pub struct PartialSettings {
     pub global: Option<PartialGlobalSettings>,
     pub hardware: Option<PartialHardwareSettings>,
     pub bridge: Option<PartialBridgeSettings>,
+    pub driver: Option<PartialDriverSettings>,
     #[serde(
         deserialize_with = "deserialize_partial_pads",
         serialize_with = "serialize_partial_pads",
@@ -74,6 +75,13 @@ pub struct PartialBridgeSettings {
     pub autoconnect_virmidi: Option<bool>,
     pub virmidi_client_name: Option<String>,
     pub virmidi_port: Option<usize>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PartialDriverSettings {
+    pub soft_off_enabled: Option<bool>,
+    pub self_test_on_launch: Option<bool>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -271,6 +279,9 @@ impl Settings {
                 virmidi_port,
             );
         }
+        if let Some(d) = partial.driver {
+            apply_overrides!(self.driver, d; soft_off_enabled, self_test_on_launch);
+        }
         if let Some(pads) = partial.pads {
             for (idx, cfg) in pads.into_iter().enumerate() {
                 let Some(cfg) = cfg else { continue };
@@ -343,6 +354,16 @@ impl Settings {
         );
         if b != PartialBridgeSettings::default() {
             out.bridge = Some(b);
+        }
+
+        let mut d = PartialDriverSettings::default();
+        diff_section!(
+            self.driver, base.driver, d;
+            copy: { soft_off_enabled, self_test_on_launch };
+            clone: {};
+        );
+        if d != PartialDriverSettings::default() {
+            out.driver = Some(d);
         }
 
         let mut pads: [Option<PartialPadConfig>; 16] = std::array::from_fn(|_| None);
@@ -703,5 +724,26 @@ single = "red"
         assert!(partial.pads.is_some(), "changed pad LED is captured");
         let round_tripped = Settings::default().merge_overrides(partial);
         assert_eq!(round_tripped, s);
+    }
+
+    #[test]
+    fn driver_defaults_produce_no_diff() {
+        let s = Settings::default();
+        assert!(s.diff_from_defaults().driver.is_none());
+    }
+
+    #[test]
+    fn driver_flag_round_trips_through_merge_and_diff() {
+        let mut s = Settings::default();
+        s.driver.soft_off_enabled = false;
+
+        let diff = s.diff_from_defaults();
+        let d = diff.driver.clone().expect("driver section present");
+        assert_eq!(d.soft_off_enabled, Some(false));
+        assert_eq!(d.self_test_on_launch, None);
+
+        let merged = Settings::default().merge_overrides(diff);
+        assert!(!merged.driver.soft_off_enabled);
+        assert!(merged.driver.self_test_on_launch);
     }
 }

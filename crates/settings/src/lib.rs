@@ -17,7 +17,7 @@ pub use actions::{
     SliderConfig, SliderLedMode, SliderLedSettings, SliderPositionAction, SliderTouchAction,
 };
 pub use buttons_by_name::ButtonsByName;
-pub use groups::{BridgeSettings, GlobalSettings, HardwareSettings};
+pub use groups::{BridgeSettings, DriverSettings, GlobalSettings, HardwareSettings};
 pub use maschine_library::lights::PadColors;
 pub use maschine_library::preferences::MAX_BUTTON_BRIGHTNESS;
 pub use pads_by_index::PadsByIndex;
@@ -61,6 +61,7 @@ pub struct Settings {
     pub global: GlobalSettings,
     pub hardware: HardwareSettings,
     pub bridge: BridgeSettings,
+    pub driver: DriverSettings,
     pub pads: PadsByIndex,
     pub buttons: ButtonsByName,
     pub encoder: EncoderConfig,
@@ -73,6 +74,7 @@ impl Default for Settings {
             global: GlobalSettings::default(),
             hardware: HardwareSettings::default(),
             bridge: BridgeSettings::default(),
+            driver: DriverSettings::default(),
             pads: defaults::default_pads(),
             buttons: defaults::default_buttons(),
             encoder: defaults::default_encoder(),

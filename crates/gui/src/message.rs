@@ -43,6 +43,9 @@ pub enum Message {
     SetSliderLedMode(settings::SliderLedMode),
     SetSliderLedColor(settings::PadColors),
     SetSliderLedStylized(bool),
+    /// Persisted driver toggles from the Preferences overlay.
+    ToggleSoftOff(bool),
+    ToggleSelfTestAtLaunch(bool),
     // --- redesign: generic numeric + tabs + labels ---
     NumericInput(EditField, String),
     NumericStep(EditField, i8),

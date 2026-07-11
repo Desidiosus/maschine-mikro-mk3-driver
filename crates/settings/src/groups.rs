@@ -56,3 +56,18 @@ impl Default for BridgeSettings {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriverSettings {
+    pub soft_off_enabled: bool,
+    pub self_test_on_launch: bool,
+}
+
+impl Default for DriverSettings {
+    fn default() -> Self {
+        Self {
+            soft_off_enabled: true,
+            self_test_on_launch: true,
+        }
+    }
+}

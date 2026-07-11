@@ -209,11 +209,20 @@ fn run_device_loop<D: HidIo>(
     backend: &mut MidiBackend,
     outputs: &DeviceOutputs,
 ) -> SessionEnd {
+    // A fresh session always starts awake. Soft-off state is long-lived (it
+    // persists across unplug/replug so the MIDI ports stay stable), so a device
+    // unplugged while asleep would otherwise resume with the shared soft-off flag
+    // still set — silently dropping DAW feedback and deferring output overlays on
+    // a device that looks alive. Once soft-off is disabled the wake combo is no
+    // longer observed, so that phantom-sleep state would be unrecoverable.
+    soft_off.force_wake(outputs);
+
     // Session setup; treat any HID error here as device loss.
-    if run_startup_self_test(device).is_err() {
+    let startup = settings.load();
+    if startup.driver.self_test_on_launch && run_startup_self_test(device).is_err() {
         return SessionEnd::DeviceLost;
     }
-    prepare_startup_outputs(outputs, &settings.load());
+    prepare_startup_outputs(outputs, &startup);
     if outputs.flush(device).is_err() {
         return SessionEnd::DeviceLost;
     }
@@ -243,6 +252,9 @@ fn run_device_loop<D: HidIo>(
         while let Ok(effects) = effects_rx.try_recv() {
             if apply_device_registers(&effects, device).is_err() {
                 return SessionEnd::DeviceLost;
+            }
+            if effects.wake_soft_off && soft_off_sync.is_active() {
+                soft_off.force_wake(outputs);
             }
             if soft_off_sync.is_active() {
                 pending_overlays.refresh_backlight |= effects.refresh_backlight;
@@ -285,7 +297,12 @@ fn run_device_loop<D: HidIo>(
 
         if size >= 1 {
             for event in decode_packet_with_curve(&mut state, &buf, pad_velocity_curve) {
-                if soft_off.observe_event(outputs, &event) == SoftOffOutcome::Swallow {
+                let outcome = if snapshot.driver.soft_off_enabled {
+                    soft_off.observe_event(outputs, &event)
+                } else {
+                    SoftOffOutcome::Forward
+                };
+                if outcome == SoftOffOutcome::Swallow {
                     continue;
                 }
                 if let Some(control) = control_ref_for(&event) {

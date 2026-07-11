@@ -110,6 +110,7 @@ pub fn prefs_overlay(state: &State) -> Element<'_, Message> {
         return iced::widget::column![].into();
     };
     let h = &settings.hardware;
+    let d = &settings.driver;
 
     fn labeled(label: String, control: Element<Message>) -> iced::widget::Row<Message> {
         row![text(label).width(Length::Fixed(160.0)), control]
@@ -117,11 +118,21 @@ pub fn prefs_overlay(state: &State) -> Element<'_, Message> {
             .align_y(iced::alignment::Vertical::Center)
     }
 
-    let editor = column![labeled(
-        "Touch Select".to_string(),
-        checkbox(state.touch_select)
-            .on_toggle(Message::ToggleTouchSelect)
-            .into(),
+    fn toggle<'a>(
+        label: &'a str,
+        is_checked: bool,
+        on_toggle: fn(bool) -> Message,
+    ) -> Element<'a, Message> {
+        checkbox(is_checked)
+            .label(label)
+            .on_toggle(on_toggle)
+            .into()
+    }
+
+    let editor = column![toggle(
+        "Touch Select",
+        state.touch_select,
+        Message::ToggleTouchSelect
     )]
     .spacing(10);
 
@@ -154,12 +165,28 @@ pub fn prefs_overlay(state: &State) -> Element<'_, Message> {
     ]
     .spacing(10);
 
+    let driver = column![
+        toggle(
+            "Shift+Maschine soft-off",
+            d.soft_off_enabled,
+            Message::ToggleSoftOff
+        ),
+        toggle(
+            "Self-test at launch",
+            d.self_test_on_launch,
+            Message::ToggleSelfTestAtLaunch
+        ),
+    ]
+    .spacing(10);
+
     let panel = container(
         column![
             pref_header("Editor settings"),
             crate::widget::group_box::group_box(editor),
             pref_header("Device settings"),
             crate::widget::group_box::group_box(device),
+            pref_header("Driver"),
+            crate::widget::group_box::group_box(driver),
             container(button("Close").on_press(Message::TogglePrefs))
                 .width(Length::Fill)
                 .align_x(iced::alignment::Horizontal::Right),
