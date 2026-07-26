@@ -4,6 +4,7 @@ pub mod actions;
 pub mod buttons_by_name;
 pub mod defaults;
 pub mod groups;
+pub mod pad_paging;
 pub mod pads_by_index;
 pub mod partial;
 pub mod velocity_curve;
@@ -20,6 +21,7 @@ pub use buttons_by_name::ButtonsByName;
 pub use groups::{BridgeSettings, DriverSettings, GlobalSettings, HardwareSettings};
 pub use maschine_library::lights::PadColors;
 pub use maschine_library::preferences::MAX_BUTTON_BRIGHTNESS;
+pub use pad_paging::{PadPage, PadPaging};
 pub use pads_by_index::PadsByIndex;
 
 #[derive(Default, Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
