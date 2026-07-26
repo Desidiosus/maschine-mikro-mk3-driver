@@ -8,6 +8,7 @@ use crate::actions::{
     ButtonPressAction, EncoderTurnAction, PadHitAction, PadLedColorMode, PadLedSource,
     PadPressureAction, SliderLedMode, SliderPositionAction, SliderTouchAction,
 };
+use crate::pad_paging::{PadPage, PageId, default_page};
 use crate::velocity_curve::PadVelocityCurve;
 use crate::{MidiChannel, Settings};
 use maschine_library::lights::PadColors;
@@ -19,6 +20,10 @@ pub struct PartialSettings {
     pub hardware: Option<PartialHardwareSettings>,
     pub bridge: Option<PartialBridgeSettings>,
     pub driver: Option<PartialDriverSettings>,
+    // Sparse per-pad overrides applied to the ACTIVE page on merge. Retained so a
+    // pre-paging `[pads]` config still loads (migrating onto page 0) and so the
+    // GUI's per-pad edits stay small. Never emitted by `diff_from` — persistence
+    // writes the whole `pad_paging` block instead.
     #[serde(
         deserialize_with = "deserialize_partial_pads",
         serialize_with = "serialize_partial_pads",
@@ -33,6 +38,7 @@ pub struct PartialSettings {
     pub buttons: Option<[Option<PartialButtonConfig>; 41]>,
     pub encoder: Option<PartialEncoderConfig>,
     pub slider: Option<PartialSliderConfig>,
+    pub pad_paging: Option<PartialPadPaging>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -127,6 +133,48 @@ pub struct PartialSliderLedSettings {
     pub color: Option<PadColors>,
     pub stylized: Option<bool>,
     pub auto_off_ms: Option<u64>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PartialPadPaging {
+    pub enabled: Option<bool>,
+    pub active: Option<usize>,
+    pub default_page_color: Option<PadColors>,
+    /// Sparse per-page patches. Applied positionally onto the existing page list
+    /// when the length matches (preserves seed show-through); otherwise a
+    /// structural change (add/duplicate/delete/reorder), so each patch is applied
+    /// onto a fresh default page instead.
+    pub pages: Option<Vec<PartialPadPage>>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PartialPadPage {
+    /// The page's identity. Carried through the diff so a structural rewrite
+    /// (add/delete/reorder) moves ids with their pages instead of leaving them
+    /// pinned to slots. Absent in overrides written before ids existed; the
+    /// merge assigns those.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<PageId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<PadColors>,
+    /// Set the page name back to `None` (render as "Page N"). Distinguishes a
+    /// deliberate reset-to-default from "field absent / no change".
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub clear_name: bool,
+    /// Set the page color back to `None` (inherit `default_page_color`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub clear_color: bool,
+    #[serde(
+        deserialize_with = "deserialize_partial_pads",
+        serialize_with = "serialize_partial_pads",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub pads: Option<[Option<PartialPadConfig>; 16]>,
 }
 
 fn deserialize_partial_pads<'de, D>(
@@ -256,6 +304,75 @@ macro_rules! diff_section {
     };
 }
 
+impl PartialPadPage {
+    fn apply_onto(self, page: &mut PadPage) {
+        if let Some(id) = self.id {
+            page.id = id;
+        }
+        if self.clear_name {
+            page.name = None;
+        } else if let Some(name) = self.name {
+            page.name = Some(name);
+        }
+        if self.clear_color {
+            page.color = None;
+        } else if let Some(color) = self.color {
+            page.color = Some(color);
+        }
+        if let Some(pads) = self.pads {
+            for (idx, cfg) in pads.into_iter().enumerate() {
+                let Some(cfg) = cfg else { continue };
+                apply_overrides!(page.pads[idx], cfg; hit, pressure);
+                if let Some(led) = cfg.led {
+                    apply_overrides!(page.pads[idx].led, led; source, midi_in, midi_out);
+                }
+            }
+        }
+    }
+
+    fn diff(cur: &PadPage, base: &PadPage) -> PartialPadPage {
+        let mut pads: [Option<PartialPadConfig>; 16] = std::array::from_fn(|_| None);
+        let mut any_pad = false;
+        for (idx, pad) in cur.pads.iter().enumerate() {
+            let mut p = PartialPadConfig::default();
+            diff_section!(pad, base.pads[idx], p; copy: {}; clone: { hit, pressure };);
+            let mut led = PartialPadLedConfig::default();
+            diff_section!(
+                pad.led, base.pads[idx].led, led;
+                copy: { source, midi_in, midi_out };
+                clone: {};
+            );
+            if led != PartialPadLedConfig::default() {
+                p.led = Some(led);
+            }
+            if p != PartialPadConfig::default() {
+                pads[idx] = Some(p);
+                any_pad = true;
+            }
+        }
+        let (name, clear_name) = match (&cur.name, &base.name) {
+            (a, b) if a == b => (None, false),
+            (None, Some(_)) => (None, true),
+            (Some(n), _) => (Some(n.clone()), false),
+            (None, None) => (None, false),
+        };
+        let (color, clear_color) = match (cur.color, base.color) {
+            (a, b) if a == b => (None, false),
+            (None, Some(_)) => (None, true),
+            (Some(c), _) => (Some(c), false),
+            (None, None) => (None, false),
+        };
+        PartialPadPage {
+            id: (cur.id != base.id).then_some(cur.id),
+            name,
+            clear_name,
+            color,
+            clear_color,
+            pads: any_pad.then_some(pads),
+        }
+    }
+}
+
 impl Settings {
     pub fn merge_overrides(mut self, partial: PartialSettings) -> Self {
         if let Some(g) = partial.global {
@@ -282,12 +399,45 @@ impl Settings {
         if let Some(d) = partial.driver {
             apply_overrides!(self.driver, d; soft_off_enabled, self_test_on_launch);
         }
+        if let Some(pp) = partial.pad_paging {
+            apply_overrides!(self.pad_paging, pp; enabled, active, default_page_color);
+            if let Some(pages) = pp.pages {
+                if pages.len() == self.pad_paging.pages.len() {
+                    for (i, patch) in pages.into_iter().enumerate() {
+                        patch.apply_onto(&mut self.pad_paging.pages[i]);
+                    }
+                } else {
+                    self.pad_paging.pages = pages
+                        .into_iter()
+                        .map(|patch| {
+                            let mut page = default_page();
+                            patch.apply_onto(&mut page);
+                            page
+                        })
+                        .collect();
+                }
+            }
+        }
+        // Renumber pages that arrived sharing an id — a config written before ids
+        // existed loads every page as unassigned — so no two pages downstream can
+        // claim to be the same page.
+        self.pad_paging.ensure_unique_page_ids();
+        // Self-heal a persisted/overridden `active` that outlives a shrunk page vec
+        // (e.g. a `-c` seed dropped pages). Clamp instead of bricking startup;
+        // `validate()` would otherwise reject and the driver would refuse to boot.
+        // Runs for every merge, not only one carrying `pad_paging`: an earlier layer
+        // can leave `active` stale, and the legacy absorber below would then have no
+        // page to write to and would drop the whole block.
+        if self.pad_paging.active >= self.pad_paging.pages.len() {
+            self.pad_paging.active = self.pad_paging.pages.len().saturating_sub(1);
+        }
         if let Some(pads) = partial.pads {
+            let page = self.pad_paging.active_page_mut();
             for (idx, cfg) in pads.into_iter().enumerate() {
                 let Some(cfg) = cfg else { continue };
-                apply_overrides!(self.pads[idx], cfg; hit, pressure);
+                apply_overrides!(page.pads[idx], cfg; hit, pressure);
                 if let Some(led) = cfg.led {
-                    apply_overrides!(self.pads[idx].led, led; source, midi_in, midi_out);
+                    apply_overrides!(page.pads[idx].led, led; source, midi_in, midi_out);
                 }
             }
         }
@@ -366,31 +516,38 @@ impl Settings {
             out.driver = Some(d);
         }
 
-        let mut pads: [Option<PartialPadConfig>; 16] = std::array::from_fn(|_| None);
-        let mut any_pad = false;
-        for (idx, pad) in self.pads.iter().enumerate() {
-            let mut p = PartialPadConfig::default();
-            diff_section!(
-                pad, base.pads[idx], p;
-                copy: {};
-                clone: { hit, pressure };
-            );
-            let mut led = PartialPadLedConfig::default();
-            diff_section!(
-                pad.led, base.pads[idx].led, led;
-                copy: { source, midi_in, midi_out };
-                clone: {};
-            );
-            if led != PartialPadLedConfig::default() {
-                p.led = Some(led);
-            }
-            if p != PartialPadConfig::default() {
-                pads[idx] = Some(p);
-                any_pad = true;
-            }
-        }
-        if any_pad {
-            out.pads = Some(pads);
+        if self.pad_paging != base.pad_paging {
+            let pages = if self.pad_paging.pages != base.pad_paging.pages {
+                Some(
+                    if self.pad_paging.pages.len() == base.pad_paging.pages.len() {
+                        self.pad_paging
+                            .pages
+                            .iter()
+                            .zip(base.pad_paging.pages.iter())
+                            .map(|(cur, b)| PartialPadPage::diff(cur, b))
+                            .collect()
+                    } else {
+                        let def = default_page();
+                        self.pad_paging
+                            .pages
+                            .iter()
+                            .map(|cur| PartialPadPage::diff(cur, &def))
+                            .collect()
+                    },
+                )
+            } else {
+                None
+            };
+            out.pad_paging = Some(PartialPadPaging {
+                enabled: (self.pad_paging.enabled != base.pad_paging.enabled)
+                    .then_some(self.pad_paging.enabled),
+                active: (self.pad_paging.active != base.pad_paging.active)
+                    .then_some(self.pad_paging.active),
+                default_page_color: (self.pad_paging.default_page_color
+                    != base.pad_paging.default_page_color)
+                    .then_some(self.pad_paging.default_page_color),
+                pages,
+            });
         }
 
         let mut buttons: [Option<PartialButtonConfig>; 41] = std::array::from_fn(|_| None);
@@ -481,13 +638,16 @@ type = "poly"
 
         // TOML key 5 (physical pad 5) maps to internal logical pad 8 (row-flip).
         assert_eq!(
-            merged.pads[8].pressure,
+            merged.active_pads()[8].pressure,
             PadPressureAction::Poly {
                 channel: None,
                 note: None
             }
         );
-        assert_eq!(merged.pads[5].pressure, PadPressureAction::Disabled);
+        assert_eq!(
+            merged.active_pads()[5].pressure,
+            PadPressureAction::Disabled
+        );
     }
 
     #[test]
@@ -550,7 +710,7 @@ client_name = "Custom"
     #[test]
     fn diff_from_defaults_is_inverse_of_merge_overrides() {
         let mut s = Settings::default();
-        s.pads[2].pressure = PadPressureAction::Poly {
+        s.active_pads_mut()[2].pressure = PadPressureAction::Poly {
             channel: None,
             note: Some(60),
         };
@@ -575,14 +735,14 @@ client_name = "Custom"
         // live = base plus one pad-note change. The base's client_name must NOT
         // appear in the diff (it's part of the seed, not a GUI edit).
         let mut live = base.clone();
-        live.pads[2].hit = PadHitAction::Note {
+        live.active_pads_mut()[2].hit = PadHitAction::Note {
             channel: None,
             note: 61,
         };
 
         let diff = live.diff_from(&base);
         assert!(diff.global.is_none(), "unchanged-vs-base global is omitted");
-        assert!(diff.pads.is_some(), "changed pad is captured");
+        assert!(diff.pad_paging.is_some(), "changed pad is captured");
         // Applying the diff onto the base reconstructs the live settings.
         assert_eq!(base.merge_overrides(diff), live);
     }
@@ -691,14 +851,17 @@ source = "midi_in"
         let partial: PartialSettings = toml::from_str(toml_str).unwrap();
         let merged = Settings::default().merge_overrides(partial);
         // TOML key 1 → internal pad 12 (row flip).
-        assert_eq!(merged.pads[12].led.source, PadLedSource::MidiIn);
+        assert_eq!(merged.active_pads()[12].led.source, PadLedSource::MidiIn);
         // Other LED fields keep their defaults.
         assert_eq!(
-            merged.pads[12].led.midi_out,
-            Settings::default().pads[12].led.midi_out
+            merged.active_pads()[12].led.midi_out,
+            Settings::default().active_pads()[12].led.midi_out
         );
         // Other pads untouched.
-        assert_eq!(merged.pads[0].led, Settings::default().pads[0].led);
+        assert_eq!(
+            merged.active_pads()[0].led,
+            Settings::default().active_pads()[0].led
+        );
     }
 
     #[test]
@@ -710,18 +873,22 @@ single = "red"
 "#;
         let partial: PartialSettings = toml::from_str(toml_str).unwrap();
         let merged = Settings::default().merge_overrides(partial);
-        assert_eq!(merged.pads[12].led.midi_in.mode, crate::PadLedMode::Single);
-        assert_eq!(merged.pads[12].led.midi_in.single, PadColors::Red);
-        assert_eq!(merged.pads[12].led.source, PadLedSource::MidiOut);
+        assert_eq!(
+            merged.active_pads()[12].led.midi_in.mode,
+            crate::PadLedMode::Single
+        );
+        assert_eq!(merged.active_pads()[12].led.midi_in.single, PadColors::Red);
+        assert_eq!(merged.active_pads()[12].led.source, PadLedSource::MidiOut);
     }
 
     #[test]
     fn diff_from_defaults_round_trips_pad_led() {
         let mut s = Settings::default();
-        s.pads[3].led.source = PadLedSource::MidiIn;
-        s.pads[3].led.midi_in = PadLedColorMode::dual(PadColors::Green, PadColors::Turquoise);
+        s.active_pads_mut()[3].led.source = PadLedSource::MidiIn;
+        s.active_pads_mut()[3].led.midi_in =
+            PadLedColorMode::dual(PadColors::Green, PadColors::Turquoise);
         let partial = s.diff_from_defaults();
-        assert!(partial.pads.is_some(), "changed pad LED is captured");
+        assert!(partial.pad_paging.is_some(), "changed pad LED is captured");
         let round_tripped = Settings::default().merge_overrides(partial);
         assert_eq!(round_tripped, s);
     }
@@ -745,5 +912,455 @@ single = "red"
         let merged = Settings::default().merge_overrides(diff);
         assert!(!merged.driver.soft_off_enabled);
         assert!(merged.driver.self_test_on_launch);
+    }
+
+    #[test]
+    fn legacy_pads_table_migrates_onto_active_page() {
+        let toml_str = r#"
+[pads.5.pressure]
+type = "poly"
+"#;
+        let partial: PartialSettings = toml::from_str(toml_str).unwrap();
+        let merged = Settings::default().merge_overrides(partial);
+        // TOML key 5 → internal pad 8; applied to page 0's pads.
+        assert_eq!(
+            merged.pad_paging.pages[0].pads[8].pressure,
+            PadPressureAction::Poly {
+                channel: None,
+                note: None
+            }
+        );
+    }
+
+    #[test]
+    fn pad_paging_enable_and_active_round_trip() {
+        let mut s = Settings::default();
+        s.pad_paging.enabled = true;
+        let page = PadPage {
+            id: s.pad_paging.next_page_id(),
+            ..s.pad_paging.pages[0].clone()
+        };
+        s.pad_paging.pages.push(page);
+        s.pad_paging.active = 1;
+
+        let diff = s.diff_from_defaults();
+        assert!(diff.pad_paging.is_some(), "changed paging is captured");
+        assert!(
+            diff.pads.is_none(),
+            "diff never emits the legacy pads field"
+        );
+
+        let round_tripped = Settings::default().merge_overrides(diff);
+        assert_eq!(round_tripped, s);
+    }
+
+    #[test]
+    fn pad_paging_default_color_round_trips() {
+        let mut s = Settings::default();
+        s.pad_paging.default_page_color = PadColors::Magenta;
+        let diff = s.diff_from_defaults();
+        let round_tripped = Settings::default().merge_overrides(diff);
+        assert_eq!(round_tripped, s);
+    }
+
+    #[test]
+    fn per_page_pad_edit_round_trips_through_pad_paging() {
+        let mut s = Settings::default();
+        let mut page2 = PadPage {
+            id: s.pad_paging.next_page_id(),
+            ..s.pad_paging.pages[0].clone()
+        };
+        page2.pads[3].hit = PadHitAction::Note {
+            channel: None,
+            note: 61,
+        };
+        s.pad_paging.pages.push(page2);
+        s.pad_paging.active = 0;
+
+        let diff = s.diff_from_defaults();
+        let round_tripped = Settings::default().merge_overrides(diff);
+        assert_eq!(round_tripped, s);
+    }
+
+    #[test]
+    fn pages_replace_then_active_pad_absorber_layers_on_top() {
+        // A partial that both replaces the page list (2 pages, structural) AND
+        // carries a sparse `pads` active-page edit must apply the replace first,
+        // then the edit on top — swapping the order would clobber the edit.
+        let mut page_b_pads: [Option<PartialPadConfig>; 16] = std::array::from_fn(|_| None);
+        page_b_pads[7] = Some(PartialPadConfig {
+            hit: Some(PadHitAction::Note {
+                channel: None,
+                note: 70,
+            }),
+            pressure: None,
+            led: None,
+        });
+
+        let mut sparse: [Option<PartialPadConfig>; 16] = std::array::from_fn(|_| None);
+        sparse[0] = Some(PartialPadConfig {
+            hit: Some(PadHitAction::Note {
+                channel: None,
+                note: 99,
+            }),
+            pressure: None,
+            led: None,
+        });
+
+        let partial = PartialSettings {
+            pad_paging: Some(PartialPadPaging {
+                enabled: None,
+                active: None,
+                default_page_color: None,
+                pages: Some(vec![
+                    PartialPadPage::default(),
+                    PartialPadPage {
+                        pads: Some(page_b_pads),
+                        ..Default::default()
+                    },
+                ]),
+            }),
+            pads: Some(sparse),
+            ..Default::default()
+        };
+
+        let merged = Settings::default().merge_overrides(partial);
+        assert_eq!(merged.pad_paging.pages.len(), 2, "page list was replaced");
+        // active defaults to 0 → sparse edit landed on page 0, pad 0.
+        assert_eq!(
+            merged.pad_paging.pages[0].pads[0].hit,
+            PadHitAction::Note {
+                channel: None,
+                note: 99
+            }
+        );
+        // page 1 carries its own seeded pad (proves the replace ran).
+        assert_eq!(
+            merged.pad_paging.pages[1].pads[7].hit,
+            PadHitAction::Note {
+                channel: None,
+                note: 70
+            }
+        );
+    }
+
+    #[test]
+    fn seed_pad_shows_through_after_editing_a_different_pad() {
+        // base stands in for a `-c` seed that customized pad 5.
+        let mut base = Settings::default();
+        base.active_pads_mut()[5].hit = PadHitAction::Note {
+            channel: None,
+            note: 60,
+        };
+
+        // live = base with a DIFFERENT pad (3) edited via the GUI.
+        let mut live = base.clone();
+        live.active_pads_mut()[3].hit = PadHitAction::Note {
+            channel: None,
+            note: 40,
+        };
+
+        let diff = live.diff_from(&base);
+
+        // The seed later changes pad 5 to 70. Applying the persisted diff onto the
+        // updated seed must let pad 5 show through (NOT freeze at 60), while pad 3's
+        // edit still applies.
+        let mut later_seed = base.clone();
+        later_seed.active_pads_mut()[5].hit = PadHitAction::Note {
+            channel: None,
+            note: 70,
+        };
+        let merged = later_seed.merge_overrides(diff);
+
+        assert_eq!(
+            merged.active_pads()[3].hit,
+            PadHitAction::Note {
+                channel: None,
+                note: 40
+            }
+        );
+        assert_eq!(
+            merged.active_pads()[5].hit,
+            PadHitAction::Note {
+                channel: None,
+                note: 70
+            },
+            "unedited pad 5 must show through the updated seed, not freeze"
+        );
+    }
+
+    #[test]
+    fn single_pad_paging_pad_override_parses_without_all_16() {
+        // A single pad line under [[pad_paging.pages]] must parse (sparse), not
+        // demand all 16 pads.
+        let toml_str = r#"
+[[pad_paging.pages]]
+
+[pad_paging.pages.pads.1.hit]
+type = "note"
+note = 55
+"#;
+        let partial: PartialSettings = toml::from_str(toml_str).unwrap();
+        let merged = Settings::default().merge_overrides(partial);
+        // TOML key 1 → internal pad 12.
+        assert_eq!(
+            merged.active_pads()[12].hit,
+            PadHitAction::Note {
+                channel: None,
+                note: 55
+            }
+        );
+        assert_eq!(
+            merged.active_pads()[0].hit,
+            Settings::default().active_pads()[0].hit
+        );
+    }
+
+    #[test]
+    fn structural_page_add_round_trips_through_pad_paging() {
+        // Adding a second page changes the page count → structural full spell-out.
+        let mut s = Settings::default();
+        let mut page2 = s.pad_paging.new_page();
+        page2.pads[7].hit = PadHitAction::Note {
+            channel: None,
+            note: 70,
+        };
+        s.pad_paging.pages.push(page2);
+        s.pad_paging.active = 1;
+
+        let diff = s.diff_from_defaults();
+        assert!(diff.pad_paging.is_some());
+        assert!(
+            diff.pads.is_none(),
+            "diff never emits the legacy pads field"
+        );
+        let round_tripped = Settings::default().merge_overrides(diff);
+        assert_eq!(round_tripped, s);
+    }
+
+    #[test]
+    fn pads_with_out_of_range_active_self_heals_instead_of_failing_validate() {
+        // Superseded by the merge-time clamp: an out-of-range `active` now
+        // self-heals instead of surviving into an invalid `Settings` (previously
+        // this asserted `validate().is_err()`; now the merge itself repairs it).
+        let partial = PartialSettings {
+            pad_paging: Some(PartialPadPaging {
+                enabled: None,
+                active: Some(5),
+                default_page_color: None,
+                pages: None,
+            }),
+            pads: Some({
+                let mut s: [Option<PartialPadConfig>; 16] = std::array::from_fn(|_| None);
+                s[0] = Some(PartialPadConfig {
+                    hit: None,
+                    pressure: Some(PadPressureAction::Poly {
+                        channel: None,
+                        note: None,
+                    }),
+                    led: None,
+                });
+                s
+            }),
+            ..Default::default()
+        };
+        let merged = Settings::default().merge_overrides(partial); // must NOT panic
+        assert_eq!(
+            merged.pad_paging.active, 0,
+            "stale active self-heals into range"
+        );
+        merged.validate().expect("clamped settings validate");
+        // The legacy pads absorber still applies, landing on the clamped active page.
+        assert_eq!(
+            merged.active_pads()[0].pressure,
+            PadPressureAction::Poly {
+                channel: None,
+                note: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_reorder_moves_page_ids_with_their_pages() {
+        // The diff rewrites pages slot by slot, so without the id travelling in
+        // the patch the identities would stay pinned to the slots and every
+        // consumer would believe the pages never moved.
+        let mut s = Settings::default();
+        s.pad_paging.pages.push(s.pad_paging.new_page());
+        let (first, second) = (s.pad_paging.pages[0].id, s.pad_paging.pages[1].id);
+
+        let mut reordered = s.clone();
+        reordered.pad_paging.pages.swap(0, 1);
+
+        let merged = s.clone().merge_overrides(reordered.diff_from(&s));
+
+        assert_eq!(
+            (merged.pad_paging.pages[0].id, merged.pad_paging.pages[1].id),
+            (second, first)
+        );
+    }
+
+    #[test]
+    fn a_config_written_before_ids_existed_gets_distinct_ones_on_merge() {
+        // Overrides that predate ids deserialize every page as unassigned. The
+        // merge has to pull them apart, or two pages would both read as "no id"
+        // and compare equal as identities.
+        let partial: PartialSettings = toml::from_str(
+            "[pad_paging]\n\
+             [[pad_paging.pages]]\n\
+             name = \"Drums\"\n\
+             [[pad_paging.pages]]\n\
+             name = \"Keys\"\n",
+        )
+        .unwrap();
+
+        let merged = Settings::default().merge_overrides(partial);
+
+        let ids: Vec<_> = merged.pad_paging.pages.iter().map(|p| p.id).collect();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1], "each page gets its own identity: {ids:?}");
+    }
+
+    #[test]
+    fn legacy_pads_apply_even_when_the_merge_carries_no_pad_paging() {
+        // A partial with only the legacy `[pads]` block, merged onto settings
+        // whose `active` an earlier layer left out of range. The absorber has to
+        // land on the same page `active_pads()` reads, not silently discard the
+        // whole block because a raw index missed.
+        let mut base = Settings::default();
+        base.pad_paging.active = 3;
+
+        let partial = PartialSettings {
+            pads: Some({
+                let mut s: [Option<PartialPadConfig>; 16] = std::array::from_fn(|_| None);
+                s[0] = Some(PartialPadConfig {
+                    hit: Some(PadHitAction::Note {
+                        channel: None,
+                        note: 70,
+                    }),
+                    pressure: None,
+                    led: None,
+                });
+                s
+            }),
+            ..Default::default()
+        };
+
+        let merged = base.merge_overrides(partial);
+        assert_eq!(merged.pad_paging.active, 0, "stale active self-heals");
+        assert_eq!(
+            merged.active_pads()[0].hit,
+            PadHitAction::Note {
+                channel: None,
+                note: 70
+            },
+            "a legacy pads block must not be dropped by an out-of-range active"
+        );
+    }
+
+    #[test]
+    fn merge_clamps_active_into_range_when_pages_shrink() {
+        let mut base = Settings::default();
+        base.pad_paging
+            .pages
+            .push(crate::pad_paging::default_page());
+        base.pad_paging.active = 1;
+
+        // The override shrinks pages back to one but leaves active=1. A different
+        // page count than base makes the merge rebuild a single page, which must
+        // self-heal `active` into range instead of leaving it dangling at 1.
+        let delta = PartialSettings {
+            pad_paging: Some(PartialPadPaging {
+                active: Some(1),
+                pages: Some(vec![PartialPadPage::default()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let merged = base.merge_overrides(delta);
+        assert_eq!(merged.pad_paging.pages.len(), 1);
+        assert_eq!(merged.pad_paging.active, 0, "active self-heals into range");
+        merged.validate().expect("clamped settings validate");
+    }
+
+    #[test]
+    fn per_page_color_clear_to_inherit_round_trips() {
+        // Base: a page with an explicit color. Edit: clear it to inherit (None).
+        let mut base = Settings::default();
+        base.pad_paging.pages[0].color = Some(PadColors::Red);
+
+        let mut edited = base.clone();
+        edited.pad_paging.pages[0].color = None;
+
+        let delta = edited.diff_from(&base);
+        let merged = base.merge_overrides(delta);
+        assert_eq!(
+            merged.pad_paging.pages[0].color, None,
+            "clearing a page color to inherit must survive diff+merge"
+        );
+    }
+
+    #[test]
+    fn per_page_name_clear_round_trips() {
+        let mut base = Settings::default();
+        base.pad_paging.pages[0].name = Some("Kick".to_string());
+
+        let mut edited = base.clone();
+        edited.pad_paging.pages[0].name = None;
+
+        let merged = base.clone().merge_overrides(edited.diff_from(&base));
+        assert_eq!(merged.pad_paging.pages[0].name, None);
+    }
+
+    #[test]
+    fn reorder_preserves_inherit_and_explicit_colors() {
+        // Two pages: A explicit Red, B inherit (None). Reorder to [B, A].
+        let mut base = Settings::default();
+        base.pad_paging
+            .pages
+            .push(crate::pad_paging::default_page());
+        base.pad_paging.pages[0].color = Some(PadColors::Red);
+        base.pad_paging.pages[1].color = None;
+        base.pad_paging.pages[0].name = Some("A".to_string());
+        base.pad_paging.pages[1].name = None;
+
+        let mut edited = base.clone();
+        edited.pad_paging.pages.swap(0, 1);
+
+        let merged = base.clone().merge_overrides(edited.diff_from(&base));
+        assert_eq!(
+            merged.pad_paging.pages[0].color, None,
+            "moved inherit page stays inherit"
+        );
+        assert_eq!(merged.pad_paging.pages[0].name, None);
+        assert_eq!(
+            merged.pad_paging.pages[1].color,
+            Some(PadColors::Red),
+            "moved explicit page keeps its color"
+        );
+        assert_eq!(merged.pad_paging.pages[1].name.as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn clear_flags_round_trip_through_toml() {
+        // A page colour reset must survive being written to and read back from the
+        // config file, not just an in-process merge.
+        let mut base = Settings::default();
+        base.pad_paging.pages[0].color = Some(PadColors::Red);
+        base.pad_paging.pages[0].name = Some("Kick".to_string());
+
+        let mut edited = base.clone();
+        edited.pad_paging.pages[0].color = None;
+        edited.pad_paging.pages[0].name = None;
+
+        let delta = edited.diff_from(&base);
+        let text = toml::to_string(&delta).unwrap();
+        let reparsed: PartialSettings = toml::from_str(&text).unwrap();
+        assert_eq!(reparsed, delta, "clear flags survive a TOML round-trip");
+
+        let merged = base.merge_overrides(reparsed);
+        assert_eq!(merged.pad_paging.pages[0].color, None);
+        assert_eq!(merged.pad_paging.pages[0].name, None);
     }
 }

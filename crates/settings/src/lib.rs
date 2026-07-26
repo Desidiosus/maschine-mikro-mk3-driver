@@ -64,7 +64,7 @@ pub struct Settings {
     pub hardware: HardwareSettings,
     pub bridge: BridgeSettings,
     pub driver: DriverSettings,
-    pub pads: PadsByIndex,
+    pub pad_paging: PadPaging,
     pub buttons: ButtonsByName,
     pub encoder: EncoderConfig,
     pub slider: SliderConfig,
@@ -77,7 +77,7 @@ impl Default for Settings {
             hardware: HardwareSettings::default(),
             bridge: BridgeSettings::default(),
             driver: DriverSettings::default(),
-            pads: defaults::default_pads(),
+            pad_paging: pad_paging::default_pad_paging(),
             buttons: defaults::default_buttons(),
             encoder: defaults::default_encoder(),
             slider: defaults::default_slider(),
@@ -86,14 +86,13 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// Pad configuration for the currently active page. During Task 1 this is the
-    /// single stored `pads` field; Task 3 repoints it at `pad_paging.pages[active]`.
+    /// Pad configuration for the currently active page.
     pub fn active_pads(&self) -> &PadsByIndex {
-        &self.pads
+        &self.pad_paging.active_page().pads
     }
 
     pub fn active_pads_mut(&mut self) -> &mut PadsByIndex {
-        &mut self.pads
+        &mut self.pad_paging.active_page_mut().pads
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -136,18 +135,35 @@ impl Settings {
         // Each match below is exhaustive on purpose: a future value-bearing
         // variant must fail to compile here (forcing a validation decision)
         // rather than silently skip range checks via a catch-all early return.
-        for (i, pad) in self.pads.iter().enumerate() {
-            let key = pads_by_index::internal_to_config_key(i);
-            match &pad.hit {
-                PadHitAction::Note { note, .. } => check(&format!("pad {key} note"), *note)?,
-                PadHitAction::Off => {}
-            }
-            match &pad.pressure {
-                PadPressureAction::Disabled => {}
-                PadPressureAction::Poly {
-                    note: Some(note), ..
-                } => check(&format!("pad {key} pressure note"), *note)?,
-                PadPressureAction::Poly { note: None, .. } => {}
+        if self.pad_paging.pages.is_empty() {
+            return Err("pad_paging.pages must contain at least one page".to_string());
+        }
+        if self.pad_paging.pages.len() > 16 {
+            return Err("pad_paging.pages must contain at most 16 pages".to_string());
+        }
+        if self.pad_paging.active >= self.pad_paging.pages.len() {
+            return Err(format!(
+                "pad_paging.active ({}) out of range 0..{}",
+                self.pad_paging.active,
+                self.pad_paging.pages.len()
+            ));
+        }
+        for (page_idx, page) in self.pad_paging.pages.iter().enumerate() {
+            for (i, pad) in page.pads.iter().enumerate() {
+                let key = pads_by_index::internal_to_config_key(i);
+                match &pad.hit {
+                    PadHitAction::Note { note, .. } => {
+                        check(&format!("page {page_idx} pad {key} note"), *note)?
+                    }
+                    PadHitAction::Off => {}
+                }
+                match &pad.pressure {
+                    PadPressureAction::Disabled => {}
+                    PadPressureAction::Poly {
+                        note: Some(note), ..
+                    } => check(&format!("page {page_idx} pad {key} pressure note"), *note)?,
+                    PadPressureAction::Poly { note: None, .. } => {}
+                }
             }
         }
         for (i, button) in self.buttons.0.iter().enumerate() {
@@ -340,7 +356,7 @@ mod validate_tests {
     #[test]
     fn validate_rejects_out_of_range_pad_note() {
         let mut s = Settings::default();
-        s.pads[0].hit = PadHitAction::Note {
+        s.active_pads_mut()[0].hit = PadHitAction::Note {
             channel: None,
             note: 200,
         };
@@ -372,7 +388,7 @@ mod validate_tests {
     #[test]
     fn validate_accepts_max_legal_data_bytes() {
         let mut s = Settings::default();
-        s.pads[0].hit = PadHitAction::Note {
+        s.active_pads_mut()[0].hit = PadHitAction::Note {
             channel: None,
             note: 127,
         };
@@ -383,5 +399,28 @@ mod validate_tests {
             off_value: 127,
         };
         assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_active_index_out_of_range() {
+        let mut s = Settings::default();
+        s.pad_paging.active = 1; // only one page (index 0)
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_more_than_16_pages() {
+        let mut s = Settings::default();
+        let page = s.pad_paging.pages[0].clone();
+        s.pad_paging.pages = std::iter::repeat_with(|| page.clone()).take(17).collect();
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty_pages() {
+        let mut s = Settings::default();
+        s.pad_paging.pages.clear();
+        s.pad_paging.active = 0;
+        assert!(s.validate().is_err());
     }
 }

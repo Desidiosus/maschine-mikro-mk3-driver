@@ -207,6 +207,66 @@ mod tests {
     }
 
     #[test]
+    fn seed_pad_shows_through_after_persisting_a_different_pad_edit() {
+        // A `-c` seed customizes pad 5; a GUI edit changes pad 3 and is persisted to
+        // XDG; the seed is later changed to a new pad-5 value. On reload, pad 3's edit
+        // applies AND pad 5 shows through the UPDATED seed (not frozen at the old
+        // value). This locks the fix at the persistence layer (save→reload), which the
+        // in-memory diff/merge test does not exercise.
+        let dir = std::env::temp_dir().join("mmk3-persist-showthrough-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let seed = dir.join(format!("seed-{}.toml", std::process::id()));
+        let xdg = dir.join(format!("xdg-{}.toml", std::process::id()));
+        let _ = std::fs::remove_file(&seed);
+        let _ = std::fs::remove_file(&xdg);
+
+        // Seed sets pad 5 (TOML key 5 → internal pad 8) to note 60.
+        std::fs::write(&seed, "[pads.5.hit]\ntype = \"note\"\nnote = 60\n").unwrap();
+
+        // First load: live == seed. Edit a DIFFERENT pad (internal 3) and persist the
+        // diff against the seed-derived persist_base.
+        let loaded = load_config_with_xdg(Some(seed.to_str().unwrap()), &xdg).unwrap();
+        assert_eq!(
+            loaded.settings.active_pads()[8].hit,
+            settings::PadHitAction::Note {
+                channel: None,
+                note: 60
+            }
+        );
+        let mut edited = loaded.settings.clone();
+        edited.active_pads_mut()[3].hit = settings::PadHitAction::Note {
+            channel: None,
+            note: 40,
+        };
+        save_overrides(&xdg, &edited, &loaded.persist_base).unwrap();
+
+        // Seed later changes pad 5 to 70.
+        std::fs::write(&seed, "[pads.5.hit]\ntype = \"note\"\nnote = 70\n").unwrap();
+
+        // Reload: pad 3 edit applies; pad 5 shows through the UPDATED seed (70).
+        let reloaded = load_config_with_xdg(Some(seed.to_str().unwrap()), &xdg).unwrap();
+        assert_eq!(
+            reloaded.settings.active_pads()[3].hit,
+            settings::PadHitAction::Note {
+                channel: None,
+                note: 40
+            },
+            "GUI pad edit must persist"
+        );
+        assert_eq!(
+            reloaded.settings.active_pads()[8].hit,
+            settings::PadHitAction::Note {
+                channel: None,
+                note: 70
+            },
+            "unedited seed pad must show through the updated seed, not freeze at 60"
+        );
+
+        let _ = std::fs::remove_file(&seed);
+        let _ = std::fs::remove_file(&xdg);
+    }
+
+    #[test]
     fn legacy_backlight_keys_are_ignored_and_dropped_on_rewrite() {
         let dir = std::env::temp_dir().join("mmk3-persist-legacy-test");
         std::fs::create_dir_all(&dir).unwrap();
@@ -268,5 +328,35 @@ mod tests {
     #[test]
     fn xdg_path_errors_when_home_unset() {
         assert!(xdg_config_path_for(None, None).is_err());
+    }
+
+    #[test]
+    fn pre_paging_pads_config_loads_and_rewrites_as_pad_paging() {
+        let dir = std::env::temp_dir().join("mmk3-persist-migrate-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("migrate-{}.toml", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        // A config written before pad pages existed: a top-level [pads] override.
+        std::fs::write(&path, "[pads.1.hit]\ntype = \"note\"\nnote = 99\n").unwrap();
+
+        // Loads without error, folding the override onto the active page.
+        let loaded = load_xdg(&path).unwrap();
+        // TOML key 1 → internal pad 12.
+        match &loaded.active_pads()[12].hit {
+            crate::settings::PadHitAction::Note { note, .. } => assert_eq!(*note, 99),
+            crate::settings::PadHitAction::Off => panic!("expected migrated note"),
+        }
+
+        // Rewriting persists the change under [pad_paging], dropping legacy [pads].
+        save_overrides(&path, &loaded, &Settings::default()).unwrap();
+        let rewritten = std::fs::read_to_string(&path).unwrap();
+        assert!(rewritten.contains("pad_paging"), "got:\n{rewritten}");
+
+        // And it reloads to the same settings.
+        let reloaded = load_xdg(&path).unwrap();
+        assert_eq!(reloaded, loaded);
+
+        let _ = std::fs::remove_file(&path);
     }
 }
