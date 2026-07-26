@@ -80,9 +80,9 @@ pub fn apply_delta(
         button_brightness: (old.led_brightness != new.led_brightness).then_some(new.led_brightness),
         refresh_backlight: (old.led_brightness > 0) != (new.led_brightness > 0),
         refresh_pad_leds: current
-            .pads
+            .active_pads()
             .iter()
-            .zip(merged.pads.iter())
+            .zip(merged.active_pads().iter())
             .enumerate()
             .filter(|(_, (a, b))| a.led != b.led)
             .fold(0u16, |mask, (i, _)| mask | (1 << i)),

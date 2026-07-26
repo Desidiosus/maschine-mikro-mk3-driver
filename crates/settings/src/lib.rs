@@ -84,6 +84,16 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Pad configuration for the currently active page. During Task 1 this is the
+    /// single stored `pads` field; Task 3 repoints it at `pad_paging.pages[active]`.
+    pub fn active_pads(&self) -> &PadsByIndex {
+        &self.pads
+    }
+
+    pub fn active_pads_mut(&mut self) -> &mut PadsByIndex {
+        &mut self.pads
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.hardware.pad_sensitivity > 100 {
             return Err("pad_sensitivity must be in range 0..=100".to_string());

@@ -255,7 +255,7 @@ pub fn event_to_midi_bytes(
             ]),
         },
         ControlEvent::PadNoteOn { index, velocity } => {
-            let pad = settings.pads.0.get(*index)?;
+            let pad = settings.active_pads().0.get(*index)?;
             match &pad.hit {
                 PadHitAction::Note { channel, note } => {
                     Some([0x90 | resolve_channel(*channel), *note, *velocity])
@@ -264,7 +264,7 @@ pub fn event_to_midi_bytes(
             }
         }
         ControlEvent::PadNoteOff { index, velocity } => {
-            let pad = settings.pads.0.get(*index)?;
+            let pad = settings.active_pads().0.get(*index)?;
             match &pad.hit {
                 PadHitAction::Note { channel, note } => {
                     Some([0x80 | resolve_channel(*channel), *note, *velocity])
@@ -273,7 +273,7 @@ pub fn event_to_midi_bytes(
             }
         }
         ControlEvent::PadAftertouch { index, pressure } => {
-            let pad = settings.pads.0.get(*index)?;
+            let pad = settings.active_pads().0.get(*index)?;
             match &pad.pressure {
                 PadPressureAction::Disabled => None,
                 PadPressureAction::Poly { channel, note } => {
@@ -309,12 +309,14 @@ where
 }
 
 pub fn pad_index_for_message(settings: &Settings, channel: u8, note: u8) -> Option<usize> {
-    find_index_for(settings.pads.iter(), (channel, note), |pad| {
-        match &pad.hit {
+    find_index_for(
+        settings.active_pads().iter(),
+        (channel, note),
+        |pad| match &pad.hit {
             PadHitAction::Note { channel, note } => Some((*channel, *note)),
             PadHitAction::Off => None,
-        }
-    })
+        },
+    )
 }
 
 pub fn button_index_for_message(settings: &Settings, channel: u8, cc: u8) -> Option<usize> {
@@ -368,7 +370,7 @@ mod tests {
 
     fn settings_with_pad_pressure_enabled(idx: usize, channel: u8, note: Option<u8>) -> Settings {
         let mut s = Settings::default();
-        s.pads[idx].pressure = PadPressureAction::Poly {
+        s.active_pads_mut()[idx].pressure = PadPressureAction::Poly {
             channel: MidiChannel::try_from(channel).ok(),
             note,
         };
@@ -610,7 +612,7 @@ mod tests {
         s.encoder.turn = EncoderTurnAction::Off;
         s.slider.position = SliderPositionAction::Off;
         s.buttons.0[0].press = ButtonPressAction::Off;
-        s.pads.0[0].hit = PadHitAction::Off;
+        s.active_pads_mut().0[0].hit = PadHitAction::Off;
 
         assert_eq!(
             event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: 1 }, &s, &rt()),

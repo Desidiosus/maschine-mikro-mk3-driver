@@ -64,7 +64,7 @@ fn pad_aftertouch_event_does_not_emit_when_pressure_disabled() {
 #[test]
 fn pad_aftertouch_event_emits_poly_pressure_when_enabled() {
     let mut settings = Settings::default();
-    settings.pads[3].pressure = PadPressureAction::Poly {
+    settings.active_pads_mut()[3].pressure = PadPressureAction::Poly {
         channel: MidiChannel::try_from(1).ok(),
         note: Some(60),
     };

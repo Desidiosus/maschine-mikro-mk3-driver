@@ -466,7 +466,7 @@ mod tests {
     }
 
     fn pad_note(state: &State, internal: usize) -> Option<u8> {
-        match state.settings.as_ref()?.pads[internal].hit {
+        match state.settings.as_ref()?.active_pads()[internal].hit {
             settings::PadHitAction::Note { note, .. } => Some(note),
             settings::PadHitAction::Off => None,
         }
@@ -810,8 +810,8 @@ mod tests {
         state.selection = vec![ControlRef::Pad(0), ControlRef::Pad(3)];
         let _ = update(&mut state, Message::SetPadLedSource(PadLedSource::MidiIn));
         let s = state.settings.as_ref().unwrap();
-        assert_eq!(s.pads[0].led.source, PadLedSource::MidiIn);
-        assert_eq!(s.pads[3].led.source, PadLedSource::MidiIn);
+        assert_eq!(s.active_pads()[0].led.source, PadLedSource::MidiIn);
+        assert_eq!(s.active_pads()[3].led.source, PadLedSource::MidiIn);
     }
 
     #[test]
@@ -836,12 +836,16 @@ mod tests {
         let (mut state, _rx) = seeded();
         state.selection = vec![ControlRef::Pad(0)];
         // Switching mode changes only `mode`; every mode's stored colors are kept.
-        let before = state.settings.as_ref().unwrap().pads[0].led.midi_out;
+        let before = state.settings.as_ref().unwrap().active_pads()[0]
+            .led
+            .midi_out;
         let _ = update(
             &mut state,
             Message::SetPadLedMode(LedTab::Out, PadLedMode::Single),
         );
-        let after = state.settings.as_ref().unwrap().pads[0].led.midi_out;
+        let after = state.settings.as_ref().unwrap().active_pads()[0]
+            .led
+            .midi_out;
         assert_eq!(after.mode, PadLedMode::Single);
         assert_eq!(after.single, before.single);
         assert_eq!(after.dual_on, before.dual_on);
@@ -877,7 +881,9 @@ mod tests {
             &mut state,
             Message::SetPadLedMode(LedTab::Out, PadLedMode::Single),
         );
-        let out = state.settings.as_ref().unwrap().pads[0].led.midi_out;
+        let out = state.settings.as_ref().unwrap().active_pads()[0]
+            .led
+            .midi_out;
         assert_eq!(out.mode, PadLedMode::Single);
         assert_eq!(out.single, PadColors::Red);
     }

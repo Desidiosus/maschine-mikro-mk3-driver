@@ -442,7 +442,7 @@ fn seed_pad_leds(outputs: &DeviceOutputs, settings: &Settings, mask: u16) {
             if mask & (1 << index) == 0 {
                 continue;
             }
-            let (color, brightness) = settings.pads[index].led.resolve(false, 0);
+            let (color, brightness) = settings.active_pads()[index].led.resolve(false, 0);
             lights.set_pad(index, color, brightness);
         }
     });
@@ -465,11 +465,11 @@ mod pad_led_seed_tests {
         let outputs = DeviceOutputs::new();
         let mut settings = Settings::default();
         // pad 0: Single Green on the active (Out) source → dim idle.
-        settings.pads[0].led.midi_out = PadLedColorMode::single(PadColors::Green);
+        settings.active_pads_mut()[0].led.midi_out = PadLedColorMode::single(PadColors::Green);
         // pad 1: Velocity on the active source → dark idle.
-        settings.pads[1].led.midi_out = PadLedColorMode::velocity();
+        settings.active_pads_mut()[1].led.midi_out = PadLedColorMode::velocity();
         // pad 2: source Off → dark.
-        settings.pads[2].led.source = PadLedSource::Off;
+        settings.active_pads_mut()[2].led.source = PadLedSource::Off;
 
         initialize_pad_leds(&outputs, &settings);
 
@@ -491,7 +491,7 @@ mod pad_led_seed_tests {
     fn reseed_only_touches_masked_pads() {
         let outputs = DeviceOutputs::new();
         let mut settings = Settings::default();
-        settings.pads[0].led.midi_out = PadLedColorMode::single(PadColors::Green);
+        settings.active_pads_mut()[0].led.midi_out = PadLedColorMode::single(PadColors::Green);
         // Pad 1 is currently lit by live feedback, not at its idle state.
         outputs.with_lights_mut(|l| l.set_pad(1, PadColors::Red, Brightness::Bright));
 

@@ -7,7 +7,7 @@ use settings::{PadLedColorMode, PadLedSource, Settings};
 
 fn settings_with_pad0_source(source: PadLedSource) -> Settings {
     let mut s = Settings::default();
-    s.pads[0].led.source = source;
+    s.active_pads_mut()[0].led.source = source;
     s
 }
 
@@ -54,7 +54,7 @@ fn in_source_pad_ignores_local_hit() {
 fn in_source_lights_pad_on_incoming_note() {
     let outputs = DeviceOutputs::new();
     let mut settings = settings_with_pad0_source(PadLedSource::MidiIn);
-    settings.pads[0].led.midi_in = PadLedColorMode::single(PadColors::Red);
+    settings.active_pads_mut()[0].led.midi_in = PadLedColorMode::single(PadColors::Red);
     // default pad 0 note = 48 on channel 0.
     apply_incoming_midi_message(
         &[0x90, 48, 64],
