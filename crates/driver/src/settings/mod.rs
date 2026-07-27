@@ -5,3 +5,6 @@ pub use ::settings::*;
 
 pub mod persist;
 pub use persist::{LoadedConfig, load_config, load_xdg};
+
+pub mod writer;
+pub use writer::{WriteLock, new_write_lock};

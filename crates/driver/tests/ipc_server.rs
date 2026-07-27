@@ -45,6 +45,7 @@ fn start(name: &str) -> Harness {
         subscriber,
         sock.clone(),
         device_present,
+        driver::settings::new_write_lock(),
     )
     .unwrap();
     let client = UnixStream::connect(&sock).unwrap();

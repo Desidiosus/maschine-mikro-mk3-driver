@@ -15,6 +15,7 @@ use protocol::{DriverToGui, GuiToDriver};
 use crate::apply::{SideEffects, apply_delta, persist_current};
 use crate::error::{DriverError, DriverResult};
 use crate::settings::Settings;
+use crate::settings::writer::WriteLock;
 use crate::shared_settings::SharedSettings;
 
 /// Capacity of each client's outbound frame queue. Responses (Ack/snapshot) use
@@ -109,6 +110,7 @@ impl IpcServer {
         subscriber: EventSubscriber,
         socket_path: PathBuf,
         device_present: Arc<AtomicBool>,
+        write_lock: WriteLock,
     ) -> DriverResult<Self> {
         let listener = bind_singleton(&socket_path)?;
         let accept = thread::spawn(move || {
@@ -122,6 +124,7 @@ impl IpcServer {
                         &effects_tx,
                         &subscriber,
                         &device_present,
+                        &write_lock,
                     ),
                     Err(_) => break,
                 }
@@ -149,6 +152,7 @@ fn handle_client(
     effects_tx: &Sender<SideEffects>,
     subscriber: &EventSubscriber,
     device_present: &Arc<AtomicBool>,
+    write_lock: &WriteLock,
 ) {
     let write_stream = match stream.try_clone() {
         Ok(s) => s,
@@ -178,6 +182,7 @@ fn handle_client(
             effects_tx,
             subscriber,
             device_present,
+            write_lock,
             &out_tx,
         )
         .is_err()
@@ -210,6 +215,7 @@ fn dispatch(
     effects_tx: &Sender<SideEffects>,
     subscriber: &EventSubscriber,
     device_present: &Arc<AtomicBool>,
+    write_lock: &WriteLock,
     out_tx: &SyncSender<DriverToGui>,
 ) -> Result<(), ()> {
     match req {
@@ -218,40 +224,49 @@ fn dispatch(
             seq,
             delta,
             persist,
-        } => match apply_delta(handle, *delta, persist_base, persist_path, persist) {
-            Ok(effects) => {
-                // Only queue hardware side effects when a device is present to
-                // apply them. With no device the loop isn't draining the channel,
-                // so queued effects would grow unbounded and be discarded on the
-                // next connect anyway — startup preferences re-push the persisted
-                // settings to a freshly opened device.
-                if device_present.load(Ordering::Acquire) {
-                    let _ = effects_tx.send(effects);
+        } => {
+            let applied = {
+                let _guard = write_lock.lock().unwrap();
+                apply_delta(handle, *delta, persist_base, persist_path, persist)
+            };
+            match applied {
+                Ok(effects) => {
+                    // Only queue hardware side effects when a device is present to
+                    // apply them. With no device the loop isn't draining the channel,
+                    // so queued effects would grow unbounded and be discarded on the
+                    // next connect anyway — startup preferences re-push the persisted
+                    // settings to a freshly opened device.
+                    if device_present.load(Ordering::Acquire) {
+                        let _ = effects_tx.send(effects);
+                    }
+                    out_tx
+                        .send(DriverToGui::Ack {
+                            seq,
+                            result: Ok(()),
+                        })
+                        .map_err(|_| ())?;
+                    // Only push the authoritative snapshot on a persisted (commit)
+                    // apply. Live-preview drags (persist=false) fire many applies per
+                    // second; the GUI already merged each optimistically, so echoing
+                    // a full snapshot per tick would flood the socket and could snap
+                    // the value back to a stale in-flight snapshot mid-drag.
+                    if persist {
+                        out_tx.send(snapshot(handle)).map_err(|_| ())?;
+                    }
                 }
-                out_tx
+                Err(message) => out_tx
                     .send(DriverToGui::Ack {
                         seq,
-                        result: Ok(()),
+                        result: Err(message),
                     })
-                    .map_err(|_| ())?;
-                // Only push the authoritative snapshot on a persisted (commit)
-                // apply. Live-preview drags (persist=false) fire many applies per
-                // second; the GUI already merged each optimistically, so echoing
-                // a full snapshot per tick would flood the socket and could snap
-                // the value back to a stale in-flight snapshot mid-drag.
-                if persist {
-                    out_tx.send(snapshot(handle)).map_err(|_| ())?;
-                }
+                    .map_err(|_| ())?,
             }
-            Err(message) => out_tx
-                .send(DriverToGui::Ack {
-                    seq,
-                    result: Err(message),
-                })
-                .map_err(|_| ())?,
-        },
+        }
         GuiToDriver::Persist { seq } => {
-            let result = persist_current(handle, persist_base, persist_path);
+            let result = {
+                let _guard = write_lock.lock().unwrap();
+                persist_current(handle, persist_base, persist_path)
+            };
             let ok = result.is_ok();
             out_tx
                 .send(DriverToGui::Ack { seq, result })

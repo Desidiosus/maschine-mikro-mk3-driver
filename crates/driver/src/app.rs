@@ -66,6 +66,7 @@ pub fn run(loaded: crate::settings::LoadedConfig) -> DriverResult<()> {
     } = loaded;
     let shared = new_shared(settings);
     let persist_base = std::sync::Arc::new(persist_base);
+    let write_lock = crate::settings::writer::new_write_lock();
 
     // Bind the IPC socket FIRST so the GUI can always connect and edit config,
     // even before/without a device. Settings applies + persistence work without
@@ -82,6 +83,7 @@ pub fn run(loaded: crate::settings::LoadedConfig) -> DriverResult<()> {
         subscriber.clone(),
         socket_path,
         device_present.clone(),
+        write_lock,
     )?;
 
     install_shutdown_signal_handlers()?;
