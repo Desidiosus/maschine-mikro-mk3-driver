@@ -104,6 +104,20 @@ impl<S: MidiSink> MidiBackend<S> {
         &self.sink
     }
 
+    /// Mark a pad as consumed by the page picker: it has no sounding note and must
+    /// stay silent until its next real press. Without this, the pad's trailing
+    /// pressure ramp (which continues after the tap, and after `Group` is released)
+    /// would fall through to current-page resolution and emit poly pressure for a
+    /// tap that was only a page selection.
+    pub fn mark_picker_tap(&mut self, index: usize) {
+        if let Some(slot) = self.held.get_mut(index) {
+            *slot = Some(HeldPad {
+                note: None,
+                pressure: None,
+            });
+        }
+    }
+
     #[cfg(test)]
     pub fn replace_settings_for_test(&mut self, settings: Settings) {
         self.settings.store(std::sync::Arc::new(settings));
@@ -1188,6 +1202,153 @@ mod tests {
             vec![0xA0, 48, 0],
             "the trailing pressure-0 reading must reach the DAW to reset poly pressure"
         );
+    }
+
+    #[test]
+    fn the_trailing_ramp_after_a_page_switch_resets_the_note_that_was_played() {
+        // Pad held across a page switch, then released. The device keeps ramping
+        // pressure down afterwards; that tail must reset the note that actually
+        // sounded, not poke a note on the new page that was never played.
+        let rt = crate::runtime_state::RuntimeState::default();
+        let mut settings = two_page_settings_different_notes();
+        for page in settings.pad_paging.pages.iter_mut() {
+            page.pads.0[0].pressure = PadPressureAction::Poly {
+                channel: None,
+                note: None,
+            };
+        }
+        let mut backend =
+            MidiBackend::with_sink(settings.clone(), CapturingSink { sent: Vec::new() });
+
+        backend
+            .handle_event(
+                &ControlEvent::PadNoteOn {
+                    index: 0,
+                    velocity: 100,
+                },
+                &rt,
+            )
+            .unwrap();
+
+        // Group hold + page tap while the pad is still down.
+        let mut switched = settings.clone();
+        switched.pad_paging.active = 1;
+        backend.replace_settings_for_test(switched);
+
+        backend
+            .handle_event(
+                &ControlEvent::PadNoteOff {
+                    index: 0,
+                    velocity: 0,
+                },
+                &rt,
+            )
+            .unwrap();
+        for pressure in [12u8, 0] {
+            backend
+                .handle_event(&ControlEvent::PadAftertouch { index: 0, pressure }, &rt)
+                .unwrap();
+        }
+
+        let sent = &backend.sink().sent;
+        assert_eq!(sent.len(), 4);
+        assert_eq!(sent[1], vec![0x80, 60, 0], "the pressed note is released");
+        assert_eq!(sent[2], vec![0xA0, 60, 12]);
+        assert_eq!(
+            sent[3],
+            vec![0xA0, 60, 0],
+            "the ramp must zero the note that sounded, not note 72 on the new page"
+        );
+
+        // The ramp is over: the pad's next press resolves against the new page.
+        backend
+            .handle_event(
+                &ControlEvent::PadNoteOn {
+                    index: 0,
+                    velocity: 100,
+                },
+                &rt,
+            )
+            .unwrap();
+        assert_eq!(backend.sink().sent[4], vec![0x90, 72, 100]);
+    }
+
+    #[test]
+    fn mark_picker_tap_silences_trailing_aftertouch_and_note_off() {
+        // Regression: a picker-tapped pad's trailing pressure ramp (which
+        // continues after Group is released) must not fall back to
+        // current-page resolution and emit poly pressure for a tap that was
+        // only a page selection.
+        let s = settings_with_pad_pressure_enabled(0, 0, None);
+        let mut backend = MidiBackend::with_sink(s, CapturingSink { sent: Vec::new() });
+
+        backend.mark_picker_tap(0);
+
+        let aftertouch_sent = backend
+            .handle_event(
+                &ControlEvent::PadAftertouch {
+                    index: 0,
+                    pressure: 100,
+                },
+                &rt(),
+            )
+            .unwrap();
+        assert!(
+            !aftertouch_sent,
+            "a picker-tapped pad's trailing aftertouch must stay silent"
+        );
+
+        let note_off_sent = backend
+            .handle_event(
+                &ControlEvent::PadNoteOff {
+                    index: 0,
+                    velocity: 0,
+                },
+                &rt(),
+            )
+            .unwrap();
+        assert!(!note_off_sent, "a picker-tapped pad emits no note-off");
+
+        assert!(backend.sink().sent.is_empty());
+    }
+
+    #[test]
+    fn mark_picker_tap_does_not_block_the_pads_next_real_press() {
+        let s = settings_with_pad_pressure_enabled(0, 0, None);
+        let mut backend = MidiBackend::with_sink(s, CapturingSink { sent: Vec::new() });
+
+        backend.mark_picker_tap(0);
+
+        let note_on_sent = backend
+            .handle_event(
+                &ControlEvent::PadNoteOn {
+                    index: 0,
+                    velocity: 100,
+                },
+                &rt(),
+            )
+            .unwrap();
+        assert!(note_on_sent, "the pad's next real press must emit normally");
+
+        let aftertouch_sent = backend
+            .handle_event(
+                &ControlEvent::PadAftertouch {
+                    index: 0,
+                    pressure: 90,
+                },
+                &rt(),
+            )
+            .unwrap();
+        assert!(
+            aftertouch_sent,
+            "aftertouch after a real press uses the press-time target"
+        );
+
+        let sent = &backend.sink().sent;
+        assert_eq!(sent.len(), 2);
+        // pads[0].hit.note default = 48
+        assert_eq!(sent[0], vec![0x90, 48, 100]);
+        assert_eq!(sent[1], vec![0xA0, 48, 90]);
     }
 
     #[test]

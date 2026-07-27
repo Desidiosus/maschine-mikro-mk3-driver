@@ -1,6 +1,7 @@
 use maschine_library::controls::Buttons;
 use maschine_library::lights::{Brightness, PadColors};
 use settings::PadPaging;
+use settings::pads_by_index::internal_to_config_key;
 
 use crate::events::ControlEvent;
 use crate::outputs::DeviceOutputs;
@@ -82,18 +83,27 @@ impl PagingState {
                 }
             }
             ControlEvent::PadNoteOn { index, .. } if self.group_pressed => {
-                if *index < page_count {
-                    self.pending_active = Some(*index);
-                    PagingAction::SelectPage(*index)
-                } else {
-                    PagingAction::Swallow
+                match page_for_pad(*index) {
+                    // Out of range, or already the pending page — nothing changes.
+                    Some(page) if page < page_count && self.pending_active != Some(page) => {
+                        self.pending_active = Some(page);
+                        PagingAction::SelectPage(page)
+                    }
+                    _ => PagingAction::Swallow,
                 }
             }
-            ControlEvent::PadNoteOff { .. } | ControlEvent::PadAftertouch { .. }
-                if self.group_pressed =>
-            {
-                PagingAction::Swallow
-            }
+            // NOTE: pad NoteOff is deliberately NOT swallowed while the picker is
+            // open. A pad pressed before the hold has an outstanding note that must
+            // still be released; the backend only emits a NoteOff for pads with a
+            // held note, so picker taps (whose NoteOn was swallowed) stay silent.
+            //
+            // Aftertouch is different: the backend now falls back to resolving
+            // aftertouch against the current page when there is no held note (the
+            // device ramps pressure before/after a hit), so a picker tap's
+            // aftertouch would otherwise resolve and emit MIDI. Swallow it here to
+            // keep picker taps silent; a note held from before the Group hold
+            // simply stops receiving pressure updates for the duration of the hold.
+            ControlEvent::PadAftertouch { .. } if self.group_pressed => PagingAction::Swallow,
             _ => PagingAction::None,
         }
     }
@@ -105,23 +115,31 @@ impl Default for PagingState {
     }
 }
 
-/// Render the page picker onto the 16 pad LEDs: pad `N` shows page `N`'s resolved
-/// color, the `pending_active` pad is bright and other in-range pads are dim, and
-/// pads past the page count are off.
+/// Page shown on the pad at native LED index `pad`, laid out in the device's
+/// printed pad numbering: page 1 on physical pad 1 (bottom-left), running left to
+/// right and bottom to top. `None` for an index outside the 4x4 grid.
+fn page_for_pad(pad: usize) -> Option<usize> {
+    (pad < 16).then(|| internal_to_config_key(pad) - 1)
+}
+
+/// Render the page picker onto the 16 pad LEDs: physical pad `N` shows page `N`'s
+/// resolved color, the `pending_active` pad is bright and other in-range pads are
+/// dim, and pads past the page count are off.
 pub fn render_picker(outputs: &DeviceOutputs, paging: &PadPaging, pending_active: usize) {
     outputs.with_lights_mut(|lights| {
-        for index in 0..16 {
-            match paging.pages.get(index) {
+        for pad in 0..16 {
+            let page_index = page_for_pad(pad).expect("pad index is within the 4x4 grid");
+            match paging.pages.get(page_index) {
                 Some(page) => {
                     let color = paging.page_color(page);
-                    let brightness = if index == pending_active {
+                    let brightness = if page_index == pending_active {
                         Brightness::Bright
                     } else {
                         Brightness::Dim
                     };
-                    lights.set_pad(index, color, brightness);
+                    lights.set_pad(pad, color, brightness);
                 }
-                None => lights.set_pad(index, PadColors::Off, Brightness::Off),
+                None => lights.set_pad(pad, PadColors::Off, Brightness::Off),
             }
         }
     });
@@ -130,6 +148,7 @@ pub fn render_picker(outputs: &DeviceOutputs, paging: &PadPaging, pending_active
 #[cfg(test)]
 mod tests {
     use super::*;
+    use settings::pads_by_index::config_key_to_internal;
 
     fn group(pressed: bool) -> ControlEvent {
         ControlEvent::ButtonChanged {
@@ -155,7 +174,7 @@ mod tests {
         );
         assert!(p.is_picking());
         assert_eq!(
-            p.observe_event(0, 4, &pad_on(2)),
+            p.observe_event(0, 4, &pad_on(config_key_to_internal(3))),
             PagingAction::SelectPage(2)
         );
         assert_eq!(p.pending_active(), Some(2));
@@ -181,9 +200,53 @@ mod tests {
     fn pad_beyond_page_count_is_swallowed_not_selected() {
         let mut p = PagingState::new();
         p.observe_event(0, 2, &group(true));
-        // Only 2 pages exist; pad 5 must not select a nonexistent page.
-        assert_eq!(p.observe_event(0, 2, &pad_on(5)), PagingAction::Swallow);
+        // Only 2 pages exist; physical pad 5 must not select a nonexistent page.
+        assert_eq!(
+            p.observe_event(0, 2, &pad_on(config_key_to_internal(5))),
+            PagingAction::Swallow
+        );
         assert_eq!(p.pending_active(), Some(0));
+    }
+
+    #[test]
+    fn pad_release_is_forwarded_while_picking_so_held_notes_can_stop() {
+        let mut p = PagingState::new();
+        p.observe_event(0, 4, &group(true));
+        let off = ControlEvent::PadNoteOff {
+            index: 3,
+            velocity: 0,
+        };
+        assert_eq!(
+            p.observe_event(0, 4, &off),
+            PagingAction::None,
+            "a pad release must reach the backend so an outstanding note is released"
+        );
+    }
+
+    #[test]
+    fn aftertouch_is_swallowed_while_picking_but_note_off_still_forwards() {
+        let mut p = PagingState::new();
+        p.observe_event(0, 4, &group(true));
+
+        let aftertouch = ControlEvent::PadAftertouch {
+            index: 3,
+            pressure: 50,
+        };
+        assert_eq!(
+            p.observe_event(0, 4, &aftertouch),
+            PagingAction::Swallow,
+            "a picker tap's aftertouch must not resolve to MIDI"
+        );
+
+        let off = ControlEvent::PadNoteOff {
+            index: 3,
+            velocity: 0,
+        };
+        assert_eq!(
+            p.observe_event(0, 4, &off),
+            PagingAction::None,
+            "a pad release must still reach the backend so an outstanding note is released"
+        );
     }
 
     #[test]
@@ -201,9 +264,73 @@ mod tests {
         let mut p = PagingState::new();
         p.observe_event(0, 4, &group(true));
         assert!(p.is_picking());
+
+        // Soft-off (or a disable) tears the hold down without a release edge.
         p.reset();
         assert!(!p.is_picking());
         assert_eq!(p.pending_active(), None);
+
+        // The physical release arrives later; it must not close a picker that
+        // is no longer open, must not be treated as a page commit, and must not
+        // reach the backend as an unpaired `Group` CC release.
+        assert_eq!(p.observe_event(0, 4, &group(false)), PagingAction::Swallow);
+        assert!(!p.is_picking());
+    }
+
+    #[test]
+    fn tapping_the_already_selected_page_does_not_reselect() {
+        let mut p = PagingState::new();
+        // Opens with active page 2 pending.
+        assert_eq!(
+            p.observe_event(2, 4, &group(true)),
+            PagingAction::OpenPicker
+        );
+        // Tapping physical pad 3 (already pending) must not emit another SelectPage.
+        assert_eq!(
+            p.observe_event(2, 4, &pad_on(config_key_to_internal(3))),
+            PagingAction::Swallow
+        );
+        // Tapping a different page still selects.
+        assert_eq!(
+            p.observe_event(2, 4, &pad_on(config_key_to_internal(2))),
+            PagingAction::SelectPage(1)
+        );
+        // Tapping it again is now a no-op too.
+        assert_eq!(
+            p.observe_event(2, 4, &pad_on(config_key_to_internal(2))),
+            PagingAction::Swallow
+        );
+    }
+
+    #[test]
+    fn the_first_page_sits_on_physical_pad_1() {
+        let outputs = DeviceOutputs::new();
+        let mut paging = settings::pad_paging::default_pad_paging();
+        paging.default_page_color = PadColors::Cyan;
+
+        render_picker(&outputs, &paging, 0);
+
+        assert_eq!(
+            outputs.with_lights(|l| l.get_pad(config_key_to_internal(1))),
+            (PadColors::Cyan, Brightness::Bright),
+            "page 1 belongs on physical pad 1 (bottom-left)"
+        );
+        assert_eq!(
+            outputs.with_lights(|l| l.get_pad(config_key_to_internal(13))),
+            (PadColors::Off, Brightness::Off),
+            "physical pad 13 (top-left) has no page in a one-page config"
+        );
+    }
+
+    #[test]
+    fn tapping_physical_pad_1_selects_the_first_page() {
+        let mut p = PagingState::new();
+        p.observe_event(1, 4, &group(true));
+        assert_eq!(
+            p.observe_event(1, 4, &pad_on(config_key_to_internal(1))),
+            PagingAction::SelectPage(0),
+            "the bottom-left pad selects page 1"
+        );
     }
 
     #[test]
@@ -215,19 +342,19 @@ mod tests {
 
         render_picker(&outputs, &paging, 1);
 
-        // Page 0: in range, not pending → dim, default color.
+        // Page 0 on physical pad 1: in range, not pending → dim, default color.
         assert_eq!(
-            outputs.with_lights(|l| l.get_pad(0)),
+            outputs.with_lights(|l| l.get_pad(config_key_to_internal(1))),
             (PadColors::Cyan, Brightness::Dim)
         );
-        // Page 1: pending → bright.
+        // Page 1 on physical pad 2: pending → bright.
         assert_eq!(
-            outputs.with_lights(|l| l.get_pad(1)),
+            outputs.with_lights(|l| l.get_pad(config_key_to_internal(2))),
             (PadColors::Cyan, Brightness::Bright)
         );
-        // Pad 2: no page → off.
+        // Physical pad 3: no page → off.
         assert_eq!(
-            outputs.with_lights(|l| l.get_pad(2)),
+            outputs.with_lights(|l| l.get_pad(config_key_to_internal(3))),
             (PadColors::Off, Brightness::Off)
         );
     }

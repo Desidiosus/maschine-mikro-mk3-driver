@@ -144,6 +144,27 @@ pub fn save_overrides(path: &Path, settings: &Settings, base: &Settings) -> Resu
     write_atomically(path, &body)
 }
 
+/// Set `pad_paging.active` in the overrides already on disk, leaving every other
+/// key exactly as it was written. Persisting the live settings instead would
+/// also commit values that are deliberately live-only (a GUI slider mid-drag
+/// applies with `persist = false`), which matters for the hardware page commit:
+/// it is drained during shutdown, after the GUI is gone, so nothing would ever
+/// correct a preview value written that way.
+pub fn save_active_page(path: &Path, active: usize) -> Result<(), String> {
+    let mut overrides = if path.exists() {
+        read_partial(path)?
+    } else {
+        PartialSettings::default()
+    };
+    overrides
+        .pad_paging
+        .get_or_insert_with(Default::default)
+        .active = Some(active);
+    let body = toml::to_string(&overrides)
+        .map_err(|err| format!("failed to serialize settings: {err}"))?;
+    write_atomically(path, &body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::xdg_config_path_for;

@@ -7,4 +7,4 @@ pub mod persist;
 pub use persist::{LoadedConfig, load_config, load_xdg};
 
 pub mod writer;
-pub use writer::{WriteLock, new_write_lock};
+pub use writer::{PageApplyMsg, WriteLock, new_write_lock, spawn_page_apply_writer};
