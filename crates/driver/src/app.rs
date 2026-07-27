@@ -303,6 +303,8 @@ fn run_device_session<D: HidIo>(
     let mut midi_send_failed = false;
 
     let mut paging = crate::paging::PagingState::new();
+    let mut indicator = PageIndicator::new();
+    let mut last_active = settings.load().pad_paging.active;
     // True once a Preview was sent this hold, so Group release commits exactly one
     // persist (and only when the page actually moved).
     let mut sent_preview = false;
@@ -530,6 +532,31 @@ fn run_device_session<D: HidIo>(
             picker_rendered_at = None;
         }
 
+        // Screen page indicator, driven by observing the active-page change from
+        // any source (hardware writer thread or IPC). Never paint a soft-off
+        // -blanked device, and never flash a fresh overlay while paging is
+        // disabled — but keep ticking so an overlay already in flight still
+        // expires even if paging is disabled mid-overlay.
+        if !soft_off_sync.is_active() {
+            let now = Instant::now();
+            if snapshot.pad_paging.enabled {
+                let current_active = snapshot.pad_paging.active;
+                if current_active != last_active {
+                    last_active = current_active;
+                    // Same resolution the GUI shows, so a page never reads one
+                    // way on the device screen and another in the app.
+                    let label = snapshot.pad_paging.display_name(current_active);
+                    indicator.show(outputs, &label, now);
+                }
+            } else {
+                // Keep tracking the active page while paging is disabled so
+                // re-enabling it later doesn't fire a stale indicator for a
+                // change that happened while it was off.
+                last_active = snapshot.pad_paging.active;
+            }
+            indicator.tick(outputs, now);
+        }
+
         if let Some(released_at) = slider_released_at
             && auto_off > 0
             && released_at.elapsed() >= Duration::from_millis(auto_off)
@@ -669,6 +696,142 @@ pub fn prepare_startup_outputs(outputs: &DeviceOutputs, settings: &Settings) {
     outputs.with_screen_mut(|screen| render_centered_text(screen, "MIDI MODE"));
     initialize_button_backlight(outputs, settings);
     initialize_pad_leds(outputs, settings);
+}
+
+/// A brief on-screen page-name overlay, restored to the prior screen after a
+/// short delay. Snapshots the screen only when a fresh overlay starts, so
+/// back-to-back page changes during a Group sweep extend the deadline without
+/// capturing the overlay itself.
+struct PageIndicator {
+    snapshot: Option<Screen>,
+    /// Exactly what the overlay drew. On expiry the previous screen is restored
+    /// only if the live screen still matches this — otherwise the DAW (or any
+    /// other writer) has taken the screen since, and its content wins.
+    rendered: Option<Screen>,
+    until: Option<Instant>,
+}
+
+impl PageIndicator {
+    const DURATION: Duration = Duration::from_millis(800);
+
+    fn new() -> Self {
+        Self {
+            snapshot: None,
+            rendered: None,
+            until: None,
+        }
+    }
+
+    fn show(&mut self, outputs: &DeviceOutputs, label: &str, now: Instant) {
+        // One lock hold: snapshot, draw, and capture what we drew, so a
+        // concurrent DAW write can't land between the draw and the capture and
+        // poison the comparison `tick` later relies on.
+        outputs.with_screen_mut(|screen| {
+            if self.until.is_none() {
+                self.snapshot = Some(screen.clone());
+            }
+            render_centered_text(screen, label);
+            self.rendered = Some(screen.clone());
+        });
+        self.until = Some(now + Self::DURATION);
+    }
+
+    fn tick(&mut self, outputs: &DeviceOutputs, now: Instant) {
+        if let Some(deadline) = self.until
+            && now >= deadline
+        {
+            // Compare and restore under one lock hold, so a write can't slip in
+            // after the check and get clobbered by the restore.
+            outputs.with_screen_mut(|live| {
+                let untouched = self.rendered.as_ref().is_some_and(|drawn| live == drawn);
+                if untouched && let Some(screen) = self.snapshot.take() {
+                    *live = screen;
+                }
+            });
+            // Discard the snapshot if it wasn't consumed above: someone else owns
+            // the screen now and must not be reverted by a later tick.
+            self.snapshot = None;
+            self.rendered = None;
+            self.until = None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod page_indicator_tests {
+    use super::*;
+
+    #[test]
+    fn restore_is_skipped_when_something_else_wrote_the_screen() {
+        let outputs = DeviceOutputs::new();
+        outputs.with_screen_mut(|s| render_centered_text(s, "MIDI MODE"));
+        let original = outputs.with_screen(Clone::clone);
+
+        let mut indicator = PageIndicator::new();
+        let t0 = Instant::now();
+        indicator.show(&outputs, "Page 2", t0);
+
+        // The DAW writes the screen while the overlay is up (midir thread).
+        outputs.with_screen_mut(|s| render_centered_text(s, "DAW TEXT"));
+        let daw = outputs.with_screen(Clone::clone);
+
+        indicator.tick(&outputs, t0 + PageIndicator::DURATION);
+
+        assert_eq!(
+            outputs.with_screen(Clone::clone),
+            daw,
+            "a concurrent DAW screen write must not be reverted by the indicator"
+        );
+        assert_ne!(outputs.with_screen(Clone::clone), original);
+    }
+
+    #[test]
+    fn restore_happens_when_the_overlay_is_untouched() {
+        let outputs = DeviceOutputs::new();
+        outputs.with_screen_mut(|s| render_centered_text(s, "MIDI MODE"));
+        let original = outputs.with_screen(Clone::clone);
+
+        let mut indicator = PageIndicator::new();
+        let t0 = Instant::now();
+        indicator.show(&outputs, "Page 2", t0);
+        indicator.tick(&outputs, t0 + PageIndicator::DURATION);
+
+        assert_eq!(
+            outputs.with_screen(Clone::clone),
+            original,
+            "an untouched overlay restores the previous screen"
+        );
+    }
+
+    #[test]
+    fn tick_expires_the_overlay_even_without_a_follow_up_show() {
+        // Simulates paging being disabled mid-overlay: the run loop stops
+        // calling `show` (no page changes are being observed), but must keep
+        // calling `tick` so an in-flight overlay still expires instead of
+        // sticking on the physical screen forever.
+        let outputs = DeviceOutputs::new();
+        outputs.with_screen_mut(|s| render_centered_text(s, "MIDI MODE"));
+        let original = outputs.with_screen(Clone::clone);
+
+        let mut indicator = PageIndicator::new();
+        let t0 = Instant::now();
+        indicator.show(&outputs, "Page 2", t0);
+
+        indicator.tick(&outputs, t0 + PageIndicator::DURATION / 2);
+        assert_ne!(
+            outputs.with_screen(Clone::clone),
+            original,
+            "overlay should still be showing before the deadline"
+        );
+
+        indicator.tick(&outputs, t0 + PageIndicator::DURATION);
+        assert_eq!(
+            outputs.with_screen(Clone::clone),
+            original,
+            "ticking past the deadline restores the pre-overlay screen even \
+             without another show()"
+        );
+    }
 }
 
 #[cfg(test)]
