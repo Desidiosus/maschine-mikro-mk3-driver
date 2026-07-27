@@ -199,8 +199,41 @@ pub fn run_with_device<D: HidIo>(
 /// Run one device session. Returns when the device is lost (HID error) or a
 /// shutdown is requested. Never propagates a HID error so the caller can
 /// re-acquire the device without tearing down long-lived state.
+///
+/// Wraps `run_device_session` so every exit path — shutdown, device loss, any
+/// of the several `DeviceLost` returns inside the session — flushes held notes
+/// exactly once on the way out. Soft-off and unplug both swallow or never
+/// deliver the physical release, so without this a stale `held` entry would
+/// survive into the next session on this backend.
 #[allow(clippy::too_many_arguments)]
 fn run_device_loop<D: HidIo>(
+    settings: &SharedSettings,
+    device: &D,
+    shutdown_requested: &AtomicBool,
+    effects_rx: &Receiver<SideEffects>,
+    subscriber: &EventSubscriber,
+    soft_off: &mut SoftOffState,
+    runtime_state: &crate::runtime_state::RuntimeState,
+    backend: &mut MidiBackend,
+    outputs: &DeviceOutputs,
+) -> SessionEnd {
+    let end = run_device_session(
+        settings,
+        device,
+        shutdown_requested,
+        effects_rx,
+        subscriber,
+        soft_off,
+        runtime_state,
+        backend,
+        outputs,
+    );
+    let _ = backend.flush_held_notes();
+    end
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_device_session<D: HidIo>(
     settings: &SharedSettings,
     device: &D,
     shutdown_requested: &AtomicBool,
@@ -240,6 +273,9 @@ fn run_device_loop<D: HidIo>(
     // Tracks whether MIDI output is currently failing, so a broken port is logged
     // once (not once per event) and again only after it recovers.
     let mut midi_send_failed = false;
+    // Tracks soft-off state across iterations so the sleep edge fires exactly
+    // once per transition.
+    let mut was_asleep = false;
 
     while !shutdown_requested.load(Ordering::Relaxed) {
         // Apply any pending hardware side effects from IPC applies (HID is
@@ -344,6 +380,14 @@ fn run_device_loop<D: HidIo>(
                 }
             }
         }
+
+        let asleep = soft_off_sync.is_active();
+        if !was_asleep && asleep {
+            // Releases are swallowed while asleep; don't leave hung notes or
+            // stale held state behind.
+            let _ = backend.flush_held_notes();
+        }
+        was_asleep = asleep;
 
         if let Some(released_at) = slider_released_at
             && auto_off > 0
