@@ -39,27 +39,19 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.resync_pending || state.last_acked_seq >= state.seq {
                 // Every persisted apply is answered with an ack *and* a full
                 // snapshot, so most adoptions are the driver echoing back the
-                // page list the GUI already shows. Transient row gestures
-                // address rows by index, so they only have to be dropped when
-                // the adopted list actually differs from the one they were
-                // started against — an identical echo moves no row.
-                let pages_changed = state
-                    .settings
-                    .as_ref()
-                    .is_none_or(|current| current.pad_paging != snapshot.pad_paging);
+                // rows the GUI already shows. Row gestures address rows by
+                // index, so they only have to be dropped when the adopted row
+                // list itself differs — a hardware page switch pushes a
+                // snapshot per pad tap while Group is held, and that moves
+                // `active` without invalidating a single index.
+                let rows_changed = state.settings.as_ref().is_none_or(|current| {
+                    current.pad_paging.enabled != snapshot.pad_paging.enabled
+                        || current.pad_paging.pages != snapshot.pad_paging.pages
+                });
                 state.settings = Some(snapshot);
                 state.resync_pending = false;
-                if pages_changed {
-                    // An adopted snapshot can shrink or reorder
-                    // `pad_paging.pages` out from under an open
-                    // delete-confirmation dialog, so drop it rather than risk
-                    // it confirming against a page that has moved or no longer
-                    // exists.
-                    state.confirm_delete_page = None;
-                    // Same for an in-progress rename: a snapshot can leave
-                    // `editing_page_name` pointing at a row that moved or no
-                    // longer exists.
-                    state.editing_page_name = None;
+                if rows_changed {
+                    clear_page_gestures(state);
                 }
             }
         }
@@ -69,7 +61,10 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = format!("apply rejected: {message}");
                 if seq == state.seq && state.authoritative.is_some() {
                     // Latest apply rejected, nothing newer in flight: revert now.
+                    // The revert can shrink the row list (a rejected `AddPage`),
+                    // so the index-addressed gestures go with it.
                     state.settings = state.authoritative.clone();
+                    clear_page_gestures(state);
                 } else {
                     // An older apply was rejected while a newer edit is in flight:
                     // reverting to `authoritative` would lose the newer edit, so
@@ -277,6 +272,12 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.persist_current();
                 }
             }
+            if state.page_name_debounce > 0 {
+                state.page_name_debounce -= 1;
+                if state.page_name_debounce == 0 {
+                    flush_page_name(state);
+                }
+            }
         }
         Message::NumericCommit(field) => {
             let s = std::mem::take(&mut state.edit_text);
@@ -422,26 +423,32 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SetPadLedSource(source) => state.apply_pad_led_source(source),
         Message::SetPadLedMode(tab, mode) => state.apply_pad_led_mode(tab, mode),
         Message::SetPadLedColor(tab, slot, color) => state.apply_pad_led_color(tab, slot, color),
-        Message::SetInspectorTab(tab) => state.inspector_tab = tab,
+        Message::SetInspectorTab(tab) => {
+            // Leaving the Pages tab destroys the rename `text_input` and every
+            // row `mouse_area`, so none of them can ever report back: commit the
+            // open rename now, and drop the gestures no row is left to end.
+            commit_open_page_rename(state);
+            clear_page_gestures(state);
+            state.inspector_tab = tab;
+        }
         Message::SetPagingEnabled(enabled) => {
+            commit_open_page_rename(state);
             state.apply_pad_paging(true, |p| p.enabled = enabled);
-            // Disabling paging removes the row list from the view entirely, so
-            // an open delete-confirmation dialog has nothing left to confirm
-            // against and an open rename field has no row left to render it.
-            // Clearing unconditionally (not just on disable) is simplest and
-            // always safe.
-            state.confirm_delete_page = None;
-            state.editing_page_name = None;
+            // Disabling paging removes the row list from the view entirely,
+            // leaving every row gesture with no row able to end it. Clearing
+            // unconditionally (not just on disable) is simplest and always
+            // safe: a real gesture mid-toggle has lost its visual footing
+            // either way.
+            clear_page_gestures(state);
         }
         Message::SelectPage(index) => {
             // Switching the active page must not leave an in-progress Assign
             // edit (or a debounce armed to flush it) pointed at the page that
             // was active when the user started typing.
+            commit_open_page_rename(state);
             state.reset_assign_edit();
             state.persist_debounce = 0;
             state.apply_pad_paging(true, |p| p.active = index);
-            // Nor a rename left open on the page being switched away from.
-            state.editing_page_name = None;
         }
         Message::SetDefaultPageColor(color) => {
             state.apply_pad_paging(true, |p| p.default_page_color = color)
@@ -458,47 +465,172 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::CancelDeletePage => state.confirm_delete_page = None,
         Message::SetPageName(i, name) => {
-            // No trim here: `text_input` is fully controlled and its value comes
-            // from `page.name`, so trimming each keystroke would swallow spaces
-            // and make multi-word names impossible to type. Trimmed on commit.
-            state.apply_pad_paging(false, move |pp| {
-                if let Some(page) = pp.pages.get_mut(i) {
-                    page.name = if name.is_empty() { None } else { Some(name) };
-                }
-            });
-            state.persist_debounce = crate::app::PERSIST_DEBOUNCE_TICKS;
+            // Keystrokes stay in the GUI: the field renders from `page_name_text`,
+            // so the driver hears one applied name per quiet window instead of one
+            // per character. Untrimmed here — the raw text is what the user is
+            // typing into; only what gets stored is trimmed.
+            if state.editing_page_name == Some(i) {
+                state.page_name_text = name;
+                state.page_name_debounce = crate::app::PERSIST_DEBOUNCE_TICKS;
+            }
         }
-        Message::CommitPageName(i) => {
-            state.apply_pad_paging(true, move |pp| {
-                let Some(current) = pp.pages.get(i).map(|p| p.name.clone().unwrap_or_default())
-                else {
-                    return;
-                };
-                let trimmed = current.trim().to_string();
-                // Committing to empty is a deliberate reset, not a return to a
-                // placeholder: the page gets a fresh default letter name so the
-                // field is never blank and never position-derived.
-                let name = if trimmed.is_empty() {
-                    crate::app::page_ops::next_page_name(pp)
-                } else {
-                    trimmed
-                };
-                if let Some(page) = pp.pages.get_mut(i) {
-                    page.name = Some(name);
-                }
-            });
-            state.persist_debounce = 0;
-            state.editing_page_name = None;
-        }
+        Message::CommitPageName(i) => commit_page_name(state, i),
         Message::BeginRenamePage(i) => {
+            // Seed the field from the stored name; from here on it is the text
+            // buffer, not `settings`, that the row renders.
+            state.page_name_text = state
+                .settings
+                .as_ref()
+                .and_then(|s| s.pad_paging.pages.get(i))
+                .and_then(|page| page.name.clone())
+                .unwrap_or_default();
+            state.page_name_debounce = 0;
             state.editing_page_name = Some(i);
             task = iced::widget::operation::focus(
                 crate::inspector::pages::view::page_name_input_id(i),
             );
         }
+        Message::PageDragStart(i) => {
+            state.page_drag = Some(crate::app::PageDrag {
+                from: i,
+                over: None,
+            })
+        }
+        Message::PageRowEntered(j) => {
+            state.hovered_page = Some(j);
+            if let Some(drag) = state.page_drag.as_mut() {
+                drag.over = Some(j);
+            }
+        }
+        Message::PageRowExited(j) => {
+            // Guarded so the exit of the row just left can't erase the enter
+            // of the row just crossed into — event order between adjacent
+            // mouse_areas isn't guaranteed.
+            if state.hovered_page == Some(j) {
+                state.hovered_page = None;
+            }
+        }
+        Message::PageDragDrop => {
+            if let Some(drag) = state.page_drag.take() {
+                // Defense in depth: `page_drag` is cleared wherever it could
+                // otherwise be orphaned (a settings resync, paging toggled
+                // off), but a stale `from`/`over` must never be able to
+                // mutate page order even if some future path misses that.
+                let page_count = state
+                    .settings
+                    .as_ref()
+                    .map_or(0, |s| s.pad_paging.pages.len());
+                let in_range = drag.from < page_count && drag.over.is_none_or(|to| to < page_count);
+                if in_range {
+                    match drag.over {
+                        Some(to) if to != drag.from => {
+                            // `editing_page_name` is a raw slot index, which a
+                            // reorder invalidates: the row now open for rename
+                            // may hold a different page after the move. Commit
+                            // and close it against the pre-reorder indices
+                            // rather than reindex it.
+                            commit_open_page_rename(state);
+                            state.apply_pad_paging(true, move |pp| {
+                                crate::app::page_ops::reorder(pp, drag.from, to)
+                            });
+                        }
+                        // No effective move (plain click, or a drag that
+                        // returned to its origin row): treat the release as a
+                        // selection, since the row's own button no longer
+                        // carries `on_press`.
+                        _ => {
+                            // Keep a rename the double-click ending in this
+                            // very release just opened on the same row; a
+                            // click landing on any other row commits it.
+                            if state.editing_page_name != Some(drag.from) {
+                                commit_open_page_rename(state);
+                            }
+                            state.reset_assign_edit();
+                            state.persist_debounce = 0;
+                            state.apply_pad_paging(true, move |pp| pp.active = drag.from);
+                        }
+                    }
+                }
+            }
+        }
+        Message::PageDragCancel => clear_page_drag(state),
     }
     task
 }
+/// Drop every in-progress page-row gesture. Each addresses its row by raw slot
+/// index, so any path that replaces or hides the row list has to drop them
+/// rather than let them survive into freshly-rendered rows holding other pages.
+fn clear_page_gestures(state: &mut State) {
+    clear_page_drag(state);
+    state.confirm_delete_page = None;
+    state.editing_page_name = None;
+    state.page_name_text.clear();
+    state.page_name_debounce = 0;
+}
+
+/// End a pointer gesture over the row list. Hover and drag are set and cleared
+/// by the same pointer movements, so whatever ends one ends the other: a drag
+/// abandoned past the panel edge leaves no row to report an `on_exit`, and a
+/// highlight would otherwise stay lit with the pointer nowhere near the list.
+fn clear_page_drag(state: &mut State) {
+    state.page_drag = None;
+    state.hovered_page = None;
+}
+
+/// Store row `i`'s typed name, trimmed, without closing the rename field. Runs
+/// when typing settles, so an edit abandoned by quitting the GUI (or by any path
+/// that never delivers a commit) is not lost. An empty field is left alone: it
+/// only resolves to a name on commit, and storing `None` meanwhile would show
+/// the user a default name in the row they are still typing into.
+fn store_page_name(state: &mut State, i: usize) {
+    let trimmed = state.page_name_text.trim().to_string();
+    if trimmed.is_empty() {
+        return;
+    }
+    state.apply_pad_paging(true, move |pp| {
+        if let Some(page) = pp.pages.get_mut(i) {
+            page.name = Some(trimmed);
+        }
+    });
+}
+
+/// Flush whichever row is open for rename once its typing has settled.
+fn flush_page_name(state: &mut State) {
+    if let Some(i) = state.editing_page_name {
+        store_page_name(state, i);
+    }
+}
+
+/// Store row `i`'s typed page name and close the rename field. Committing an
+/// emptied name is a deliberate reset, not a return to a placeholder: the page
+/// gets a fresh default letter name so it is never blank and never
+/// position-derived.
+fn commit_page_name(state: &mut State, i: usize) {
+    if state.page_name_text.trim().is_empty() {
+        state.apply_pad_paging(true, move |pp| {
+            let name = pp.next_page_name();
+            if let Some(page) = pp.pages.get_mut(i) {
+                page.name = Some(name);
+            }
+        });
+    } else {
+        store_page_name(state, i);
+    }
+    state.page_name_text.clear();
+    state.page_name_debounce = 0;
+    state.editing_page_name = None;
+}
+
+/// Commit whichever row is open for rename, if any. iced's `text_input` has no
+/// focus-lost event, so every path that closes the field by user action has to
+/// call this — otherwise abandoning a rename by clicking elsewhere persists the
+/// raw, untrimmed text (or an empty name) that only Enter would have fixed up.
+fn commit_open_page_rename(state: &mut State) {
+    if let Some(i) = state.editing_page_name {
+        commit_page_name(state, i);
+    }
+}
+
 /// Resolve a freshly-selected control to its inspector target. Encoder push/touch
 /// arrive as button slots 39/40 on the wire but are sub-actions of the Encoder;
 /// map them to the Encoder control with the matching tab so they open the encoder
@@ -990,13 +1122,17 @@ mod tests {
         assert_eq!(out.single, PadColors::Red);
     }
 
-    /// Three named pad pages so assertions are about page *identity*, not
-    /// index — mirrors `app::page_ops_tests::named_pages`.
+    /// Three named pad pages so drag assertions are about page *identity*,
+    /// not index — mirrors `app::page_ops_tests::named_pages`.
     fn named_pad_pages(state: &mut State, names: [&str; 3]) {
         let _ = update(state, Message::AddPage);
         let _ = update(state, Message::AddPage);
+        // Renaming goes through the open field, exactly as the UI drives it:
+        // `SetPageName` outside a rename is not a state the view can produce.
         for (i, name) in names.into_iter().enumerate() {
+            let _ = update(state, Message::BeginRenamePage(i));
             let _ = update(state, Message::SetPageName(i, name.to_string()));
+            let _ = update(state, Message::CommitPageName(i));
         }
     }
 
@@ -1013,43 +1149,76 @@ mod tests {
     }
 
     #[test]
-    fn typed_page_name_keeps_interior_and_trailing_spaces_until_commit() {
+    fn typing_a_page_name_sends_nothing_until_it_settles() {
         let (mut state, rx) = seeded();
         named_pad_pages(&mut state, ["A", "B", "C"]);
         while rx.try_recv().is_ok() {}
 
-        // A trailing space must survive the keystroke that typed it: trimming
-        // on every input event would make it impossible to ever type a second
-        // word, since the space immediately after the first word is trimmed
-        // away before the next letter arrives.
-        let _ = update(&mut state, Message::SetPageName(0, "Drum Bus ".to_string()));
+        let _ = update(&mut state, Message::BeginRenamePage(0));
+        for typed in ["D", "Dr", "Dru", "Drum", "Drum ", "Drum Bus "] {
+            let _ = update(&mut state, Message::SetPageName(0, typed.to_string()));
+        }
+
+        assert_eq!(
+            state.page_name_text, "Drum Bus ",
+            "the field keeps the raw text, spaces and all, so a second word can be typed"
+        );
         assert_eq!(
             page_names(&state)[0],
-            Some("Drum Bus ".to_string()),
-            "typing must not trim mid-edit"
+            Some("A".to_string()),
+            "the stored name is untouched until typing settles"
         );
-        assert_eq!(state.persist_debounce, crate::app::PERSIST_DEBOUNCE_TICKS);
         assert!(
-            drained_frames(&rx).iter().any(is_live_apply),
-            "typing applies live, not persisted"
+            drained_frames(&rx).is_empty(),
+            "keystrokes must not each cost the driver an apply"
         );
 
+        // Typing settles: one apply carries the trimmed name.
+        assert_eq!(state.page_name_debounce, crate::app::PERSIST_DEBOUNCE_TICKS);
+        for _ in 0..crate::app::PERSIST_DEBOUNCE_TICKS {
+            let _ = update(&mut state, Message::PersistDebounce);
+        }
+        assert_eq!(page_names(&state)[0], Some("Drum Bus".to_string()));
+        assert_eq!(
+            drained_frames(&rx)
+                .iter()
+                .filter(|f| matches!(f, GuiToDriver::Apply { persist: true, .. }))
+                .count(),
+            1,
+            "six keystrokes cost exactly one persisted apply"
+        );
+        assert_eq!(
+            state.editing_page_name,
+            Some(0),
+            "settling stores the name without closing the field"
+        );
+        assert_eq!(
+            state.page_name_text, "Drum Bus ",
+            "storing a trimmed name must not rewrite what the user is still typing"
+        );
+    }
+
+    #[test]
+    fn committing_a_page_name_persists_it() {
+        let (mut state, rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+        while rx.try_recv().is_ok() {}
+
+        // Enter before the debounce ever fires: the commit is the only thing
+        // that can get the typed name onto disk.
+        let _ = update(&mut state, Message::BeginRenamePage(0));
+        let _ = update(&mut state, Message::SetPageName(0, "Kick".to_string()));
         let _ = update(&mut state, Message::CommitPageName(0));
-        assert_eq!(
-            page_names(&state)[0],
-            Some("Drum Bus".to_string()),
-            "commit trims the trailing whitespace"
-        );
-        assert_eq!(
-            state.persist_debounce, 0,
-            "commit persists immediately, dropping any pending debounce"
-        );
+
+        assert_eq!(page_names(&state)[0], Some("Kick".to_string()));
         assert!(
             drained_frames(&rx)
                 .iter()
                 .any(|f| matches!(f, GuiToDriver::Apply { persist: true, .. })),
-            "commit persists the trimmed name"
+            "the committed name must be persisted, not left live-only"
         );
+        assert_eq!(state.page_name_debounce, 0);
+        assert_eq!(state.editing_page_name, None);
     }
 
     #[test]
@@ -1058,6 +1227,7 @@ mod tests {
         named_pad_pages(&mut state, ["A", "B", "C"]);
 
         // Clear page 1's name (index 1, currently "B") and commit.
+        let _ = update(&mut state, Message::BeginRenamePage(1));
         let _ = update(&mut state, Message::SetPageName(1, String::new()));
         let _ = update(&mut state, Message::CommitPageName(1));
 
@@ -1106,6 +1276,219 @@ mod tests {
     }
 
     #[test]
+    fn drag_start_over_drop_reorders_the_page_and_clears_drag_state() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        let _ = update(&mut state, Message::PageDragStart(0));
+        let _ = update(&mut state, Message::PageRowEntered(2));
+        let _ = update(&mut state, Message::PageDragDrop);
+
+        assert_eq!(
+            page_names(&state),
+            vec![Some("B".into()), Some("C".into()), Some("A".into())],
+            "page A moved from index 0 to index 2"
+        );
+        assert!(
+            state.page_drag.is_none(),
+            "drag state clears once the drop is committed"
+        );
+    }
+
+    #[test]
+    fn drop_with_no_crossing_is_a_reorder_no_op_and_selects_the_origin_row() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        // Press on row 1 and release without ever entering another row: a
+        // plain click, not a drag.
+        let _ = update(&mut state, Message::PageDragStart(1));
+        let _ = update(&mut state, Message::PageDragDrop);
+
+        assert_eq!(
+            page_names(&state),
+            vec![Some("A".into()), Some("B".into()), Some("C".into())],
+            "no reorder for a plain click"
+        );
+        assert_eq!(
+            state.settings.as_ref().unwrap().pad_paging.active,
+            1,
+            "the release selects the row that was pressed"
+        );
+        assert!(state.page_drag.is_none());
+    }
+
+    #[test]
+    fn drop_back_onto_the_origin_row_is_also_a_reorder_no_op() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        let _ = update(&mut state, Message::PageDragStart(0));
+        let _ = update(&mut state, Message::PageRowEntered(2));
+        let _ = update(&mut state, Message::PageRowEntered(0)); // dragged back home
+        let _ = update(&mut state, Message::PageDragDrop);
+
+        assert_eq!(
+            page_names(&state),
+            vec![Some("A".into()), Some("B".into()), Some("C".into())],
+            "over == from must not reorder"
+        );
+        assert_eq!(state.settings.as_ref().unwrap().pad_paging.active, 0);
+        assert!(state.page_drag.is_none());
+    }
+
+    #[test]
+    fn double_click_rename_survives_the_release_that_ends_it() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        // iced mouse_area double-click order: press → release → press →
+        // double-click → release, modeled message-for-message.
+        let _ = update(&mut state, Message::PageDragStart(1));
+        let _ = update(&mut state, Message::PageDragDrop);
+        let _ = update(&mut state, Message::PageDragStart(1));
+        let _ = update(&mut state, Message::BeginRenamePage(1));
+        let _ = update(&mut state, Message::PageDragDrop);
+
+        assert_eq!(
+            state.editing_page_name,
+            Some(1),
+            "the release completing a double-click must not close the rename"
+        );
+        assert_eq!(state.settings.as_ref().unwrap().pad_paging.active, 1);
+    }
+
+    #[test]
+    fn clicking_another_row_closes_an_open_rename() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        let _ = update(&mut state, Message::BeginRenamePage(0));
+        let _ = update(&mut state, Message::PageDragStart(2));
+        let _ = update(&mut state, Message::PageDragDrop);
+
+        assert_eq!(
+            state.editing_page_name, None,
+            "clicking a different row must not leave a stale rename open"
+        );
+        assert_eq!(state.settings.as_ref().unwrap().pad_paging.active, 2);
+    }
+
+    #[test]
+    fn reordering_rows_closes_an_open_rename() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        let _ = update(&mut state, Message::BeginRenamePage(0));
+        assert_eq!(state.editing_page_name, Some(0));
+
+        // Drag C (2) onto A's row (0): reorder(pp, 2, 0) removes index 2 and
+        // inserts at 0, so index 0 now holds C, not the page that was open
+        // for rename.
+        let _ = update(&mut state, Message::PageDragStart(2));
+        let _ = update(&mut state, Message::PageRowEntered(0));
+        let _ = update(&mut state, Message::PageDragDrop);
+
+        assert_eq!(
+            state.editing_page_name, None,
+            "a raw slot index can't be trusted to still point at the same page after a reorder"
+        );
+        assert_eq!(
+            page_names(&state),
+            vec![Some("C".into()), Some("A".into()), Some("B".into())],
+            "the reorder itself still happens"
+        );
+    }
+
+    #[test]
+    fn drag_over_is_ignored_without_an_active_drag() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        // No PageDragStart preceded this: a stray hover must not create drag state.
+        let _ = update(&mut state, Message::PageRowEntered(2));
+        assert!(state.page_drag.is_none());
+    }
+
+    #[test]
+    fn drag_cancel_clears_state_without_sending_an_apply() {
+        let (mut state, rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+        while rx.try_recv().is_ok() {}
+
+        let _ = update(&mut state, Message::PageDragStart(0));
+        let _ = update(&mut state, Message::PageRowEntered(2));
+        let _ = update(&mut state, Message::PageDragCancel);
+
+        assert!(
+            state.page_drag.is_none(),
+            "cancel clears an in-progress drag"
+        );
+        assert_eq!(
+            state.hovered_page, None,
+            "the pointer left the list, so no row may stay highlighted — leaving \
+             the panel past its bottom edge fires no row `on_exit`"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "cancelling a drag sends no settings apply"
+        );
+
+        // A subsequent drop must not reorder using the cancelled drag's state.
+        let _ = update(&mut state, Message::PageDragDrop);
+        assert_eq!(
+            page_names(&state),
+            vec![Some("A".into()), Some("B".into()), Some("C".into())],
+            "a cancelled drag leaves nothing for a later drop to commit"
+        );
+    }
+
+    #[test]
+    fn switching_inspector_tabs_drops_a_held_drag() {
+        // The Assign tab renders no rows, so nothing is left to deliver the
+        // release that would otherwise end the gesture.
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        let _ = update(&mut state, Message::PageDragStart(0));
+        let _ = update(&mut state, Message::PageRowEntered(2));
+        let _ = update(
+            &mut state,
+            Message::SetInspectorTab(crate::message::InspectorTab::Assign),
+        );
+
+        assert!(state.page_drag.is_none());
+        assert_eq!(state.hovered_page, None);
+    }
+
+    #[test]
+    fn adopted_settings_snapshot_clears_an_in_progress_drag() {
+        use std::sync::Arc;
+        let (mut state, _rx) = seeded();
+        // Keep `seq`/`last_acked_seq` both at 0 (no local edits in between) so
+        // the snapshot below is guaranteed to be adopted, matching the real
+        // bug: paging can be disabled (or otherwise changed) out from under a
+        // held drag by a snapshot that lands mid-gesture.
+        let mut settings = Settings::default();
+        crate::app::page_ops::add(&mut settings.pad_paging);
+        state.settings = Some(Arc::new(settings));
+
+        let _ = update(&mut state, Message::PageDragStart(0));
+        assert!(state.page_drag.is_some());
+
+        let _ = update(
+            &mut state,
+            Message::Frame(DriverToGui::Settings(Box::default())),
+        );
+
+        assert!(
+            state.page_drag.is_none(),
+            "an adopted settings snapshot must not leave a drag orphaned \
+             — the row list it belonged to may no longer exist"
+        );
+    }
+
+    #[test]
     fn adopted_settings_snapshot_clears_an_in_progress_rename() {
         use std::sync::Arc;
         let (mut state, _rx) = seeded();
@@ -1129,6 +1512,69 @@ mod tests {
     }
 
     #[test]
+    fn double_click_rename_survives_the_drivers_echo_of_the_select_apply() {
+        let (mut state, rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+        let _ = drained_frames(&rx);
+
+        // A double-click is press/release/press/double-click/release: the final
+        // release lands as a no-move `PageDragDrop`, which selects the page with
+        // a persisted apply *after* the rename field has already opened.
+        let _ = update(&mut state, Message::PageDragStart(1));
+        let _ = update(&mut state, Message::PageDragDrop);
+        let _ = update(&mut state, Message::PageDragStart(1));
+        let _ = update(&mut state, Message::BeginRenamePage(1));
+        let _ = update(&mut state, Message::PageDragDrop);
+        assert_eq!(state.editing_page_name, Some(1));
+
+        let seq = drained_frames(&rx)
+            .iter()
+            .filter_map(|frame| match frame {
+                GuiToDriver::Apply { seq, .. } => Some(*seq),
+                _ => None,
+            })
+            .max()
+            .expect("the selection applies");
+
+        // The driver acks and then echoes the state it just stored back.
+        let _ = update(
+            &mut state,
+            Message::Frame(DriverToGui::Ack {
+                seq,
+                result: Ok(()),
+            }),
+        );
+        let echo = (**state.settings.as_ref().unwrap()).clone();
+        let _ = update(
+            &mut state,
+            Message::Frame(DriverToGui::Settings(Box::new(echo))),
+        );
+
+        assert_eq!(
+            state.editing_page_name,
+            Some(1),
+            "the driver echoing back the state the GUI already shows must not \
+             close the rename the same gesture just opened"
+        );
+    }
+
+    #[test]
+    fn disabling_paging_clears_an_in_progress_drag() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        let _ = update(&mut state, Message::PageDragStart(0));
+        assert!(state.page_drag.is_some());
+
+        let _ = update(&mut state, Message::SetPagingEnabled(false));
+
+        assert!(
+            state.page_drag.is_none(),
+            "disabling paging removes the row list; a held drag can't survive it"
+        );
+    }
+
+    #[test]
     fn disabling_paging_clears_an_in_progress_rename() {
         let (mut state, _rx) = seeded();
         named_pad_pages(&mut state, ["A", "B", "C"]);
@@ -1142,6 +1588,51 @@ mod tests {
             state.editing_page_name.is_none(),
             "disabling paging removes the row list; an open rename can't survive it"
         );
+    }
+
+    #[test]
+    fn drop_with_out_of_range_over_performs_no_reorder() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        // A stale drag whose `over` no longer fits the current pages (e.g.
+        // if some future path failed to clear `page_drag` before the list
+        // shrank). `PageDragDrop` must re-validate rather than trust it.
+        state.page_drag = Some(crate::app::PageDrag {
+            from: 0,
+            over: Some(99),
+        });
+        let _ = update(&mut state, Message::PageDragDrop);
+
+        assert_eq!(
+            page_names(&state),
+            vec![Some("A".into()), Some("B".into()), Some("C".into())],
+            "an out-of-range `over` must not reorder or change `active`"
+        );
+        assert_eq!(state.settings.as_ref().unwrap().pad_paging.active, 0);
+        assert!(
+            state.page_drag.is_none(),
+            "the drop still clears drag state"
+        );
+    }
+
+    #[test]
+    fn drop_with_out_of_range_from_performs_no_reorder() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        state.page_drag = Some(crate::app::PageDrag {
+            from: 99,
+            over: Some(1),
+        });
+        let _ = update(&mut state, Message::PageDragDrop);
+
+        assert_eq!(
+            page_names(&state),
+            vec![Some("A".into()), Some("B".into()), Some("C".into())],
+            "an out-of-range `from` must not reorder or change `active`"
+        );
+        assert_eq!(state.settings.as_ref().unwrap().pad_paging.active, 0);
     }
 
     #[test]
@@ -1169,6 +1660,29 @@ mod tests {
             "switching pages must clear any armed persist debounce so it can't \
              flush an edit meant for the old page onto the new one"
         );
+        assert_eq!(state.settings.as_ref().unwrap().pad_paging.active, 1);
+    }
+
+    #[test]
+    fn page_drag_drop_select_resets_an_in_progress_assign_edit() {
+        use crate::inspector::assign::numeric::EditField;
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        state.edit_field = Some(EditField::PadHitNote);
+        state.edit_text = "6".to_string();
+        state.persist_debounce = crate::app::PERSIST_DEBOUNCE_TICKS;
+
+        // A plain click (press + release with no crossing) on another row
+        // takes the `PageDragDrop` select branch, not the reorder branch.
+        let _ = update(&mut state, Message::PageDragStart(1));
+        let _ = update(&mut state, Message::PageDragDrop);
+
+        assert!(
+            state.edit_field.is_none(),
+            "selecting a page via the drag/click path must clear an in-progress edit field"
+        );
+        assert_eq!(state.persist_debounce, 0);
         assert_eq!(state.settings.as_ref().unwrap().pad_paging.active, 1);
     }
 
@@ -1252,6 +1766,129 @@ mod tests {
         assert!(
             state.confirm_delete_page.is_none(),
             "disabling paging removes the row list; an open dialog can't survive it"
+        );
+    }
+
+    #[test]
+    fn a_hardware_page_switch_keeps_open_row_gestures() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+        state.last_acked_seq = state.seq;
+
+        let _ = update(&mut state, Message::BeginRenamePage(0));
+        let _ = update(&mut state, Message::RequestDeletePage(0));
+
+        // Holding Group and tapping a pad makes the driver push a full snapshot
+        // per tap, differing from what the GUI already shows only in `active`.
+        let mut echo = (**state.settings.as_ref().unwrap()).clone();
+        echo.pad_paging.active = 2;
+        let _ = update(
+            &mut state,
+            Message::Frame(DriverToGui::Settings(Box::new(echo))),
+        );
+
+        assert_eq!(
+            state.settings.as_ref().unwrap().pad_paging.active,
+            2,
+            "the snapshot is still adopted"
+        );
+        assert_eq!(
+            state.editing_page_name,
+            Some(0),
+            "a page switch moves no row, so it must not close an open rename"
+        );
+        assert_eq!(state.confirm_delete_page, Some(0));
+    }
+
+    #[test]
+    fn clicking_another_row_commits_the_typed_name() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        let _ = update(&mut state, Message::BeginRenamePage(0));
+        let _ = update(&mut state, Message::SetPageName(0, "Drum Bus ".to_string()));
+
+        // Abandoning the rename by clicking another row: `text_input` reports no
+        // focus loss, so without an explicit commit the untrimmed text persists.
+        let _ = update(&mut state, Message::PageDragStart(2));
+        let _ = update(&mut state, Message::PageDragDrop);
+
+        assert_eq!(
+            page_names(&state)[0],
+            Some("Drum Bus".to_string()),
+            "closing the field trims exactly like Enter does"
+        );
+        assert_eq!(state.editing_page_name, None);
+        assert_eq!(
+            state.persist_debounce, 0,
+            "the commit flushes rather than leaving a debounce armed"
+        );
+    }
+
+    #[test]
+    fn abandoning_a_cleared_name_resets_it_instead_of_leaving_it_blank() {
+        use crate::message::InspectorTab;
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        let _ = update(&mut state, Message::BeginRenamePage(1));
+        let _ = update(&mut state, Message::SetPageName(1, String::new()));
+        let _ = update(&mut state, Message::SetInspectorTab(InspectorTab::Assign));
+
+        assert_eq!(
+            page_names(&state)[1],
+            Some("Pad Page A".to_string()),
+            "leaving the tab resets an emptied name, never storing None"
+        );
+        assert_eq!(state.editing_page_name, None);
+    }
+
+    #[test]
+    fn leaving_the_pages_tab_drops_a_stale_row_hover() {
+        use crate::message::InspectorTab;
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        let _ = update(&mut state, Message::PageRowEntered(1));
+        assert_eq!(state.hovered_page, Some(1));
+
+        let _ = update(&mut state, Message::SetInspectorTab(InspectorTab::Assign));
+
+        assert!(
+            state.hovered_page.is_none(),
+            "the row's `on_exit` can never fire once the row is gone, so the \
+             hover would otherwise persist into the next visit to the tab"
+        );
+    }
+
+    #[test]
+    fn a_rejected_apply_rollback_clears_page_gestures() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+        // The driver has confirmed the three pages.
+        state.authoritative = state.settings.clone();
+
+        let _ = update(&mut state, Message::RequestDeletePage(2));
+        let _ = update(&mut state, Message::BeginRenamePage(2));
+        let _ = update(&mut state, Message::AddPage);
+        let seq = state.seq;
+
+        let _ = update(
+            &mut state,
+            Message::Frame(DriverToGui::Ack {
+                seq,
+                result: Err("read-only config directory".to_string()),
+            }),
+        );
+
+        assert_eq!(
+            page_names(&state).len(),
+            3,
+            "the rejected page is rolled back"
+        );
+        assert!(
+            state.confirm_delete_page.is_none() && state.editing_page_name.is_none(),
+            "gestures addressing a row the rollback removed must go with it"
         );
     }
 

@@ -96,15 +96,35 @@ pub enum Message {
     /// dialog without deleting anything.
     CancelDeletePage,
     SetPageName(usize, String),
-    /// Enter (or focus loss via `on_submit`) after typing a page name: trims
-    /// the in-progress text and persists it. Typing itself (`SetPageName`)
-    /// stores the raw text and applies live without trimming, since trimming
-    /// every keystroke would swallow spaces before a trailing word is typed.
+    /// Enter after typing a page name: trims the in-progress text and persists
+    /// it. Typing itself (`SetPageName`) stores the raw text and applies live
+    /// without trimming, since trimming every keystroke would swallow spaces
+    /// before a trailing word is typed. iced's `text_input` reports no focus
+    /// loss, so `update` also runs this commit from every path that closes the
+    /// rename field.
     CommitPageName(usize),
     /// The row's pencil button pressed for a page index: shows that row's
     /// `text_input` in place of its plain-text name and focuses it. Only one
     /// row edits at a time.
     BeginRenamePage(usize),
+    /// A press started on a page row (row-level `mouse_area`, not the styled
+    /// `button` it wraps — the button would otherwise swallow the press
+    /// before the `mouse_area` ever saw it). Carries the row index.
+    PageDragStart(usize),
+    /// The pointer entered a page row: tracks the hover highlight always, and
+    /// the drag target when a row drag is in progress.
+    PageRowEntered(usize),
+    /// The pointer left a page row; clears the hover highlight if it still
+    /// points at that row.
+    PageRowExited(usize),
+    /// The pointer was released anywhere over the page list. Commits a
+    /// reorder when the drag crossed into a different row, or selects the
+    /// origin row when it didn't (a plain click, or a drag that returned to
+    /// where it started).
+    PageDragDrop,
+    /// Abandons an in-progress row drag (e.g. the pointer left the page list
+    /// without a release ever landing on it) so `page_drag` can't get stuck.
+    PageDragCancel,
     /// No-op; swallows clicks inside the Preferences panel so they don't reach
     /// the modal backdrop and close it.
     Ignore,

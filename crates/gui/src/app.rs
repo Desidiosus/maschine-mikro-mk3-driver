@@ -9,6 +9,16 @@ use crate::device::hotspots::Device;
 use crate::device::view::device_view;
 use crate::message::Message;
 
+/// Row-level drag state for reordering pad pages via the Pages panel list.
+/// `from` is the row a press started on; `over` is the last row the pointer
+/// entered while the drag is in progress (`None` until it crosses into
+/// another row).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PageDrag {
+    pub(crate) from: usize,
+    pub(crate) over: Option<usize>,
+}
+
 pub struct State {
     pub(crate) status: String,
     /// Shared so the per-frame device overlay clones a pointer, not the whole
@@ -49,6 +59,12 @@ pub struct State {
     /// re-arms this; when it counts down to zero the live state is persisted.
     /// Zero means no persist is pending.
     pub(crate) persist_debounce: u8,
+    /// In-progress row-level drag for pad page reorder, `None` when idle.
+    pub(crate) page_drag: Option<PageDrag>,
+    /// The page row the pointer is currently over, `None` when outside every
+    /// row. Purely visual (hover highlight); a stale index after the list
+    /// shrinks is harmless since no row renders for it.
+    pub(crate) hovered_page: Option<usize>,
     /// The page index a Delete-page confirmation dialog is open for, `None`
     /// when no dialog is showing. Deletion happens only when the dialog is
     /// confirmed, never directly from the row action button.
@@ -59,6 +75,14 @@ pub struct State {
     /// whenever an authoritative settings snapshot is adopted, so a stale
     /// index can never point at a row that moved or no longer exists.
     pub(crate) editing_page_name: Option<usize>,
+    /// Text typed so far into the open rename field. Held here rather than in
+    /// `settings` so keystrokes cost nothing: the name reaches the driver once
+    /// typing settles (`page_name_debounce`) or on commit, and an in-progress
+    /// edit can't be clobbered by a snapshot the driver pushes meanwhile.
+    pub(crate) page_name_text: String,
+    /// Quiet-tick countdown before `page_name_text` is applied, re-armed by every
+    /// keystroke. Zero means nothing is pending.
+    pub(crate) page_name_debounce: u8,
 }
 
 /// In-place page-vec mutations, each clamping the paging invariants
@@ -118,6 +142,33 @@ pub(crate) mod page_ops {
             if pp.active >= pp.pages.len() {
                 pp.active = pp.pages.len() - 1;
             }
+        }
+    }
+
+    /// Move the page at `from` to `to`, keeping the same page active by
+    /// content. A no-op for an out-of-range index or `from == to`; callers
+    /// should still avoid invoking this when `from == to` to skip a wasted
+    /// settings apply.
+    pub(crate) fn reorder(pp: &mut PadPaging, from: usize, to: usize) {
+        if from >= pp.pages.len() || to >= pp.pages.len() || from == to {
+            return;
+        }
+        let page = pp.pages.remove(from);
+        pp.pages.insert(to, page);
+        // Keep the same page active by content: recompute active's new index.
+        pp.active = reindex(pp.active, from, to);
+    }
+
+    /// New index of an element originally at `active` after moving `from`→`to`.
+    fn reindex(active: usize, from: usize, to: usize) -> usize {
+        if active == from {
+            to
+        } else if from < active && active <= to {
+            active - 1
+        } else if to <= active && active < from {
+            active + 1
+        } else {
+            active
         }
     }
 }
@@ -234,6 +285,32 @@ mod page_ops_tests {
         assert_eq!(pp.active, 3);
         assert_eq!(pp.pages[pp.active].name.as_deref(), Some("C"));
     }
+
+    #[test]
+    fn reorder_moves_active_with_the_page() {
+        let mut pp = default_pad_paging();
+        add(&mut pp);
+        add(&mut pp); // 3 pages, active 0
+        pp.active = 0;
+        reorder(&mut pp, 0, 2); // page that was active moves to index 2
+        assert_eq!(pp.active, 2);
+    }
+
+    #[test]
+    fn reorder_preserves_each_pages_name_across_the_move() {
+        // Regression test: a page's name must travel with it, not stay
+        // pinned to whichever slot it moves through.
+        let mut pp = named_pages(["A", "B", "C"]);
+        reorder(&mut pp, 0, 2); // "A" moves from the front to the back
+        assert_eq!(
+            pp.pages.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+            vec![
+                Some("B".to_string()),
+                Some("C".to_string()),
+                Some("A".to_string()),
+            ]
+        );
+    }
 }
 
 /// Tick interval for the typed-edit persist debounce.
@@ -268,8 +345,12 @@ impl Default for State {
             authoritative: None,
             resync_pending: false,
             persist_debounce: 0,
+            page_drag: None,
+            hovered_page: None,
             confirm_delete_page: None,
             editing_page_name: None,
+            page_name_text: String::new(),
+            page_name_debounce: 0,
         }
     }
 }
@@ -444,7 +525,7 @@ impl State {
         }
         // Run the persist-debounce timer only while a typed edit is awaiting its
         // quiet-window flush, so an idle GUI does zero periodic work.
-        if self.persist_debounce > 0 {
+        if self.persist_debounce > 0 || self.page_name_debounce > 0 {
             subs.push(
                 iced::time::every(PERSIST_DEBOUNCE_INTERVAL).map(|_| Message::PersistDebounce),
             );
