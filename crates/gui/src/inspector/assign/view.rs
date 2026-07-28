@@ -626,6 +626,34 @@ pub fn slider_form<'a>(
     .into()
 }
 
+/// Why `Group` carries no assignment while paging is enabled, shown in place of
+/// the form when it is the only thing selected.
+fn reserved_group_panel<'a>() -> Element<'a, Message> {
+    let name = crate::device::hotspots::control_name(ControlRef::Button(Buttons::Group as u8));
+    column![
+        header(&name, "Reserved for pad pages"),
+        group_box(
+            column![
+                text("The Group button switches pad pages while paging is enabled."),
+                text("Disable paging in the Pages tab to assign it an action."),
+            ]
+            .spacing(6)
+        ),
+    ]
+    .spacing(10)
+    .into()
+}
+
+/// Shown under the batched form when a multi-selection includes the reserved
+/// `Group`: the form edits every other button in the selection, and leaving
+/// that unsaid would make Group look like it took an assignment it can't emit.
+fn excluded_group_note<'a>() -> Element<'a, Message> {
+    group_box(text(
+        "The Group button switches pad pages while paging is enabled, so it is \
+         left out of this selection.",
+    ))
+}
+
 /// The assignment label shown in a multi-selection header: the common label, or
 /// `…` when the per-control labels differ.
 fn indeterminate_label(labels: impl IntoIterator<Item = String>) -> String {
@@ -665,6 +693,10 @@ pub fn assignment_body(state: &State) -> Element<'_, Message> {
         }));
         return pad_form(state, &name, &label, state.assign_tab, &active);
     }
+    let group_reserved = state.selection_holds_reserved_group();
+    if buttons.is_empty() && group_reserved {
+        return reserved_group_panel();
+    }
     if !buttons.is_empty() {
         let name = if buttons.len() == 1 {
             crate::device::hotspots::control_name(ControlRef::Button(buttons[0]))
@@ -676,7 +708,11 @@ pub fn assignment_body(state: &State) -> Element<'_, Message> {
                 .iter()
                 .map(|&b| crate::device::labels::control_label(s, ControlRef::Button(b))),
         );
-        return button_form(state, &name, &label, &active);
+        let form = button_form(state, &name, &label, &active);
+        if group_reserved {
+            return column![form, excluded_group_note()].spacing(10).into();
+        }
+        return form;
     }
     match state.selection.first() {
         Some(ControlRef::Encoder) => {
@@ -703,5 +739,59 @@ pub fn assignment_body(state: &State) -> Element<'_, Message> {
         ]
         .spacing(8)
         .into(),
+    }
+}
+
+#[cfg(test)]
+mod group_reservation_tests {
+    use super::*;
+
+    const GROUP: u8 = Buttons::Group as u8;
+
+    fn selecting(paging_enabled: bool, selection: &[u8]) -> State {
+        let mut settings = settings::Settings::default();
+        settings.pad_paging.enabled = paging_enabled;
+        State {
+            settings: Some(std::sync::Arc::new(settings)),
+            selection: selection.iter().map(|&b| ControlRef::Button(b)).collect(),
+            ..State::default()
+        }
+    }
+
+    #[test]
+    fn group_alone_is_reserved_when_paging_enabled() {
+        let state = selecting(true, &[GROUP]);
+        assert!(state.selection_holds_reserved_group());
+        assert!(
+            state.selected_buttons().is_empty(),
+            "nothing is editable, so the form shows the reserved panel instead"
+        );
+    }
+
+    #[test]
+    fn group_is_editable_when_paging_is_disabled() {
+        let state = selecting(false, &[GROUP]);
+        assert!(!state.selection_holds_reserved_group());
+        assert_eq!(state.selected_buttons(), vec![GROUP]);
+    }
+
+    #[test]
+    fn group_is_left_out_of_a_multi_selection_while_paging_is_enabled() {
+        // The runtime swallows every Group event while paging is enabled, so a
+        // batched edit must not write an assignment there that can never fire —
+        // the other buttons in the selection stay editable.
+        let state = selecting(true, &[GROUP, 0]);
+        assert_eq!(state.selected_buttons(), vec![0]);
+        assert!(
+            state.selection_holds_reserved_group(),
+            "the form has to say why Group is missing from the batch"
+        );
+    }
+
+    #[test]
+    fn a_selection_without_group_is_untouched() {
+        let state = selecting(true, &[0, 1]);
+        assert_eq!(state.selected_buttons(), vec![0, 1]);
+        assert!(!state.selection_holds_reserved_group());
     }
 }

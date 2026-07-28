@@ -2,6 +2,7 @@ use iced::widget::{checkbox, column, container, row};
 use std::sync::Arc;
 
 use iced::{Element, Length, Subscription, Task};
+use maschine_library::controls::Buttons;
 use protocol::{ControlRef, GuiToDriver};
 use settings::{PartialSettings, Settings};
 
@@ -443,11 +444,30 @@ impl State {
             .collect()
     }
 
+    /// Whether the runtime has reserved the `Group` button for pad-page
+    /// switching. While paging is enabled it swallows every `Group` event to
+    /// drive the page picker, so an assignment stored there could never emit
+    /// MIDI.
+    pub(crate) fn group_button_reserved(&self) -> bool {
+        self.settings.as_ref().is_some_and(|s| s.pad_paging.enabled)
+    }
+
+    pub(crate) fn selection_holds_reserved_group(&self) -> bool {
+        self.group_button_reserved()
+            && self
+                .selection
+                .contains(&ControlRef::Button(Buttons::Group as u8))
+    }
+
+    /// Internal indices of selected buttons the assign form may read and edit.
+    /// A reserved `Group` is dropped here rather than at each call site, so the
+    /// values the form displays are exactly the ones it can write.
     pub(crate) fn selected_buttons(&self) -> Vec<u8> {
+        let reserved = self.group_button_reserved().then_some(Buttons::Group as u8);
         self.selection
             .iter()
             .filter_map(|c| match c {
-                ControlRef::Button(i) => Some(*i),
+                ControlRef::Button(i) if reserved != Some(*i) => Some(*i),
                 _ => None,
             })
             .collect()
