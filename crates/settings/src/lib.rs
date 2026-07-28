@@ -21,7 +21,7 @@ pub use buttons_by_name::ButtonsByName;
 pub use groups::{BridgeSettings, DriverSettings, GlobalSettings, HardwareSettings};
 pub use maschine_library::lights::PadColors;
 pub use maschine_library::preferences::MAX_BUTTON_BRIGHTNESS;
-pub use pad_paging::{PadPage, PadPaging};
+pub use pad_paging::{MAX_PAGES, MIN_PAGES, PadPage, PadPaging};
 pub use pads_by_index::PadsByIndex;
 
 #[derive(Default, Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,11 +135,13 @@ impl Settings {
         // Each match below is exhaustive on purpose: a future value-bearing
         // variant must fail to compile here (forcing a validation decision)
         // rather than silently skip range checks via a catch-all early return.
-        if self.pad_paging.pages.is_empty() {
+        if self.pad_paging.pages.len() < MIN_PAGES {
             return Err("pad_paging.pages must contain at least one page".to_string());
         }
-        if self.pad_paging.pages.len() > 16 {
-            return Err("pad_paging.pages must contain at most 16 pages".to_string());
+        if self.pad_paging.pages.len() > MAX_PAGES {
+            return Err(format!(
+                "pad_paging.pages must contain at most {MAX_PAGES} pages"
+            ));
         }
         if self.pad_paging.active >= self.pad_paging.pages.len() {
             return Err(format!(

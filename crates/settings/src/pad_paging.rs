@@ -4,6 +4,11 @@ use crate::defaults::default_pads;
 use crate::pads_by_index::PadsByIndex;
 use maschine_library::lights::PadColors;
 
+/// Fewest pages a validated `PadPaging` may contain.
+pub const MIN_PAGES: usize = 1;
+/// Most pages a validated `PadPaging` may contain.
+pub const MAX_PAGES: usize = 16;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PadPage {
