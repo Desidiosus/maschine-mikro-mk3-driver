@@ -395,6 +395,11 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SetPadLedMode(tab, mode) => state.apply_pad_led_mode(tab, mode),
         Message::SetPadLedColor(tab, slot, color) => state.apply_pad_led_color(tab, slot, color),
         Message::SetInspectorTab(tab) => state.inspector_tab = tab,
+        Message::SetPagingEnabled(enabled) => state.apply_pad_paging(true, |p| p.enabled = enabled),
+        Message::SelectPage(index) => state.apply_pad_paging(true, |p| p.active = index),
+        Message::SetDefaultPageColor(color) => {
+            state.apply_pad_paging(true, |p| p.default_page_color = color)
+        }
     }
     Task::none()
 }

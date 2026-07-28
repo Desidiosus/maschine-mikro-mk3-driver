@@ -81,6 +81,9 @@ pub enum Message {
     /// Set the color in one slot (Single / Dual-on / Dual-off) of `tab`'s mode.
     SetPadLedColor(LedTab, PadLedColorSlot, settings::PadColors),
     SetInspectorTab(InspectorTab),
+    SetPagingEnabled(bool),
+    SelectPage(usize),
+    SetDefaultPageColor(settings::PadColors),
     /// No-op; swallows clicks inside the Preferences panel so they don't reach
     /// the modal backdrop and close it.
     Ignore,

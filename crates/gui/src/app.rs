@@ -123,6 +123,31 @@ impl State {
         }
     }
 
+    /// Build a sparse `pad_paging` delta by cloning the optimistic settings,
+    /// applying `edit` to `pad_paging`, and diffing against the pre-edit copy.
+    /// Returns `None` when settings are not loaded. Handles structural page ops
+    /// (add/duplicate/delete/reorder) and name/color edits including clear-to-inherit.
+    pub(crate) fn pad_paging_delta(
+        &self,
+        edit: impl FnOnce(&mut settings::PadPaging),
+    ) -> Option<PartialSettings> {
+        let base = self.settings.as_ref()?;
+        let mut edited = (**base).clone();
+        edit(&mut edited.pad_paging);
+        Some(edited.diff_from(base))
+    }
+
+    /// Build + send a `pad_paging` structural/content delta. No-op if not loaded.
+    pub(crate) fn apply_pad_paging(
+        &mut self,
+        persist: bool,
+        edit: impl FnOnce(&mut settings::PadPaging),
+    ) {
+        if let Some(delta) = self.pad_paging_delta(edit) {
+            self.send_apply(delta, persist);
+        }
+    }
+
     /// Ask the driver to persist its current live settings to disk. The driver
     /// already holds the typed value from the live (`persist:false`) applies, so
     /// this flushes edits applied live but never committed via Enter — even if the
