@@ -360,26 +360,63 @@ pub fn pad_form<'a>(
         }
     };
 
-    column![
-        header(name, assignment),
-        tab_strip(&[("Hit", AssignTab::A), ("Press", AssignTab::B)], tab),
-        group_box(body),
-        group_box(pad_led_section(state)),
-    ]
-    .spacing(10)
-    .into()
+    let mut col = column![];
+    if let Some(page_context) = page_context_block(state) {
+        col = col.push(page_context);
+    }
+    col.push(header(name, assignment))
+        .push(tab_strip(
+            &[("Hit", AssignTab::A), ("Press", AssignTab::B)],
+            tab,
+        ))
+        .push(group_box(body))
+        .push(group_box(pad_led_section(state)))
+        .spacing(10)
+        .into()
+}
+
+/// The active pad page's name + Color picker, shown above the pad Assign form
+/// and the empty-selection prompt while paging is enabled. `None` when paging
+/// is off or settings have not arrived yet, so the form looks unchanged until
+/// paging is opted into.
+fn page_context_block<'a>(state: &State) -> Option<Element<'a, Message>> {
+    let settings = state.settings.as_ref()?;
+    let pp = &settings.pad_paging;
+    if !pp.enabled {
+        return None;
+    }
+    let active = pp.active.min(pp.pages.len().saturating_sub(1));
+    let page = pp.pages.get(active)?;
+    let page_name = pp.display_name(active);
+    let selected = match page.color {
+        None => crate::message::PageColorChoice::Inherit,
+        Some(c) => crate::message::PageColorChoice::Color(c),
+    };
+    let color_row = labeled_pick_list(
+        "Color",
+        crate::inspector::pages::view::page_color_choices(),
+        Some(selected),
+        move |c| Message::SetPageColor(active, c),
+    );
+    Some(group_box(
+        column![text(page_name).size(14), color_row].spacing(8),
+    ))
 }
 
 /// A labeled `pick_list` row: `label  [ value ▾ ]`. `selected` is the shared
 /// value, or `None` (indeterminate → placeholder) across a multi-selection.
-pub(crate) fn labeled_pick_list<'a, T>(
+/// `options` takes anything a `pick_list` itself can own (a borrowed `&'a [T]`
+/// slice of a `const ALL`, or a freshly-built owned `Vec<T>`), matching
+/// `pick_list`'s own `Borrow<[T]>` flexibility.
+pub(crate) fn labeled_pick_list<'a, T, L>(
     label: &str,
-    options: &'a [T],
+    options: L,
     selected: Option<T>,
     on_select: impl Fn(T) -> Message + 'a,
 ) -> Element<'a, Message>
 where
     T: ToString + PartialEq + Clone + 'a,
+    L: std::borrow::Borrow<[T]> + 'a,
 {
     row![
         text(label.to_string()).width(Length::Fixed(90.0)),
@@ -733,12 +770,16 @@ pub fn assignment_body(state: &State) -> Element<'_, Message> {
                 &active,
             )
         }
-        _ => column![
-            text("Assignment").size(18),
-            text("Select a control on the device.")
-        ]
-        .spacing(8)
-        .into(),
+        _ => {
+            let mut col = column![];
+            if let Some(page_context) = page_context_block(state) {
+                col = col.push(page_context);
+            }
+            col.push(text("Assignment").size(18))
+                .push(text("Select a control on the device."))
+                .spacing(8)
+                .into()
+        }
     }
 }
 

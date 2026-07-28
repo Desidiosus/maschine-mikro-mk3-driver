@@ -5,7 +5,7 @@ use iced::{Background, Border, Color, Element, Length, Theme};
 
 use crate::app::State;
 use crate::inspector::assign::view::labeled_pick_list;
-use crate::message::Message;
+use crate::message::{Message, PageColorChoice};
 use crate::widget::group_box::group_box;
 use crate::widget::icon::{ADD_SVG, DELETE_SVG, DUPLICATE_SVG, POWER_SVG, svg_icon};
 
@@ -72,6 +72,22 @@ fn destructive_button_style(_theme: &Theme, status: button::Status) -> button::S
         },
         ..button::Style::default()
     }
+}
+
+/// Page colour choices (Inherit + every named colour except Off) shared by
+/// the Pages panel's default-colour picker and the Assign tab's page Color
+/// picker (`assign::view::page_context_block`), which edits the same
+/// `pages[active].color` field this module used to edit per-row.
+pub(crate) fn page_color_choices() -> Vec<PageColorChoice> {
+    let mut v = vec![PageColorChoice::Inherit];
+    // Exclude Off (index 0); it is not a meaningful page color.
+    v.extend(
+        settings::PadColors::ALL[1..]
+            .iter()
+            .copied()
+            .map(PageColorChoice::Color),
+    );
+    v
 }
 
 /// The row's background: solid accent-blue when selected, grey when not, and
@@ -317,12 +333,10 @@ pub(crate) fn pages_body(state: &State) -> Element<'_, Message> {
                     placeholder_c
                 })
             };
-            // Names are concrete strings assigned at creation now, never
-            // derived from position — a `None` here would only mean a
-            // theoretically stale/legacy page, so fall back to blank rather
-            // than a slot number that could be wrong after a reorder.
-            let label = page.name.clone().unwrap_or_default();
-            text(label).color(color).width(Length::Fill).into()
+            text(pp.display_name(i))
+                .color(color)
+                .width(Length::Fill)
+                .into()
         };
 
         let slot_color = if dragging {
@@ -425,16 +439,7 @@ pub(crate) fn delete_page_overlay(state: &State) -> Element<'_, Message> {
     let (Some(index), Some(settings)) = (state.confirm_delete_page, state.settings.as_ref()) else {
         return column![].into();
     };
-    let page_label = settings
-        .pad_paging
-        .pages
-        .get(index)
-        .map(|p| {
-            p.name
-                .clone()
-                .unwrap_or_else(|| format!("Pad Page {}", slot_letter(index)))
-        })
-        .unwrap_or_else(|| format!("Pad Page {}", slot_letter(index)));
+    let page_label = settings.pad_paging.display_name(index);
 
     let body = column![
         text("Delete page?").size(16),
@@ -520,16 +525,10 @@ pub(crate) fn page_selector(state: &State, width: f32) -> Option<Element<'_, Mes
     if !pp.enabled {
         return None;
     }
-    let options: Vec<PageRef> = pp
-        .pages
-        .iter()
-        .enumerate()
-        .map(|(i, page)| PageRef {
-            index: i,
-            label: page
-                .name
-                .clone()
-                .unwrap_or_else(|| format!("Pad Page {}", slot_letter(i))),
+    let options: Vec<PageRef> = (0..pp.pages.len())
+        .map(|index| PageRef {
+            index,
+            label: pp.display_name(index),
         })
         .collect();
     let selected = options.get(pp.active).cloned();

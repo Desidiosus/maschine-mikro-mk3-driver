@@ -17,6 +17,21 @@ pub enum InspectorTab {
     Pages,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageColorChoice {
+    Inherit,
+    Color(settings::PadColors),
+}
+
+impl std::fmt::Display for PageColorChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PageColorChoice::Inherit => write!(f, "Inherit"),
+            PageColorChoice::Color(c) => write!(f, "{c}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     /// Connection established; carries the channel to send requests to the driver.
@@ -107,6 +122,7 @@ pub enum Message {
     /// `text_input` in place of its plain-text name and focuses it. Only one
     /// row edits at a time.
     BeginRenamePage(usize),
+    SetPageColor(usize, crate::message::PageColorChoice),
     /// A press started on a page row (row-level `mouse_area`, not the styled
     /// `button` it wraps — the button would otherwise swallow the press
     /// before the `mouse_area` ever saw it). Carries the row index.

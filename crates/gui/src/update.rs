@@ -516,6 +516,17 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                 crate::inspector::pages::view::page_name_input_id(i),
             );
         }
+        Message::SetPageColor(i, choice) => {
+            use crate::message::PageColorChoice;
+            state.apply_pad_paging(true, move |pp| {
+                if let Some(page) = pp.pages.get_mut(i) {
+                    page.color = match choice {
+                        PageColorChoice::Inherit => None,
+                        PageColorChoice::Color(c) => Some(c),
+                    };
+                }
+            });
+        }
         Message::PageDragStart(i) => {
             state.page_drag = Some(crate::app::PageDrag {
                 from: i,

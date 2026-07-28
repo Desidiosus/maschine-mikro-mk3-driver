@@ -92,23 +92,10 @@ pub struct State {
 pub(crate) mod page_ops {
     use settings::{MAX_PAGES, MIN_PAGES, PadPaging};
 
-    /// The next default page name: "Pad Page A" through "Pad Page Z", the
-    /// first letter no existing page already uses as its exact name. Assigned
-    /// once at creation and never derived from position, so a reorder never
-    /// renames. `MAX_PAGES` (16) < 26, so whenever a page can still be added
-    /// a free letter exists; the numeric fallback is purely defensive.
-    pub(crate) fn next_page_name(pp: &PadPaging) -> String {
-        let taken: Vec<&str> = pp.pages.iter().filter_map(|p| p.name.as_deref()).collect();
-        ('A'..='Z')
-            .map(|letter| format!("Pad Page {letter}"))
-            .find(|candidate| !taken.iter().any(|name| name == candidate))
-            .unwrap_or_else(|| format!("Pad Page {}", pp.pages.len() + 1))
-    }
-
     pub(crate) fn add(pp: &mut PadPaging) {
         if pp.pages.len() < MAX_PAGES {
-            let name = next_page_name(pp);
-            let mut page = settings::pad_paging::default_page();
+            let name = pp.next_page_name();
+            let mut page = pp.new_page();
             page.name = Some(name);
             pp.pages.push(page);
         }
@@ -119,8 +106,10 @@ pub(crate) mod page_ops {
             && let Some(mut page) = pp.pages.get(index).cloned()
         {
             // A duplicate is a new page, not a clone of the source's identity:
-            // it gets its own fresh letter rather than reusing the source's name.
-            page.name = Some(next_page_name(pp));
+            // it gets its own id and its own fresh letter rather than reusing the
+            // source's.
+            page.id = pp.next_page_id();
+            page.name = Some(pp.next_page_name());
             pp.pages.insert(index + 1, page);
             // The copy lands at index+1, so an active page after that shifts up
             // one. Duplicating the active page itself keeps `active` on the
@@ -187,6 +176,23 @@ mod page_ops_tests {
             add(&mut pp);
         }
         assert_eq!(pp.pages.len(), 16);
+    }
+
+    #[test]
+    fn every_created_page_gets_its_own_id() {
+        // A duplicate copies the source's mappings, not its identity: sharing an
+        // id would make the two pages indistinguishable to everything that tracks
+        // which page is showing.
+        let mut pp = default_pad_paging();
+        add(&mut pp);
+        duplicate(&mut pp, 0);
+
+        let mut ids: Vec<_> = pp.pages.iter().map(|page| page.id).collect();
+        let count = ids.len();
+        assert_eq!(count, 3);
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "page ids must be unique");
     }
 
     #[test]
