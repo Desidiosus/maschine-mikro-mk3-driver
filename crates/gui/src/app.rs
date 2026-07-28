@@ -467,23 +467,63 @@ impl State {
         let top_bar = crate::shell::view::top_bar(self);
         let inspector = crate::inspector::view::inspector(self);
 
-        let device_pane = container(
-            column![
-                container(
-                    checkbox(self.show_all_labels)
-                        .label("Show all labels")
-                        .on_toggle(Message::ToggleShowAllLabels),
-                )
-                .width(Length::Fill)
-                .align_x(iced::alignment::Horizontal::Right),
-                container(device_view(self)).height(Length::Fill),
-            ]
-            .spacing(6),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .align_y(iced::alignment::Vertical::Top)
-        .padding(8);
+        // The page selector sits directly on the pad-grid frame, like the
+        // reference editor. Only the selector needs the resolved size, so only
+        // it is built inside `responsive` — the closure runs on every layout
+        // pass, and rebuilding the whole device canvas (16 pads, 41 buttons,
+        // hotspots, labels) there would redo that work on every resize frame.
+        // As a stack layer it is laid out against the base layer's size, which
+        // is the same bounds the canvas draws with, so resolving the frame
+        // through the helper the canvas strokes it with puts the selector on the
+        // rectangle that is actually drawn, at every window size.
+        let canvas = container(device_view(self))
+            .width(Length::Fill)
+            .height(Length::Fill);
+        let selector_overlay = iced::widget::responsive(move |size| {
+            let Some(frame) =
+                crate::device::view::pad_frame_rect(&self.device, size.width, size.height)
+            else {
+                return iced::widget::Space::new().into();
+            };
+            // Just over a third of the frame's width: wide enough for a page
+            // name at 13px, narrow enough that it covers only the first pad
+            // column's headroom instead of dominating the frame's top edge.
+            let Some(selector) =
+                crate::inspector::pages::view::page_selector(self, frame.width * 0.35)
+            else {
+                return iced::widget::Space::new().into();
+            };
+            // Anchored at the frame's top-left corner, INSIDE the dashed
+            // rectangle (like the reference editor): the frame's outset gives
+            // it headroom there, whereas sitting above the frame would cover
+            // the button row directly over the pads.
+            container(selector)
+                .padding(iced::Padding {
+                    top: frame.y,
+                    left: frame.x,
+                    ..iced::Padding::ZERO
+                })
+                .into()
+        });
+        let device_area = iced::widget::stack![canvas, selector_overlay];
+
+        let device_col = column![
+            container(
+                checkbox(self.show_all_labels)
+                    .label("Show all labels")
+                    .on_toggle(Message::ToggleShowAllLabels),
+            )
+            .width(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Right),
+            container(device_area).height(Length::Fill),
+        ]
+        .spacing(6);
+
+        let device_pane = container(device_col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(iced::alignment::Vertical::Top)
+            .padding(8);
 
         let main = row![device_pane, inspector].height(Length::Fill);
         let base = column![top_bar, main].spacing(4);

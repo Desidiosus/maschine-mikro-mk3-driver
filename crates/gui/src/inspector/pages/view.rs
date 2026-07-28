@@ -1,4 +1,6 @@
-use iced::widget::{Space, button, column, container, mouse_area, row, text, text_input};
+use iced::widget::{
+    Space, button, column, container, mouse_area, pick_list, row, text, text_input,
+};
 use iced::{Background, Border, Color, Element, Length, Theme};
 
 use crate::app::State;
@@ -488,6 +490,77 @@ pub(crate) fn delete_page_overlay(state: &State) -> Element<'_, Message> {
     )
     .on_press(Message::CancelDeletePage)
     .into()
+}
+
+/// A page's index paired with its resolved display name: the option type for
+/// the Hardware Area page-selector `pick_list`, which needs `Display` for the
+/// dropdown text but must still carry the index back to `Message::SelectPage`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PageRef {
+    pub(crate) index: usize,
+    pub(crate) label: String,
+}
+
+impl std::fmt::Display for PageRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
+/// The page-selector dropdown anchored to the pad-grid frame's top-left
+/// corner, showing the active page's resolved name. `width` comes from the
+/// caller because the selector is sized against the drawn frame, not against
+/// the layout it sits in. `None` when paging is disabled or settings have not
+/// arrived yet, so the device pane looks exactly as it does today until a
+/// user opts into paging. A checked `get` (not indexing) into `pages` keeps
+/// this inert rather than panicking if `active` is momentarily out of range.
+pub(crate) fn page_selector(state: &State, width: f32) -> Option<Element<'_, Message>> {
+    let settings = state.settings.as_ref()?;
+    let pp = &settings.pad_paging;
+    if !pp.enabled {
+        return None;
+    }
+    let options: Vec<PageRef> = pp
+        .pages
+        .iter()
+        .enumerate()
+        .map(|(i, page)| PageRef {
+            index: i,
+            label: page
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("Pad Page {}", slot_letter(i))),
+        })
+        .collect();
+    let selected = options.get(pp.active).cloned();
+    Some(
+        pick_list(options, selected, |p: PageRef| Message::SelectPage(p.index))
+            .text_size(13)
+            .padding([5, 10])
+            .width(Length::Fixed(width))
+            .style(|_theme: &Theme, status| {
+                // The selector sits on top of the pad grid, so at rest it
+                // stays translucent to keep the pads underneath readable;
+                // hovering or opening it brings it to full opacity for the
+                // actual interaction.
+                let alpha: f32 = match status {
+                    pick_list::Status::Active => 0.55,
+                    pick_list::Status::Hovered | pick_list::Status::Opened { .. } => 1.0,
+                };
+                pick_list::Style {
+                    text_color: Color::from_rgba(1.0, 1.0, 1.0, alpha.max(0.9)),
+                    placeholder_color: Color::from_rgba(1.0, 1.0, 1.0, 0.7 * alpha),
+                    handle_color: Color::from_rgba(1.0, 1.0, 1.0, alpha),
+                    background: Background::Color(Color::from_rgba(0.16, 0.65, 0.86, alpha)),
+                    border: Border {
+                        color: Color::from_rgba(0.10, 0.50, 0.70, alpha),
+                        width: 1.0,
+                        radius: 2.0.into(),
+                    },
+                }
+            })
+            .into(),
+    )
 }
 
 #[cfg(test)]
