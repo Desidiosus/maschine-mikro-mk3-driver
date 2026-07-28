@@ -161,8 +161,8 @@ pub struct PartialPadPage {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<PadColors>,
-    /// Set the page name back to `None` (render as "Page N"). Distinguishes a
-    /// deliberate reset-to-default from "field absent / no change".
+    /// Set the page name back to `None`. Distinguishes a deliberate
+    /// reset-to-default from "field absent / no change".
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub clear_name: bool,
     /// Set the page color back to `None` (inherit `default_page_color`).
@@ -1139,10 +1139,29 @@ note = 55
     }
 
     #[test]
+    fn pages_merged_from_partials_without_names_stay_unnamed() {
+        // A partial page that omits `name` must merge as unnamed: filling a
+        // concrete schema default here gives every such page the same name,
+        // which the GUI then shows as duplicate rows. Naming is GUI policy.
+        let delta = PartialSettings {
+            pad_paging: Some(PartialPadPaging {
+                pages: Some(vec![PartialPadPage::default(), PartialPadPage::default()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let merged = Settings::default().merge_overrides(delta);
+        assert_eq!(merged.pad_paging.pages.len(), 2);
+        assert!(
+            merged.pad_paging.pages.iter().all(|p| p.name.is_none()),
+            "missing names must not be filled with a schema default"
+        );
+    }
+
+    #[test]
     fn pads_with_out_of_range_active_self_heals_instead_of_failing_validate() {
-        // Superseded by the merge-time clamp: an out-of-range `active` now
-        // self-heals instead of surviving into an invalid `Settings` (previously
-        // this asserted `validate().is_err()`; now the merge itself repairs it).
+        // An out-of-range `active` self-heals during the merge instead of
+        // surviving into a `Settings` that `validate` would then reject.
         let partial = PartialSettings {
             pad_paging: Some(PartialPadPaging {
                 enabled: None,
@@ -1340,6 +1359,44 @@ note = 55
             "moved explicit page keeps its color"
         );
         assert_eq!(merged.pad_paging.pages[1].name.as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn multi_page_reorder_preserves_names_through_the_rebuild_diff_path() {
+        // 3 pages, pushed onto defaults so the page count differs from
+        // `Settings::default()`'s single page — this exercises the
+        // "structural" diff path that rebuilds each page against a fresh
+        // `default_page()` rather than diffing positionally against `base`.
+        let mut s = Settings::default();
+        s.pad_paging.pages.push(s.pad_paging.new_page());
+        s.pad_paging.pages.push(s.pad_paging.new_page());
+        s.pad_paging.pages[0].name = Some("Page 1".to_string());
+        s.pad_paging.pages[1].name = Some("Page 2".to_string());
+        s.pad_paging.pages[2].name = Some("Page 3".to_string());
+
+        // Reorder: move "Page 3" to the front, "Page 1" to the back. Page
+        // identity (name) must travel with the move, not stay pinned to slot.
+        s.pad_paging.pages.swap(0, 2);
+        assert_eq!(s.pad_paging.pages[0].name.as_deref(), Some("Page 3"));
+        assert_eq!(s.pad_paging.pages[2].name.as_deref(), Some("Page 1"));
+
+        let diff = s.diff_from_defaults();
+        // Every name differs from the unnamed default page, so each page's
+        // diff emits its name and the reorder round-trips by identity.
+        let round_tripped = Settings::default().merge_overrides(diff);
+        assert_eq!(round_tripped, s);
+        assert_eq!(
+            round_tripped.pad_paging.pages[0].name.as_deref(),
+            Some("Page 3")
+        );
+        assert_eq!(
+            round_tripped.pad_paging.pages[1].name.as_deref(),
+            Some("Page 2")
+        );
+        assert_eq!(
+            round_tripped.pad_paging.pages[2].name.as_deref(),
+            Some("Page 1")
+        );
     }
 
     #[test]
