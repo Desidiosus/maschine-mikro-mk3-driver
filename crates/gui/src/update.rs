@@ -11,6 +11,12 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
     use crate::device::view::control_index_valid;
     use protocol::{DriverToGui, GuiToDriver};
 
+    // Almost every arm below only mutates `state`; `BeginRenamePage` is the
+    // sole exception that needs to return a real `Task` (focusing the
+    // now-visible `text_input`), so it assigns into this instead of every
+    // other arm having to end in an explicit `Task::none()`.
+    let mut task = Task::none();
+
     match message {
         Message::Ready(sender) => {
             let _ = sender.send(GuiToDriver::GetSettings);
@@ -31,8 +37,30 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             // the driver's post-rejection state and must replace the stale
             // optimistic value even though `seq` has advanced past the rejection.
             if state.resync_pending || state.last_acked_seq >= state.seq {
+                // Every persisted apply is answered with an ack *and* a full
+                // snapshot, so most adoptions are the driver echoing back the
+                // page list the GUI already shows. Transient row gestures
+                // address rows by index, so they only have to be dropped when
+                // the adopted list actually differs from the one they were
+                // started against — an identical echo moves no row.
+                let pages_changed = state
+                    .settings
+                    .as_ref()
+                    .is_none_or(|current| current.pad_paging != snapshot.pad_paging);
                 state.settings = Some(snapshot);
                 state.resync_pending = false;
+                if pages_changed {
+                    // An adopted snapshot can shrink or reorder
+                    // `pad_paging.pages` out from under an open
+                    // delete-confirmation dialog, so drop it rather than risk
+                    // it confirming against a page that has moved or no longer
+                    // exists.
+                    state.confirm_delete_page = None;
+                    // Same for an in-progress rename: a snapshot can leave
+                    // `editing_page_name` pointing at a row that moved or no
+                    // longer exists.
+                    state.editing_page_name = None;
+                }
             }
         }
         Message::Frame(DriverToGui::Ack { seq, result }) => {
@@ -395,13 +423,81 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SetPadLedMode(tab, mode) => state.apply_pad_led_mode(tab, mode),
         Message::SetPadLedColor(tab, slot, color) => state.apply_pad_led_color(tab, slot, color),
         Message::SetInspectorTab(tab) => state.inspector_tab = tab,
-        Message::SetPagingEnabled(enabled) => state.apply_pad_paging(true, |p| p.enabled = enabled),
-        Message::SelectPage(index) => state.apply_pad_paging(true, |p| p.active = index),
+        Message::SetPagingEnabled(enabled) => {
+            state.apply_pad_paging(true, |p| p.enabled = enabled);
+            // Disabling paging removes the row list from the view entirely, so
+            // an open delete-confirmation dialog has nothing left to confirm
+            // against and an open rename field has no row left to render it.
+            // Clearing unconditionally (not just on disable) is simplest and
+            // always safe.
+            state.confirm_delete_page = None;
+            state.editing_page_name = None;
+        }
+        Message::SelectPage(index) => {
+            // Switching the active page must not leave an in-progress Assign
+            // edit (or a debounce armed to flush it) pointed at the page that
+            // was active when the user started typing.
+            state.reset_assign_edit();
+            state.persist_debounce = 0;
+            state.apply_pad_paging(true, |p| p.active = index);
+            // Nor a rename left open on the page being switched away from.
+            state.editing_page_name = None;
+        }
         Message::SetDefaultPageColor(color) => {
             state.apply_pad_paging(true, |p| p.default_page_color = color)
         }
+        Message::AddPage => state.apply_pad_paging(true, crate::app::page_ops::add),
+        Message::DuplicatePage(i) => {
+            state.apply_pad_paging(true, move |pp| crate::app::page_ops::duplicate(pp, i))
+        }
+        Message::RequestDeletePage(i) => state.confirm_delete_page = Some(i),
+        Message::ConfirmDeletePage => {
+            if let Some(i) = state.confirm_delete_page.take() {
+                state.apply_pad_paging(true, move |pp| crate::app::page_ops::delete(pp, i));
+            }
+        }
+        Message::CancelDeletePage => state.confirm_delete_page = None,
+        Message::SetPageName(i, name) => {
+            // No trim here: `text_input` is fully controlled and its value comes
+            // from `page.name`, so trimming each keystroke would swallow spaces
+            // and make multi-word names impossible to type. Trimmed on commit.
+            state.apply_pad_paging(false, move |pp| {
+                if let Some(page) = pp.pages.get_mut(i) {
+                    page.name = if name.is_empty() { None } else { Some(name) };
+                }
+            });
+            state.persist_debounce = crate::app::PERSIST_DEBOUNCE_TICKS;
+        }
+        Message::CommitPageName(i) => {
+            state.apply_pad_paging(true, move |pp| {
+                let Some(current) = pp.pages.get(i).map(|p| p.name.clone().unwrap_or_default())
+                else {
+                    return;
+                };
+                let trimmed = current.trim().to_string();
+                // Committing to empty is a deliberate reset, not a return to a
+                // placeholder: the page gets a fresh default letter name so the
+                // field is never blank and never position-derived.
+                let name = if trimmed.is_empty() {
+                    crate::app::page_ops::next_page_name(pp)
+                } else {
+                    trimmed
+                };
+                if let Some(page) = pp.pages.get_mut(i) {
+                    page.name = Some(name);
+                }
+            });
+            state.persist_debounce = 0;
+            state.editing_page_name = None;
+        }
+        Message::BeginRenamePage(i) => {
+            state.editing_page_name = Some(i);
+            task = iced::widget::operation::focus(
+                crate::inspector::pages::view::page_name_input_id(i),
+            );
+        }
     }
-    Task::none()
+    task
 }
 /// Resolve a freshly-selected control to its inspector target. Encoder push/touch
 /// arrive as button slots 39/40 on the wire but are sub-actions of the Encoder;
@@ -892,5 +988,293 @@ mod tests {
             .midi_out;
         assert_eq!(out.mode, PadLedMode::Single);
         assert_eq!(out.single, PadColors::Red);
+    }
+
+    /// Three named pad pages so assertions are about page *identity*, not
+    /// index — mirrors `app::page_ops_tests::named_pages`.
+    fn named_pad_pages(state: &mut State, names: [&str; 3]) {
+        let _ = update(state, Message::AddPage);
+        let _ = update(state, Message::AddPage);
+        for (i, name) in names.into_iter().enumerate() {
+            let _ = update(state, Message::SetPageName(i, name.to_string()));
+        }
+    }
+
+    fn page_names(state: &State) -> Vec<Option<String>> {
+        state
+            .settings
+            .as_ref()
+            .unwrap()
+            .pad_paging
+            .pages
+            .iter()
+            .map(|p| p.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn typed_page_name_keeps_interior_and_trailing_spaces_until_commit() {
+        let (mut state, rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+        while rx.try_recv().is_ok() {}
+
+        // A trailing space must survive the keystroke that typed it: trimming
+        // on every input event would make it impossible to ever type a second
+        // word, since the space immediately after the first word is trimmed
+        // away before the next letter arrives.
+        let _ = update(&mut state, Message::SetPageName(0, "Drum Bus ".to_string()));
+        assert_eq!(
+            page_names(&state)[0],
+            Some("Drum Bus ".to_string()),
+            "typing must not trim mid-edit"
+        );
+        assert_eq!(state.persist_debounce, crate::app::PERSIST_DEBOUNCE_TICKS);
+        assert!(
+            drained_frames(&rx).iter().any(is_live_apply),
+            "typing applies live, not persisted"
+        );
+
+        let _ = update(&mut state, Message::CommitPageName(0));
+        assert_eq!(
+            page_names(&state)[0],
+            Some("Drum Bus".to_string()),
+            "commit trims the trailing whitespace"
+        );
+        assert_eq!(
+            state.persist_debounce, 0,
+            "commit persists immediately, dropping any pending debounce"
+        );
+        assert!(
+            drained_frames(&rx)
+                .iter()
+                .any(|f| matches!(f, GuiToDriver::Apply { persist: true, .. })),
+            "commit persists the trimmed name"
+        );
+    }
+
+    #[test]
+    fn committing_an_empty_name_resets_to_a_concrete_name_not_blank() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        // Clear page 1's name (index 1, currently "B") and commit.
+        let _ = update(&mut state, Message::SetPageName(1, String::new()));
+        let _ = update(&mut state, Message::CommitPageName(1));
+
+        // Never None (that would fall back to a position-derived label that
+        // could later go stale) and never blank — a fresh default letter name
+        // is stored immediately.
+        assert_eq!(
+            page_names(&state)[1],
+            Some("Pad Page A".to_string()),
+            "an empty commit resets to a fresh letter name, not None or blank"
+        );
+    }
+
+    #[test]
+    fn begin_rename_opens_the_row_and_commit_closes_it() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        let _ = update(&mut state, Message::BeginRenamePage(1));
+        assert_eq!(
+            state.editing_page_name,
+            Some(1),
+            "the pencil button opens that row's text_input"
+        );
+
+        let _ = update(&mut state, Message::CommitPageName(1));
+        assert_eq!(
+            state.editing_page_name, None,
+            "committing the name closes the row back to plain text"
+        );
+    }
+
+    #[test]
+    fn selecting_a_page_closes_any_open_rename() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        let _ = update(&mut state, Message::BeginRenamePage(0));
+        assert_eq!(state.editing_page_name, Some(0));
+
+        let _ = update(&mut state, Message::SelectPage(2));
+        assert_eq!(
+            state.editing_page_name, None,
+            "switching pages must not leave a stale row stuck in rename mode"
+        );
+    }
+
+    #[test]
+    fn adopted_settings_snapshot_clears_an_in_progress_rename() {
+        use std::sync::Arc;
+        let (mut state, _rx) = seeded();
+        let mut settings = Settings::default();
+        crate::app::page_ops::add(&mut settings.pad_paging);
+        state.settings = Some(Arc::new(settings));
+
+        let _ = update(&mut state, Message::BeginRenamePage(0));
+        assert!(state.editing_page_name.is_some());
+
+        let _ = update(
+            &mut state,
+            Message::Frame(DriverToGui::Settings(Box::default())),
+        );
+
+        assert!(
+            state.editing_page_name.is_none(),
+            "an adopted settings snapshot must not leave a rename open on a \
+             row that may have moved or no longer exists"
+        );
+    }
+
+    #[test]
+    fn disabling_paging_clears_an_in_progress_rename() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        let _ = update(&mut state, Message::BeginRenamePage(0));
+        assert!(state.editing_page_name.is_some());
+
+        let _ = update(&mut state, Message::SetPagingEnabled(false));
+
+        assert!(
+            state.editing_page_name.is_none(),
+            "disabling paging removes the row list; an open rename can't survive it"
+        );
+    }
+
+    #[test]
+    fn select_page_resets_an_in_progress_assign_edit() {
+        use crate::inspector::assign::numeric::EditField;
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        state.edit_field = Some(EditField::PadHitNote);
+        state.edit_text = "6".to_string();
+        state.persist_debounce = crate::app::PERSIST_DEBOUNCE_TICKS;
+
+        let _ = update(&mut state, Message::SelectPage(1));
+
+        assert!(
+            state.edit_field.is_none(),
+            "switching pages must clear an in-progress edit field"
+        );
+        assert!(
+            state.edit_text.is_empty(),
+            "switching pages must clear in-progress edit text"
+        );
+        assert_eq!(
+            state.persist_debounce, 0,
+            "switching pages must clear any armed persist debounce so it can't \
+             flush an edit meant for the old page onto the new one"
+        );
+        assert_eq!(state.settings.as_ref().unwrap().pad_paging.active, 1);
+    }
+
+    #[test]
+    fn request_delete_page_opens_the_dialog_without_deleting() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        let _ = update(&mut state, Message::RequestDeletePage(1));
+
+        assert_eq!(
+            state.confirm_delete_page,
+            Some(1),
+            "the row action opens the confirmation dialog"
+        );
+        assert_eq!(
+            page_names(&state),
+            vec![Some("A".into()), Some("B".into()), Some("C".into())],
+            "nothing is deleted until the dialog is confirmed"
+        );
+    }
+
+    #[test]
+    fn confirm_delete_page_deletes_and_closes_the_dialog() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        let _ = update(&mut state, Message::RequestDeletePage(1));
+        let _ = update(&mut state, Message::ConfirmDeletePage);
+
+        assert_eq!(
+            page_names(&state),
+            vec![Some("A".into()), Some("C".into())],
+            "confirming deletes the page the dialog was opened for"
+        );
+        assert!(
+            state.confirm_delete_page.is_none(),
+            "confirming closes the dialog"
+        );
+    }
+
+    #[test]
+    fn cancel_delete_page_closes_the_dialog_without_deleting() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        let _ = update(&mut state, Message::RequestDeletePage(1));
+        let _ = update(&mut state, Message::CancelDeletePage);
+
+        assert!(state.confirm_delete_page.is_none());
+        assert_eq!(
+            page_names(&state),
+            vec![Some("A".into()), Some("B".into()), Some("C".into())],
+            "cancelling deletes nothing"
+        );
+    }
+
+    #[test]
+    fn confirm_delete_page_without_a_pending_request_is_a_noop() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        let _ = update(&mut state, Message::ConfirmDeletePage);
+
+        assert_eq!(
+            page_names(&state),
+            vec![Some("A".into()), Some("B".into()), Some("C".into())]
+        );
+    }
+
+    #[test]
+    fn disabling_paging_clears_an_open_delete_confirmation() {
+        let (mut state, _rx) = seeded();
+        named_pad_pages(&mut state, ["A", "B", "C"]);
+
+        let _ = update(&mut state, Message::RequestDeletePage(1));
+        assert!(state.confirm_delete_page.is_some());
+
+        let _ = update(&mut state, Message::SetPagingEnabled(false));
+
+        assert!(
+            state.confirm_delete_page.is_none(),
+            "disabling paging removes the row list; an open dialog can't survive it"
+        );
+    }
+
+    #[test]
+    fn adopted_settings_snapshot_clears_an_open_delete_confirmation() {
+        use std::sync::Arc;
+        let (mut state, _rx) = seeded();
+        let mut settings = Settings::default();
+        crate::app::page_ops::add(&mut settings.pad_paging);
+        state.settings = Some(Arc::new(settings));
+
+        let _ = update(&mut state, Message::RequestDeletePage(0));
+        assert!(state.confirm_delete_page.is_some());
+
+        let _ = update(
+            &mut state,
+            Message::Frame(DriverToGui::Settings(Box::default())),
+        );
+
+        assert!(
+            state.confirm_delete_page.is_none(),
+            "an adopted settings snapshot must not leave a delete confirmation \
+             orphaned — the page it named may no longer exist"
+        );
     }
 }

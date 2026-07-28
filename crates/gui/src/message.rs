@@ -84,6 +84,27 @@ pub enum Message {
     SetPagingEnabled(bool),
     SelectPage(usize),
     SetDefaultPageColor(settings::PadColors),
+    AddPage,
+    DuplicatePage(usize),
+    /// The row-actions Delete button pressed for a page index: opens the
+    /// confirmation dialog rather than deleting immediately.
+    RequestDeletePage(usize),
+    /// The confirmation dialog's Delete button: deletes the page named by
+    /// `State::confirm_delete_page` and closes the dialog.
+    ConfirmDeletePage,
+    /// The confirmation dialog's Cancel button (or a scrim click): closes the
+    /// dialog without deleting anything.
+    CancelDeletePage,
+    SetPageName(usize, String),
+    /// Enter (or focus loss via `on_submit`) after typing a page name: trims
+    /// the in-progress text and persists it. Typing itself (`SetPageName`)
+    /// stores the raw text and applies live without trimming, since trimming
+    /// every keystroke would swallow spaces before a trailing word is typed.
+    CommitPageName(usize),
+    /// The row's pencil button pressed for a page index: shows that row's
+    /// `text_input` in place of its plain-text name and focuses it. Only one
+    /// row edits at a time.
+    BeginRenamePage(usize),
     /// No-op; swallows clicks inside the Preferences panel so they don't reach
     /// the modal backdrop and close it.
     Ignore,

@@ -372,7 +372,7 @@ pub fn pad_form<'a>(
 
 /// A labeled `pick_list` row: `label  [ value ▾ ]`. `selected` is the shared
 /// value, or `None` (indeterminate → placeholder) across a multi-selection.
-fn labeled_pick_list<'a, T>(
+pub(crate) fn labeled_pick_list<'a, T>(
     label: &str,
     options: &'a [T],
     selected: Option<T>,
