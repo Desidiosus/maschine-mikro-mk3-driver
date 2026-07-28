@@ -48,10 +48,36 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
                     current.pad_paging.enabled != snapshot.pad_paging.enabled
                         || current.pad_paging.pages != snapshot.pad_paging.pages
                 });
+                let first_snapshot = state.settings.is_none();
                 state.settings = Some(snapshot);
                 state.resync_pending = false;
                 if rows_changed {
                     clear_page_gestures(state);
+                }
+                // Overrides persisted before pages carried names (or partials
+                // that omitted them) load as unnamed pages. Names are assigned
+                // at creation and never derived from position, so fill the gaps
+                // with fresh default letter names and persist — but only from
+                // the session's first snapshot, which is the only one that can
+                // be a migration. Every later snapshot is the driver echoing
+                // state the GUI already produced, where an unnamed page means
+                // the user is mid-rename with the field cleared; renaming it
+                // out from under them would fill the `text_input` they are
+                // typing in. A rejected persist also resyncs the same unnamed
+                // pages straight back, which would re-fire this apply forever.
+                let has_unnamed = state
+                    .settings
+                    .as_ref()
+                    .is_some_and(|s| s.pad_paging.pages.iter().any(|p| p.name.is_none()));
+                if first_snapshot && has_unnamed {
+                    state.apply_pad_paging(true, |pp| {
+                        for i in 0..pp.pages.len() {
+                            if pp.pages[i].name.is_none() {
+                                let name = pp.next_page_name();
+                                pp.pages[i].name = Some(name);
+                            }
+                        }
+                    });
                 }
             }
         }
@@ -669,12 +695,20 @@ mod tests {
     use protocol::{DriverToGui, GuiToDriver};
     use settings::Settings;
 
-    /// A connected `State` with a snapshot already adopted, plus the channel the
-    /// driver would read outgoing frames from.
-    fn seeded() -> (State, std::sync::mpsc::Receiver<GuiToDriver>) {
-        let mut state = State::default();
+    /// A connected `State` that has not yet seen a settings snapshot, plus the
+    /// channel the driver would read outgoing frames from.
+    fn connected() -> (State, std::sync::mpsc::Receiver<GuiToDriver>) {
         let (tx, rx) = std::sync::mpsc::channel();
-        state.sender = Some(tx);
+        let state = State {
+            sender: Some(tx),
+            ..State::default()
+        };
+        (state, rx)
+    }
+
+    /// A connected `State` with the default snapshot already adopted.
+    fn seeded() -> (State, std::sync::mpsc::Receiver<GuiToDriver>) {
+        let (mut state, rx) = connected();
         let _ = update(
             &mut state,
             Message::Frame(DriverToGui::Settings(Box::default())),
@@ -1555,6 +1589,131 @@ mod tests {
             Some(1),
             "the driver echoing back the state the GUI already shows must not \
              close the rename the same gesture just opened"
+        );
+    }
+
+    #[test]
+    fn the_first_snapshot_names_unnamed_pages_and_persists() {
+        let (mut state, rx) = connected();
+
+        let mut settings = Settings::default();
+        settings
+            .pad_paging
+            .pages
+            .push(settings::pad_paging::default_page());
+        settings.pad_paging.pages[0].name = None;
+        settings.pad_paging.pages[1].name = Some("Kick".to_string());
+
+        let _ = update(
+            &mut state,
+            Message::Frame(DriverToGui::Settings(Box::new(settings))),
+        );
+
+        assert_eq!(
+            page_names(&state),
+            vec![Some("Pad Page A".to_string()), Some("Kick".to_string())],
+            "a migrated config's unnamed pages get fresh default letter names"
+        );
+        assert!(
+            drained_frames(&rx)
+                .iter()
+                .any(|f| matches!(f, GuiToDriver::Apply { persist: true, .. })),
+            "the assigned names persist"
+        );
+    }
+
+    #[test]
+    fn the_default_snapshot_writes_nothing_on_launch() {
+        let (mut state, rx) = connected();
+
+        let _ = update(
+            &mut state,
+            Message::Frame(DriverToGui::Settings(Box::default())),
+        );
+
+        assert!(
+            rx.try_recv().is_err(),
+            "a fresh default config has no unnamed page, so merely launching the \
+             GUI must not write a settings file the user never edited"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_never_disturbs_a_rename_in_progress() {
+        let (mut state, rx) = seeded();
+
+        // The user opens a rename and clears the field. The stored name stays
+        // put — an empty field is a state of the field, not of the page, so no
+        // page is ever momentarily unnamed for the migration to "fix".
+        let _ = update(&mut state, Message::BeginRenamePage(0));
+        let _ = update(&mut state, Message::SetPageName(0, String::new()));
+        state.last_acked_seq = state.seq;
+        while rx.try_recv().is_ok() {}
+
+        assert_eq!(page_names(&state)[0], Some("Pad Page A".to_string()));
+
+        // The driver echoes back exactly what the GUI already shows.
+        let echo = (**state.settings.as_ref().unwrap()).clone();
+        let _ = update(
+            &mut state,
+            Message::Frame(DriverToGui::Settings(Box::new(echo))),
+        );
+
+        assert_eq!(
+            state.editing_page_name,
+            Some(0),
+            "an echoed snapshot must not close the field the user is typing in"
+        );
+        assert_eq!(state.page_name_text, "");
+        assert!(rx.try_recv().is_err(), "and must not apply anything either");
+    }
+
+    #[test]
+    fn normalization_is_attempted_once_not_looped_on_rejection() {
+        let (mut state, rx) = connected();
+
+        let mut settings = Settings::default();
+        settings.pad_paging.pages[0].name = None;
+
+        let _ = update(
+            &mut state,
+            Message::Frame(DriverToGui::Settings(Box::new(settings.clone()))),
+        );
+
+        let frames = drained_frames(&rx);
+        assert_eq!(
+            frames.len(),
+            1,
+            "exactly one normalization apply is sent for the unnamed page"
+        );
+        let seq = match frames[0] {
+            GuiToDriver::Apply {
+                seq, persist: true, ..
+            } => seq,
+            ref other => panic!("expected a persisted Apply, got {other:?}"),
+        };
+
+        // The driver rejects the persist (e.g. disk full): settings revert to
+        // the still-unnamed authoritative snapshot and a resync is requested.
+        let _ = update(
+            &mut state,
+            Message::Frame(DriverToGui::Ack {
+                seq,
+                result: Err("disk full".to_string()),
+            }),
+        );
+        let _ = drained_frames(&rx); // the resync GetSettings
+
+        // The resync snapshot comes back just as unnamed as before, since the
+        // persist never landed.
+        let _ = update(
+            &mut state,
+            Message::Frame(DriverToGui::Settings(Box::new(settings))),
+        );
+
+        assert!(
+            drained_frames(&rx).is_empty(),
+            "normalization must not retry after its one attempt was rejected"
         );
     }
 

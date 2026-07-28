@@ -45,6 +45,7 @@
 # default_page_color = "white"
 
 [[pad_paging.pages]]
+# name = "Pad Page A"
 
 [pad_paging.pages.pads.1.hit]
 # type = "note"

@@ -174,12 +174,19 @@ pub fn default_page() -> PadPage {
     }
 }
 
+/// `default_page` is the blank template new pages are built from, so it carries
+/// no name — callers assign one. The schema's own starting page does carry one,
+/// matching what a page created through the GUI would get: an unnamed page is a
+/// gap the GUI has to migrate away, and a fresh install has nothing to migrate.
 pub fn default_pad_paging() -> PadPaging {
     PadPaging {
         enabled: false,
         active: 0,
         default_page_color: PadColors::White,
-        pages: vec![default_page()],
+        pages: vec![PadPage {
+            name: Some("Pad Page A".to_string()),
+            ..default_page()
+        }],
     }
 }
 
@@ -194,6 +201,11 @@ mod tests {
         assert_eq!(p.active, 0);
         assert_eq!(p.pages.len(), 1);
         assert_eq!(p.pages[0].pads, default_pads());
+        assert_eq!(
+            p.pages[0].name.as_deref(),
+            Some("Pad Page A"),
+            "the starting page is named, so a fresh install has no unnamed page to migrate"
+        );
     }
 
     #[test]
