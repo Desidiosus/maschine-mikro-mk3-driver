@@ -34,4 +34,5 @@ pub mod inspector {
         pub mod numeric;
         pub mod view;
     }
+    pub mod pages;
 }

@@ -33,6 +33,8 @@ pub struct State {
     pub(crate) edit_text: String,
     /// Active sub-action tab for the current selection.
     pub(crate) assign_tab: crate::inspector::assign::forms::AssignTab,
+    /// Active top-level inspector tab (Assign vs Pages).
+    pub(crate) inspector_tab: crate::message::InspectorTab,
     /// Overlay every control's assignment label on the diagram.
     pub(crate) show_all_labels: bool,
     /// Last driver-confirmed settings (from a pushed `Settings` snapshot). Used
@@ -76,6 +78,7 @@ impl Default for State {
             edit_field: None,
             edit_text: String::new(),
             assign_tab: crate::inspector::assign::forms::AssignTab::A,
+            inspector_tab: crate::message::InspectorTab::Assign,
             show_all_labels: false,
             authoritative: None,
             resync_pending: false,

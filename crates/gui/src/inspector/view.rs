@@ -1,39 +1,33 @@
-use iced::widget::{column, container, row, scrollable, text};
+use iced::widget::{column, container, scrollable};
 use iced::{Element, Length};
 
 use crate::app::State;
-use crate::message::Message;
+use crate::message::{InspectorTab, Message};
+use crate::widget::tabs::{tab_bar, tab_button};
 
 pub(crate) fn inspector(state: &State) -> Element<'_, Message> {
-    let assign_tab = container(text("Assign").size(13).color(iced::Color::WHITE))
-        .padding([6, 18])
-        .style(|_t: &iced::Theme| container::Style {
-            background: Some(iced::Background::Color(iced::Color::from_rgb(
-                0.20, 0.20, 0.25,
-            ))),
-            border: iced::Border {
-                color: iced::Color::from_rgb(0.30, 0.30, 0.34),
-                width: 1.0,
-                radius: iced::border::Radius {
-                    top_left: 5.0,
-                    top_right: 5.0,
-                    bottom_right: 0.0,
-                    bottom_left: 0.0,
-                },
-            },
-            ..Default::default()
-        });
-    let assign_tab_header = column![row![assign_tab], crate::widget::tabs::divider()]
-        .spacing(0)
-        .width(Length::Fill);
-    let inspector_body = container(
-        column![
-            assign_tab_header,
-            crate::inspector::assign::view::assignment_body(state)
-        ]
-        .spacing(8),
-    )
-    .padding(12);
+    let tabs = iced::widget::Row::with_children(vec![
+        tab_button(
+            "Assign",
+            state.inspector_tab == InspectorTab::Assign,
+            Message::SetInspectorTab(InspectorTab::Assign),
+        )
+        .into(),
+        tab_button(
+            "Pages",
+            state.inspector_tab == InspectorTab::Pages,
+            Message::SetInspectorTab(InspectorTab::Pages),
+        )
+        .into(),
+    ]);
+    let header = tab_bar(tabs);
+
+    let body: Element<'_, Message> = match state.inspector_tab {
+        InspectorTab::Assign => crate::inspector::assign::view::assignment_body(state),
+        InspectorTab::Pages => crate::inspector::pages::view::pages_body(state),
+    };
+
+    let inspector_body = container(column![header, body].spacing(8)).padding(12);
 
     container(scrollable(inspector_body))
         .width(Length::Fixed(340.0))

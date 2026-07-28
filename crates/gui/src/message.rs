@@ -11,6 +11,12 @@ use crate::inspector::assign::forms::{
 use crate::inspector::assign::mapping::PadLedColorSlot;
 use crate::inspector::assign::numeric::EditField;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InspectorTab {
+    Assign,
+    Pages,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     /// Connection established; carries the channel to send requests to the driver.
@@ -74,6 +80,7 @@ pub enum Message {
     SetPadLedMode(LedTab, settings::PadLedMode),
     /// Set the color in one slot (Single / Dual-on / Dual-off) of `tab`'s mode.
     SetPadLedColor(LedTab, PadLedColorSlot, settings::PadColors),
+    SetInspectorTab(InspectorTab),
     /// No-op; swallows clicks inside the Preferences panel so they don't reach
     /// the modal backdrop and close it.
     Ignore,

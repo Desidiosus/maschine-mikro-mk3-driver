@@ -394,6 +394,7 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SetPadLedSource(source) => state.apply_pad_led_source(source),
         Message::SetPadLedMode(tab, mode) => state.apply_pad_led_mode(tab, mode),
         Message::SetPadLedColor(tab, slot, color) => state.apply_pad_led_color(tab, slot, color),
+        Message::SetInspectorTab(tab) => state.inspector_tab = tab,
     }
     Task::none()
 }
