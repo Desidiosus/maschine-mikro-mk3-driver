@@ -8,15 +8,15 @@ use crate::widget::tabs::{tab_bar, tab_button};
 pub(crate) fn inspector(state: &State) -> Element<'_, Message> {
     let tabs = iced::widget::Row::with_children(vec![
         tab_button(
-            "Assign",
-            state.inspector_tab == InspectorTab::Assign,
-            Message::SetInspectorTab(InspectorTab::Assign),
-        )
-        .into(),
-        tab_button(
             "Pages",
             state.inspector_tab == InspectorTab::Pages,
             Message::SetInspectorTab(InspectorTab::Pages),
+        )
+        .into(),
+        tab_button(
+            "Assign",
+            state.inspector_tab == InspectorTab::Assign,
+            Message::SetInspectorTab(InspectorTab::Assign),
         )
         .into(),
     ]);
