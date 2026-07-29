@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Pad pages** — keep up to 16 pad layouts side by side and swap between them on the fly. Hold `Group` and tap a pad to pick a page; the pads show the pages while you hold, and the page name flashes on the screen. Off by default, and your choice of page is remembered across restarts.
+- **Pages tab in the GUI** — turn paging on, name your pages, drag to reorder, and add, duplicate, or delete them. Each page can have its own colour on the picker.
+- **Page picker on the pad grid** — switch pages from the app without reaching for the controller; the Assign panel shows which page the pad you're editing belongs to.
+- **Driver preferences** — soft-off (`Shift + Maschine`) and the LED sweep at launch can now be switched off in the GUI preferences.
+
+### Changed
+- **`Group` switches pages while paging is on** — it stops sending its assigned note or CC until you turn paging off again.
+- Existing configurations keep working: your current pad mapping becomes the first page.
+- Holding a pad while the page changes no longer leaves a stuck note.
+
 ## [0.5.0]
 
 ### Added
