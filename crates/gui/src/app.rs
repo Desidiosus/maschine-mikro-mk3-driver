@@ -2,12 +2,23 @@ use iced::widget::{checkbox, column, container, row};
 use std::sync::Arc;
 
 use iced::{Element, Length, Subscription, Task};
+use maschine_library::controls::Buttons;
 use protocol::{ControlRef, GuiToDriver};
 use settings::{PartialSettings, Settings};
 
 use crate::device::hotspots::Device;
 use crate::device::view::device_view;
 use crate::message::Message;
+
+/// Row-level drag state for reordering pad pages via the Pages panel list.
+/// `from` is the row a press started on; `over` is the last row the pointer
+/// entered while the drag is in progress (`None` until it crosses into
+/// another row).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PageDrag {
+    pub(crate) from: usize,
+    pub(crate) over: Option<usize>,
+}
 
 pub struct State {
     pub(crate) status: String,
@@ -33,6 +44,8 @@ pub struct State {
     pub(crate) edit_text: String,
     /// Active sub-action tab for the current selection.
     pub(crate) assign_tab: crate::inspector::assign::forms::AssignTab,
+    /// Active top-level inspector tab (Assign vs Pages).
+    pub(crate) inspector_tab: crate::message::InspectorTab,
     /// Overlay every control's assignment label on the diagram.
     pub(crate) show_all_labels: bool,
     /// Last driver-confirmed settings (from a pushed `Settings` snapshot). Used
@@ -47,6 +60,264 @@ pub struct State {
     /// re-arms this; when it counts down to zero the live state is persisted.
     /// Zero means no persist is pending.
     pub(crate) persist_debounce: u8,
+    /// In-progress row-level drag for pad page reorder, `None` when idle.
+    pub(crate) page_drag: Option<PageDrag>,
+    /// The page row the pointer is currently over, `None` when outside every
+    /// row. Purely visual (hover highlight); a stale index after the list
+    /// shrinks is harmless since no row renders for it.
+    pub(crate) hovered_page: Option<usize>,
+    /// The page index a Delete-page confirmation dialog is open for, `None`
+    /// when no dialog is showing. Deletion happens only when the dialog is
+    /// confirmed, never directly from the row action button.
+    pub(crate) confirm_delete_page: Option<usize>,
+    /// The page row currently showing its `text_input` for renaming (see
+    /// `Message::BeginRenamePage`), `None` when every row shows plain,
+    /// non-editable text. Cleared on `SelectPage`, `CommitPageName`, and
+    /// whenever an authoritative settings snapshot is adopted, so a stale
+    /// index can never point at a row that moved or no longer exists.
+    pub(crate) editing_page_name: Option<usize>,
+    /// Text typed so far into the open rename field. Held here rather than in
+    /// `settings` so keystrokes cost nothing: the name reaches the driver once
+    /// typing settles (`page_name_debounce`) or on commit, and an in-progress
+    /// edit can't be clobbered by a snapshot the driver pushes meanwhile.
+    pub(crate) page_name_text: String,
+    /// Quiet-tick countdown before `page_name_text` is applied, re-armed by every
+    /// keystroke. Zero means nothing is pending.
+    pub(crate) page_name_debounce: u8,
+}
+
+/// In-place page-vec mutations, each clamping the paging invariants
+/// (`MIN_PAGES..=MAX_PAGES` pages, `active` in range). Pure so they can be
+/// unit-tested and reused inside `apply_pad_paging` closures.
+pub(crate) mod page_ops {
+    use settings::{MAX_PAGES, MIN_PAGES, PadPaging};
+
+    pub(crate) fn add(pp: &mut PadPaging) {
+        if pp.pages.len() < MAX_PAGES {
+            let name = pp.next_page_name();
+            let mut page = pp.new_page();
+            page.name = Some(name);
+            pp.pages.push(page);
+        }
+    }
+
+    pub(crate) fn duplicate(pp: &mut PadPaging, index: usize) {
+        if pp.pages.len() < MAX_PAGES
+            && let Some(mut page) = pp.pages.get(index).cloned()
+        {
+            // A duplicate is a new page, not a clone of the source's identity:
+            // it gets its own id and its own fresh letter rather than reusing the
+            // source's.
+            page.id = pp.next_page_id();
+            page.name = Some(pp.next_page_name());
+            pp.pages.insert(index + 1, page);
+            // The copy lands at index+1, so an active page after that shifts up
+            // one. Duplicating the active page itself keeps `active` on the
+            // original, with the copy directly after it.
+            if pp.active > index {
+                pp.active += 1;
+            }
+        }
+    }
+
+    pub(crate) fn delete(pp: &mut PadPaging, index: usize) {
+        if pp.pages.len() > MIN_PAGES && index < pp.pages.len() {
+            pp.pages.remove(index);
+            // Keep the same page active by content: a removal before the active
+            // index shifts it down one. Removing the active page itself leaves
+            // `active` on whichever page took its slot.
+            if index < pp.active {
+                pp.active -= 1;
+            }
+            if pp.active >= pp.pages.len() {
+                pp.active = pp.pages.len() - 1;
+            }
+        }
+    }
+
+    /// Move the page at `from` to `to`, keeping the same page active by
+    /// content. A no-op for an out-of-range index or `from == to`; callers
+    /// should still avoid invoking this when `from == to` to skip a wasted
+    /// settings apply.
+    pub(crate) fn reorder(pp: &mut PadPaging, from: usize, to: usize) {
+        if from >= pp.pages.len() || to >= pp.pages.len() || from == to {
+            return;
+        }
+        let page = pp.pages.remove(from);
+        pp.pages.insert(to, page);
+        // Keep the same page active by content: recompute active's new index.
+        pp.active = reindex(pp.active, from, to);
+    }
+
+    /// New index of an element originally at `active` after moving `from`→`to`.
+    fn reindex(active: usize, from: usize, to: usize) -> usize {
+        if active == from {
+            to
+        } else if from < active && active <= to {
+            active - 1
+        } else if to <= active && active < from {
+            active + 1
+        } else {
+            active
+        }
+    }
+}
+
+#[cfg(test)]
+mod page_ops_tests {
+    use super::page_ops::*;
+    use settings::PadPaging;
+    use settings::pad_paging::default_pad_paging;
+
+    #[test]
+    fn add_respects_max_16() {
+        let mut pp = default_pad_paging();
+        for _ in 0..20 {
+            add(&mut pp);
+        }
+        assert_eq!(pp.pages.len(), 16);
+    }
+
+    #[test]
+    fn every_created_page_gets_its_own_id() {
+        // A duplicate copies the source's mappings, not its identity: sharing an
+        // id would make the two pages indistinguishable to everything that tracks
+        // which page is showing.
+        let mut pp = default_pad_paging();
+        add(&mut pp);
+        duplicate(&mut pp, 0);
+
+        let mut ids: Vec<_> = pp.pages.iter().map(|page| page.id).collect();
+        let count = ids.len();
+        assert_eq!(count, 3);
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "page ids must be unique");
+    }
+
+    #[test]
+    fn delete_clamps_active_and_keeps_one_page() {
+        let mut pp = default_pad_paging();
+        add(&mut pp); // 2 pages
+        pp.active = 1;
+        delete(&mut pp, 1);
+        assert_eq!(pp.pages.len(), 1);
+        assert_eq!(pp.active, 0);
+        delete(&mut pp, 0); // must not drop the last page
+        assert_eq!(pp.pages.len(), 1);
+    }
+
+    #[test]
+    fn duplicate_inserts_after_source() {
+        let mut pp = default_pad_paging();
+        pp.pages[0].name = Some("A".into());
+        duplicate(&mut pp, 0);
+        assert_eq!(pp.pages.len(), 2);
+        // The copy is a new page, not a clone of the source's identity: it
+        // gets its own fresh letter rather than reusing "A".
+        assert_eq!(pp.pages[1].name.as_deref(), Some("Pad Page A"));
+    }
+
+    #[test]
+    fn add_assigns_the_first_free_letter() {
+        let mut pp = default_pad_paging();
+        pp.pages[0].name = Some("Pad Page A".to_string());
+        add(&mut pp);
+        assert_eq!(pp.pages[1].name.as_deref(), Some("Pad Page B"));
+        add(&mut pp);
+        assert_eq!(pp.pages[2].name.as_deref(), Some("Pad Page C"));
+    }
+
+    #[test]
+    fn add_reuses_a_letter_freed_by_delete() {
+        let mut pp = default_pad_paging();
+        pp.pages[0].name = Some("Pad Page A".to_string());
+        add(&mut pp); // Pad Page B
+        add(&mut pp); // Pad Page C
+        delete(&mut pp, 1);
+        add(&mut pp);
+        assert_eq!(pp.pages[2].name.as_deref(), Some("Pad Page B"));
+    }
+
+    #[test]
+    fn renamed_pages_do_not_block_letter_assignment() {
+        let mut pp = default_pad_paging();
+        pp.pages[0].name = Some("Kick".to_string());
+        add(&mut pp);
+        assert_eq!(pp.pages[1].name.as_deref(), Some("Pad Page A"));
+    }
+
+    #[test]
+    fn duplicate_gives_the_copy_a_fresh_letter() {
+        let mut pp = default_pad_paging();
+        pp.pages[0].name = Some("Kick".to_string());
+        duplicate(&mut pp, 0);
+        assert_eq!(pp.pages[1].name.as_deref(), Some("Pad Page A"));
+    }
+
+    /// Three named pages so assertions are about page *identity*, not index.
+    fn named_pages(names: [&str; 3]) -> PadPaging {
+        let mut pp = default_pad_paging();
+        add(&mut pp);
+        add(&mut pp);
+        for (page, name) in pp.pages.iter_mut().zip(names) {
+            page.name = Some(name.to_string());
+        }
+        pp
+    }
+
+    #[test]
+    fn delete_before_active_keeps_the_same_page_active() {
+        let mut pp = named_pages(["A", "B", "C"]);
+        pp.active = 1; // B
+        delete(&mut pp, 0); // remove A, which sits before the active page
+        assert_eq!(pp.active, 0);
+        assert_eq!(pp.pages[pp.active].name.as_deref(), Some("B"));
+    }
+
+    #[test]
+    fn deleting_the_active_page_lands_on_the_page_that_took_its_slot() {
+        let mut pp = named_pages(["A", "B", "C"]);
+        pp.active = 1; // B
+        delete(&mut pp, 1); // remove the active page itself
+        assert_eq!(pp.active, 1);
+        assert_eq!(pp.pages[pp.active].name.as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn duplicate_before_active_keeps_the_same_page_active() {
+        let mut pp = named_pages(["A", "B", "C"]);
+        pp.active = 2; // C
+        duplicate(&mut pp, 0); // insert a copy of A before the active page
+        assert_eq!(pp.active, 3);
+        assert_eq!(pp.pages[pp.active].name.as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn reorder_moves_active_with_the_page() {
+        let mut pp = default_pad_paging();
+        add(&mut pp);
+        add(&mut pp); // 3 pages, active 0
+        pp.active = 0;
+        reorder(&mut pp, 0, 2); // page that was active moves to index 2
+        assert_eq!(pp.active, 2);
+    }
+
+    #[test]
+    fn reorder_preserves_each_pages_name_across_the_move() {
+        // Regression test: a page's name must travel with it, not stay
+        // pinned to whichever slot it moves through.
+        let mut pp = named_pages(["A", "B", "C"]);
+        reorder(&mut pp, 0, 2); // "A" moves from the front to the back
+        assert_eq!(
+            pp.pages.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+            vec![
+                Some("B".to_string()),
+                Some("C".to_string()),
+                Some("A".to_string()),
+            ]
+        );
+    }
 }
 
 /// Tick interval for the typed-edit persist debounce.
@@ -76,10 +347,17 @@ impl Default for State {
             edit_field: None,
             edit_text: String::new(),
             assign_tab: crate::inspector::assign::forms::AssignTab::A,
+            inspector_tab: crate::message::InspectorTab::Assign,
             show_all_labels: false,
             authoritative: None,
             resync_pending: false,
             persist_debounce: 0,
+            page_drag: None,
+            hovered_page: None,
+            confirm_delete_page: None,
+            editing_page_name: None,
+            page_name_text: String::new(),
+            page_name_debounce: 0,
         }
     }
 }
@@ -120,6 +398,36 @@ impl State {
         }
     }
 
+    /// Build a sparse `pad_paging` delta by cloning the optimistic settings,
+    /// applying `edit` to `pad_paging`, and diffing against the pre-edit copy.
+    /// Returns `None` when settings are not loaded. Handles structural page ops
+    /// (add/duplicate/delete/reorder) and name/color edits including clear-to-inherit.
+    pub(crate) fn pad_paging_delta(
+        &self,
+        edit: impl FnOnce(&mut settings::PadPaging),
+    ) -> Option<PartialSettings> {
+        let base = self.settings.as_ref()?;
+        let mut edited = (**base).clone();
+        edit(&mut edited.pad_paging);
+        Some(edited.diff_from(base))
+    }
+
+    /// Build + send a `pad_paging` structural/content delta. No-op if not loaded,
+    /// and no-op when `edit` changes nothing: the driver rewrites the config file
+    /// and pushes a full snapshot back for every persisted apply, so re-selecting
+    /// the active page or committing an unchanged name must not send one.
+    pub(crate) fn apply_pad_paging(
+        &mut self,
+        persist: bool,
+        edit: impl FnOnce(&mut settings::PadPaging),
+    ) {
+        if let Some(delta) = self.pad_paging_delta(edit)
+            && delta.pad_paging.is_some()
+        {
+            self.send_apply(delta, persist);
+        }
+    }
+
     /// Ask the driver to persist its current live settings to disk. The driver
     /// already holds the typed value from the live (`persist:false`) applies, so
     /// this flushes edits applied live but never committed via Enter — even if the
@@ -142,11 +450,30 @@ impl State {
             .collect()
     }
 
+    /// Whether the runtime has reserved the `Group` button for pad-page
+    /// switching. While paging is enabled it swallows every `Group` event to
+    /// drive the page picker, so an assignment stored there could never emit
+    /// MIDI.
+    pub(crate) fn group_button_reserved(&self) -> bool {
+        self.settings.as_ref().is_some_and(|s| s.pad_paging.enabled)
+    }
+
+    pub(crate) fn selection_holds_reserved_group(&self) -> bool {
+        self.group_button_reserved()
+            && self
+                .selection
+                .contains(&ControlRef::Button(Buttons::Group as u8))
+    }
+
+    /// Internal indices of selected buttons the assign form may read and edit.
+    /// A reserved `Group` is dropped here rather than at each call site, so the
+    /// values the form displays are exactly the ones it can write.
     pub(crate) fn selected_buttons(&self) -> Vec<u8> {
+        let reserved = self.group_button_reserved().then_some(Buttons::Group as u8);
         self.selection
             .iter()
             .filter_map(|c| match c {
-                ControlRef::Button(i) => Some(*i),
+                ControlRef::Button(i) if reserved != Some(*i) => Some(*i),
                 _ => None,
             })
             .collect()
@@ -166,29 +493,76 @@ impl State {
         let top_bar = crate::shell::view::top_bar(self);
         let inspector = crate::inspector::view::inspector(self);
 
-        let device_pane = container(
-            column![
-                container(
-                    checkbox(self.show_all_labels)
-                        .label("Show all labels")
-                        .on_toggle(Message::ToggleShowAllLabels),
-                )
-                .width(Length::Fill)
-                .align_x(iced::alignment::Horizontal::Right),
-                container(device_view(self)).height(Length::Fill),
-            ]
-            .spacing(6),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .align_y(iced::alignment::Vertical::Top)
-        .padding(8);
+        // The page selector sits directly on the pad-grid frame, like the
+        // reference editor. Only the selector needs the resolved size, so only
+        // it is built inside `responsive` — the closure runs on every layout
+        // pass, and rebuilding the whole device canvas (16 pads, 41 buttons,
+        // hotspots, labels) there would redo that work on every resize frame.
+        // As a stack layer it is laid out against the base layer's size, which
+        // is the same bounds the canvas draws with, so resolving the frame
+        // through the helper the canvas strokes it with puts the selector on the
+        // rectangle that is actually drawn, at every window size.
+        let canvas = container(device_view(self))
+            .width(Length::Fill)
+            .height(Length::Fill);
+        let selector_overlay = iced::widget::responsive(move |size| {
+            let Some(frame) =
+                crate::device::view::pad_frame_rect(&self.device, size.width, size.height)
+            else {
+                return iced::widget::Space::new().into();
+            };
+            // Just over a third of the frame's width: wide enough for a page
+            // name at 13px, narrow enough that it covers only the first pad
+            // column's headroom instead of dominating the frame's top edge.
+            let Some(selector) =
+                crate::inspector::pages::view::page_selector(self, frame.width * 0.35)
+            else {
+                return iced::widget::Space::new().into();
+            };
+            // Anchored at the frame's top-left corner, INSIDE the dashed
+            // rectangle (like the reference editor): the frame's outset gives
+            // it headroom there, whereas sitting above the frame would cover
+            // the button row directly over the pads.
+            container(selector)
+                .padding(iced::Padding {
+                    top: frame.y,
+                    left: frame.x,
+                    ..iced::Padding::ZERO
+                })
+                .into()
+        });
+        let device_area = iced::widget::stack![canvas, selector_overlay];
+
+        let device_col = column![
+            container(
+                checkbox(self.show_all_labels)
+                    .label("Show all labels")
+                    .on_toggle(Message::ToggleShowAllLabels),
+            )
+            .width(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Right),
+            container(device_area).height(Length::Fill),
+        ]
+        .spacing(6);
+
+        let device_pane = container(device_col)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(iced::alignment::Vertical::Top)
+            .padding(8);
 
         let main = row![device_pane, inspector].height(Length::Fill);
         let base = column![top_bar, main].spacing(4);
 
         if self.show_prefs && self.settings.is_some() {
             return iced::widget::stack![base, crate::prefs::view::prefs_overlay(self)].into();
+        }
+        if self.confirm_delete_page.is_some() && self.settings.is_some() {
+            return iced::widget::stack![
+                base,
+                crate::inspector::pages::view::delete_page_overlay(self)
+            ]
+            .into();
         }
         base.into()
     }
@@ -217,11 +591,87 @@ impl State {
         }
         // Run the persist-debounce timer only while a typed edit is awaiting its
         // quiet-window flush, so an idle GUI does zero periodic work.
-        if self.persist_debounce > 0 {
+        if self.persist_debounce > 0 || self.page_name_debounce > 0 {
             subs.push(
                 iced::time::every(PERSIST_DEBOUNCE_INTERVAL).map(|_| Message::PersistDebounce),
             );
         }
         Subscription::batch(subs)
+    }
+}
+
+#[cfg(test)]
+mod pad_paging_delta_tests {
+    use super::*;
+
+    #[test]
+    fn pad_paging_delta_is_none_without_settings() {
+        let state = State::default();
+        assert!(state.settings.is_none());
+        assert!(state.pad_paging_delta(|_| {}).is_none());
+    }
+
+    #[test]
+    fn apply_pad_paging_is_noop_without_settings() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut state = State {
+            sender: Some(tx),
+            ..State::default()
+        };
+        let seq_before = state.seq;
+
+        state.apply_pad_paging(true, |pp| pp.enabled = true);
+
+        assert_eq!(
+            state.seq, seq_before,
+            "no apply is sent when settings aren't loaded yet"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no frame reaches the driver when settings aren't loaded yet"
+        );
+    }
+
+    #[test]
+    fn apply_pad_paging_is_noop_when_the_edit_changes_nothing() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut state = State {
+            sender: Some(tx),
+            settings: Some(Arc::new(Settings::default())),
+            ..State::default()
+        };
+        let seq_before = state.seq;
+
+        // Re-selecting the already-active page: a persisted apply here would
+        // rewrite the config file and push a full snapshot back for no change.
+        state.apply_pad_paging(true, |pp| pp.active = 0);
+
+        assert_eq!(state.seq, seq_before, "an empty delta bumps no seq");
+        assert!(
+            rx.try_recv().is_err(),
+            "an empty delta reaches the driver as no frame at all"
+        );
+    }
+
+    #[test]
+    fn pad_paging_delta_is_confined_to_the_pad_paging_section() {
+        let state = State {
+            settings: Some(Arc::new(Settings::default())),
+            ..State::default()
+        };
+
+        let delta = state
+            .pad_paging_delta(|pp| pp.enabled = true)
+            .expect("settings are loaded");
+
+        assert!(delta.pad_paging.is_some(), "the edited section is present");
+        assert!(delta.global.is_none());
+        assert!(delta.hardware.is_none());
+        assert!(delta.bridge.is_none());
+        assert!(delta.driver.is_none());
+        assert!(delta.pads.is_none());
+        assert!(delta.buttons.is_none());
+        assert!(delta.encoder.is_none());
+        assert!(delta.slider.is_none());
     }
 }

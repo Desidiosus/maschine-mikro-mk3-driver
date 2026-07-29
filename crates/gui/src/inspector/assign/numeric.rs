@@ -94,14 +94,14 @@ impl State {
             PadHitNote => self.first_pad_note()?,
             PadPressChannel => {
                 let i = self.selected_pads().first().copied()? as usize;
-                match s.pads[i].pressure {
+                match s.active_pads()[i].pressure {
                     settings::PadPressureAction::Poly { channel, .. } => displayed_channel(channel),
                     settings::PadPressureAction::Disabled => 1,
                 }
             }
             PadPressNote => {
                 let i = self.selected_pads().first().copied()? as usize;
-                match s.pads[i].pressure {
+                match s.active_pads()[i].pressure {
                     settings::PadPressureAction::Poly { note, .. } => note.unwrap_or(0),
                     settings::PadPressureAction::Disabled => 0,
                 }

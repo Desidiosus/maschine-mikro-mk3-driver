@@ -11,6 +11,27 @@ use crate::inspector::assign::forms::{
 use crate::inspector::assign::mapping::PadLedColorSlot;
 use crate::inspector::assign::numeric::EditField;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InspectorTab {
+    Assign,
+    Pages,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageColorChoice {
+    Inherit,
+    Color(settings::PadColors),
+}
+
+impl std::fmt::Display for PageColorChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PageColorChoice::Inherit => write!(f, "Inherit"),
+            PageColorChoice::Color(c) => write!(f, "{c}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     /// Connection established; carries the channel to send requests to the driver.
@@ -74,6 +95,52 @@ pub enum Message {
     SetPadLedMode(LedTab, settings::PadLedMode),
     /// Set the color in one slot (Single / Dual-on / Dual-off) of `tab`'s mode.
     SetPadLedColor(LedTab, PadLedColorSlot, settings::PadColors),
+    SetInspectorTab(InspectorTab),
+    SetPagingEnabled(bool),
+    SelectPage(usize),
+    SetDefaultPageColor(settings::PadColors),
+    AddPage,
+    DuplicatePage(usize),
+    /// The row-actions Delete button pressed for a page index: opens the
+    /// confirmation dialog rather than deleting immediately.
+    RequestDeletePage(usize),
+    /// The confirmation dialog's Delete button: deletes the page named by
+    /// `State::confirm_delete_page` and closes the dialog.
+    ConfirmDeletePage,
+    /// The confirmation dialog's Cancel button (or a scrim click): closes the
+    /// dialog without deleting anything.
+    CancelDeletePage,
+    SetPageName(usize, String),
+    /// Enter after typing a page name: trims the in-progress text and persists
+    /// it. Typing itself (`SetPageName`) stores the raw text and applies live
+    /// without trimming, since trimming every keystroke would swallow spaces
+    /// before a trailing word is typed. iced's `text_input` reports no focus
+    /// loss, so `update` also runs this commit from every path that closes the
+    /// rename field.
+    CommitPageName(usize),
+    /// The row's pencil button pressed for a page index: shows that row's
+    /// `text_input` in place of its plain-text name and focuses it. Only one
+    /// row edits at a time.
+    BeginRenamePage(usize),
+    SetPageColor(usize, crate::message::PageColorChoice),
+    /// A press started on a page row (row-level `mouse_area`, not the styled
+    /// `button` it wraps — the button would otherwise swallow the press
+    /// before the `mouse_area` ever saw it). Carries the row index.
+    PageDragStart(usize),
+    /// The pointer entered a page row: tracks the hover highlight always, and
+    /// the drag target when a row drag is in progress.
+    PageRowEntered(usize),
+    /// The pointer left a page row; clears the hover highlight if it still
+    /// points at that row.
+    PageRowExited(usize),
+    /// The pointer was released anywhere over the page list. Commits a
+    /// reorder when the drag crossed into a different row, or selects the
+    /// origin row when it didn't (a plain click, or a drag that returned to
+    /// where it started).
+    PageDragDrop,
+    /// Abandons an in-progress row drag (e.g. the pointer left the page list
+    /// without a release ever landing on it) so `page_drag` can't get stuck.
+    PageDragCancel,
     /// No-op; swallows clicks inside the Preferences panel so they don't reach
     /// the modal backdrop and close it.
     Ignore,

@@ -31,8 +31,10 @@ pub struct SideEffects {
     pub refresh_backlight: bool,
     /// Bitmask (bit `i` = pad `i`) of pads whose `led` config changed and whose
     /// idle LED must be re-seeded, so Single/Dual-idle pads update at rest.
-    /// Only the changed pads are touched, so an edit never clobbers an unrelated
-    /// pad that is currently lit by live feedback.
+    /// For a pad-config edit only the changed pads are touched, so an edit never
+    /// clobbers an unrelated pad currently lit by live feedback. A page switch is
+    /// the deliberate exception: it sets every bit (`u16::MAX`) to repaint the
+    /// whole grid for the new page.
     pub refresh_pad_leds: u16,
     /// Set when a delta disables soft-off (`soft_off_enabled` true → false).
     /// The loop thread wakes a currently-asleep device so it isn't left blanked.
@@ -79,17 +81,36 @@ pub fn apply_delta(
             .then_some(new.display_contrast),
         button_brightness: (old.led_brightness != new.led_brightness).then_some(new.led_brightness),
         refresh_backlight: (old.led_brightness > 0) != (new.led_brightness > 0),
-        refresh_pad_leds: current
-            .pads
-            .iter()
-            .zip(merged.pads.iter())
-            .enumerate()
-            .filter(|(_, (a, b))| a.led != b.led)
-            .fold(0u16, |mask, (i, _)| mask | (1 << i)),
+        refresh_pad_leds: if page_switched(&current.pad_paging, &merged.pad_paging) {
+            // A page switch repaints the whole grid: pads whose LED config matches
+            // across pages would otherwise keep the prior page's live-lit state.
+            u16::MAX
+        } else {
+            current
+                .active_pads()
+                .iter()
+                .zip(merged.active_pads().iter())
+                .enumerate()
+                .filter(|(_, (a, b))| a.led != b.led)
+                .fold(0u16, |mask, (i, _)| mask | (1 << i))
+        },
         wake_soft_off: current.driver.soft_off_enabled && !merged.driver.soft_off_enabled,
     };
 
     Ok(effects)
+}
+
+/// Whether the delta pointed the grid at a different page.
+///
+/// The `active` index alone is not enough: reordering the page list can leave the
+/// index unchanged while it points at another page, whose pads must repaint even
+/// where the LED config matches — a pad lit by live feedback would otherwise keep
+/// the previous page's colour. Page ids are stable across renames, reorders and
+/// persistence, so this is exactly "is a different page showing", with no false
+/// positive for an in-place edit (a rename applies per keystroke, and repainting
+/// then would blank every DAW-lit pad while the user types).
+fn page_switched(current: &settings::PadPaging, merged: &settings::PadPaging) -> bool {
+    current.active != merged.active || current.active_page().id != merged.active_page().id
 }
 
 /// Persist the current live settings to `persist_path` as sparse overrides
@@ -423,6 +444,110 @@ mod tests {
         assert_eq!(effects.button_brightness, Some(4));
         assert!(effects.refresh_backlight);
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn two_page_handle() -> SharedSettings {
+        let mut s = Settings::default();
+        // Add a second page identical to the first, so a pure per-pad diff would be 0.
+        s.pad_paging.pages.push(s.pad_paging.new_page());
+        new_shared(s)
+    }
+
+    #[test]
+    fn switching_active_page_reseeds_every_pad() {
+        let path = temp_config_path("page-switch");
+        let handle = two_page_handle();
+        let base = (*handle.load_full()).clone();
+
+        let delta: PartialSettings = toml::from_str("[pad_paging]\nactive = 1\n").unwrap();
+        let effects = apply_delta(&handle, delta, &base, &path, false).unwrap();
+
+        assert_eq!(
+            effects.refresh_pad_leds,
+            u16::MAX,
+            "a page switch must repaint the whole grid even when the pages' LEDs match"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn reordering_pages_under_a_fixed_active_index_reseeds_every_pad() {
+        // Dragging the second page above the first leaves `active` at 0 while
+        // pointing it at a different page, so the index alone can't decide this.
+        let path = temp_config_path("page-reorder");
+        let handle = two_page_handle();
+        let base = (*handle.load_full()).clone();
+        {
+            let mut named = (*handle.load_full()).clone();
+            named.pad_paging.pages[0].name = Some("Drums".into());
+            named.pad_paging.pages[1].name = Some("Keys".into());
+            handle.store(Arc::new(named));
+        }
+
+        let mut reordered = (*handle.load_full()).clone();
+        reordered.pad_paging.pages.swap(0, 1);
+        let delta = reordered.diff_from(&handle.load_full());
+
+        let effects = apply_delta(&handle, delta, &base, &path, false).unwrap();
+
+        assert_eq!(
+            effects.refresh_pad_leds,
+            u16::MAX,
+            "a reorder that changes which page is active must repaint the whole grid"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn renaming_the_active_page_leaves_lit_pads_alone() {
+        // Editing the active page in place is not a page switch: reseeding all
+        // 16 pads to idle would blank whatever the DAW currently has lit until
+        // it sends those pads again.
+        let path = temp_config_path("page-rename");
+        let handle = two_page_handle();
+        let base = (*handle.load_full()).clone();
+
+        let mut renamed = (*handle.load_full()).clone();
+        renamed.pad_paging.pages[renamed.pad_paging.active].name = Some("Dru".into());
+        let delta = renamed.diff_from(&handle.load_full());
+
+        let effects = apply_delta(&handle, delta, &base, &path, false).unwrap();
+
+        assert_eq!(
+            effects.refresh_pad_leds, 0,
+            "a rename changes no pad's LED config, so no pad may be repainted"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn two_pages_sharing_a_name_still_repaint_on_reorder() {
+        // Names are free-form, so two pages can carry the same one. Page
+        // identity must not hinge on them: the grid still has to repaint when a
+        // reorder swaps a different page into the active slot.
+        let path = temp_config_path("page-same-name");
+        let handle = two_page_handle();
+        let base = (*handle.load_full()).clone();
+        {
+            let mut same = (*handle.load_full()).clone();
+            for page in same.pad_paging.pages.iter_mut() {
+                page.name = Some("Drums".into());
+            }
+            same.pad_paging.pages[1].pads.0[0].hit = settings::PadHitAction::Note {
+                channel: None,
+                note: 70,
+            };
+            handle.store(Arc::new(same));
+        }
+
+        let mut reordered = (*handle.load_full()).clone();
+        reordered.pad_paging.pages.swap(0, 1);
+        let delta = reordered.diff_from(&handle.load_full());
+
+        let effects = apply_delta(&handle, delta, &base, &path, false).unwrap();
+
+        assert_eq!(effects.refresh_pad_leds, u16::MAX);
         let _ = std::fs::remove_file(&path);
     }
 

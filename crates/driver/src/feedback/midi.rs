@@ -110,7 +110,7 @@ mod tests {
     fn incoming_note_on_lights_pad_with_velocity_color() {
         let outputs = DeviceOutputs::new();
         let mut settings = Settings::default();
-        settings.pads[0].led.source = settings::PadLedSource::MidiIn;
+        settings.active_pads_mut()[0].led.source = settings::PadLedSource::MidiIn;
         // pads[0].hit.note default = 48
         apply_incoming_midi_message(
             &[0x90, 48, 64],
@@ -130,7 +130,7 @@ mod tests {
     fn incoming_note_off_turns_pad_off() {
         let outputs = DeviceOutputs::new();
         let mut settings = Settings::default();
-        settings.pads[0].led.source = settings::PadLedSource::MidiIn;
+        settings.active_pads_mut()[0].led.source = settings::PadLedSource::MidiIn;
         apply_incoming_midi_message(
             &[0x80, 48, 0],
             &outputs,
@@ -167,8 +167,8 @@ mod tests {
     fn incoming_message_honors_per_action_channel_override() {
         let outputs = DeviceOutputs::new();
         let mut settings = Settings::default();
-        settings.pads[0].led.source = settings::PadLedSource::MidiIn;
-        settings.pads[0].hit = settings::actions::PadHitAction::Note {
+        settings.active_pads_mut()[0].led.source = settings::PadLedSource::MidiIn;
+        settings.active_pads_mut()[0].hit = settings::actions::PadHitAction::Note {
             channel: settings::MidiChannel::try_from(2).ok(),
             note: 60,
         };

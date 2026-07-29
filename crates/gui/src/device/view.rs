@@ -13,6 +13,30 @@ use crate::message::Message;
 use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path, Stroke, Text};
 /// Pixels of pointer travel before a press is treated as a drag (vs a click).
 const DRAG_THRESHOLD: f32 = 4.0;
+/// Fixed colour of the hardware-area frame drawn around the pad grid. The
+/// reference editor uses the same muted blue-grey regardless of the active
+/// page's colour, so this is a constant rather than derived from `pad_paging`.
+const PAD_FRAME_COLOR: Color = Color::from_rgb(0.42, 0.55, 0.68);
+/// Outset (device units, pre-scale) between the pad rects and the hardware
+/// frame.
+const PAD_FRAME_OUTSET: f32 = 14.0;
+
+/// The hardware-area frame around the pad grid, in canvas coordinates for a
+/// `width`×`height` device pane. `None` when the SVG exposed no pad ids.
+///
+/// The frame is drawn by the device canvas and the page selector is anchored
+/// inside it from `app::State::view`; both resolve it here so the selector can
+/// never drift off the rectangle that was actually drawn.
+pub(crate) fn pad_frame_rect(device: &Device, width: f32, height: f32) -> Option<Rectangle> {
+    let grid = device.pad_grid_rect()?;
+    let (ox, oy, scale) = device_transform(width, height, device.size.0, device.size.1);
+    Some(Rectangle {
+        x: ox + (grid.x - PAD_FRAME_OUTSET) * scale,
+        y: oy + (grid.y - PAD_FRAME_OUTSET) * scale,
+        width: (grid.w + 2.0 * PAD_FRAME_OUTSET) * scale,
+        height: (grid.h + 2.0 * PAD_FRAME_OUTSET) * scale,
+    })
+}
 /// Whether a driver-supplied `ControlRef` index is in range for the fixed-size
 /// settings arrays the inspector indexes (16 pads, 41 buttons).
 pub(crate) fn control_index_valid(control: ControlRef) -> bool {
@@ -213,6 +237,34 @@ impl canvas::Program<Message> for DeviceCanvas {
             Stroke::default().with_color(Color::BLACK).with_width(bw),
         );
 
+        // Hardware-area frame around the 16-pad grid. This mirrors the official
+        // Controller Editor, which shows this dashed frame at all times — paging
+        // on or off — in a fixed colour that never changes with the active
+        // page's colour, so the stroke below is a constant, not derived from
+        // page state. It belongs to the device picture rather than to the
+        // settings-derived overlay, so it is drawn before the no-settings early
+        // return below: the GUI connects even when the driver is absent, and
+        // that state can last indefinitely.
+        if let Some(rect) = pad_frame_rect(&self.device, bounds.width, bounds.height) {
+            let frame_rect = Path::rounded_rectangle(
+                Point::new(rect.x, rect.y),
+                Size::new(rect.width, rect.height),
+                iced::border::Radius::from(4.0),
+            );
+            frame.stroke(
+                &frame_rect,
+                Stroke {
+                    line_dash: canvas::LineDash {
+                        segments: &[4.0, 4.0],
+                        offset: 0,
+                    },
+                    ..Stroke::default()
+                        .with_color(PAD_FRAME_COLOR)
+                        .with_width(2.0)
+                },
+            );
+        }
+
         let Some(settings) = &self.settings else {
             return vec![frame.into_geometry()];
         };
@@ -360,5 +412,27 @@ mod tests {
     fn drag_over_nothing_hides_prior_selection() {
         let selection = vec![ControlRef::Pad(0), ControlRef::Button(3)];
         assert_eq!(active_selection(&selection, &[], true), Vec::new());
+    }
+
+    #[test]
+    fn the_pad_frame_encloses_every_pad_at_any_pane_size() {
+        let device = Device::load();
+        for (w, h) in [(800.0, 500.0), (1600.0, 900.0), (400.0, 900.0)] {
+            let frame = pad_frame_rect(&device, w, h).expect("the SVG exposes pad ids");
+            let (ox, oy, scale) = device_transform(w, h, device.size.0, device.size.1);
+            for i in 0..16u8 {
+                let pad = device
+                    .rect_for(ControlRef::Pad(i))
+                    .expect("every pad has a hotspot");
+                let (x, y) = (ox + pad.x * scale, oy + pad.y * scale);
+                assert!(
+                    x > frame.x
+                        && y > frame.y
+                        && x + pad.w * scale < frame.x + frame.width
+                        && y + pad.h * scale < frame.y + frame.height,
+                    "pad {i} must sit inside the frame at {w}x{h}"
+                );
+            }
+        }
     }
 }

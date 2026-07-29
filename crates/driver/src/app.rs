@@ -23,6 +23,7 @@ use crate::feedback::local::apply_local_output_feedback;
 use crate::hid::{ControlState, decode_packet_with_curve};
 use crate::ipc::{EventSubscriber, emit_event};
 use crate::outputs::DeviceOutputs;
+use crate::paging::PagingAction;
 use crate::self_test::self_test;
 use crate::settings::Settings;
 use crate::shared_settings::{SharedSettings, new_shared};
@@ -66,6 +67,7 @@ pub fn run(loaded: crate::settings::LoadedConfig) -> DriverResult<()> {
     } = loaded;
     let shared = new_shared(settings);
     let persist_base = std::sync::Arc::new(persist_base);
+    let write_lock = crate::settings::writer::new_write_lock();
 
     // Bind the IPC socket FIRST so the GUI can always connect and edit config,
     // even before/without a device. Settings applies + persistence work without
@@ -74,6 +76,13 @@ pub fn run(loaded: crate::settings::LoadedConfig) -> DriverResult<()> {
     let (effects_tx, effects_rx) = mpsc::channel();
     let subscriber = crate::ipc::new_subscriber();
     let device_present = std::sync::Arc::new(AtomicBool::new(false));
+    let (page_apply_tx, page_apply_join) = crate::settings::writer::spawn_page_apply_writer(
+        shared.clone(),
+        persist_base.clone(),
+        persist_path.clone(),
+        write_lock.clone(),
+        subscriber.clone(),
+    );
     let _ipc = crate::ipc::IpcServer::start(
         shared.clone(),
         persist_base,
@@ -82,6 +91,7 @@ pub fn run(loaded: crate::settings::LoadedConfig) -> DriverResult<()> {
         subscriber.clone(),
         socket_path,
         device_present.clone(),
+        write_lock,
     )?;
 
     install_shutdown_signal_handlers()?;
@@ -102,49 +112,59 @@ pub fn run(loaded: crate::settings::LoadedConfig) -> DriverResult<()> {
     // Acquire the device, retrying so a later hotplug starts the runtime loop.
     // On unplug the session ends with `DeviceLost` and we re-acquire without
     // tearing down the IPC server or the virtual MIDI ports.
-    loop {
-        if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-            return Ok(());
-        }
-        match open_device() {
-            Ok(device) => {
-                if apply_startup_preferences(&device, &shared.load()).is_err() {
-                    continue; // device flaked during init → re-acquire
-                }
-                // Discard any side effects queued by IPC applies while there was
-                // no device — startup preferences above already pushed the
-                // current settings to the freshly opened device.
-                while effects_rx.try_recv().is_ok() {}
-                device_present.store(true, Ordering::Release);
-                emit_event(&subscriber, DriverToGui::DeviceConnected(true));
+    let result = (|| -> DriverResult<()> {
+        loop {
+            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            match open_device() {
+                Ok(device) => {
+                    if apply_startup_preferences(&device, &shared.load()).is_err() {
+                        continue; // device flaked during init → re-acquire
+                    }
+                    // Discard any side effects queued by IPC applies while there was
+                    // no device — startup preferences above already pushed the
+                    // current settings to the freshly opened device.
+                    while effects_rx.try_recv().is_ok() {}
+                    device_present.store(true, Ordering::Release);
+                    emit_event(&subscriber, DriverToGui::DeviceConnected(true));
 
-                let end = run_device_loop(
-                    &shared,
-                    &device,
-                    &SHUTDOWN_REQUESTED,
-                    &effects_rx,
-                    &subscriber,
-                    &mut soft_off,
-                    &runtime_state,
-                    &mut backend,
-                    &outputs,
-                );
+                    let end = run_device_loop(
+                        &shared,
+                        &device,
+                        &SHUTDOWN_REQUESTED,
+                        &effects_rx,
+                        &subscriber,
+                        &mut soft_off,
+                        &runtime_state,
+                        &mut backend,
+                        &outputs,
+                        &page_apply_tx,
+                    );
 
-                device_present.store(false, Ordering::Release);
-                emit_event(&subscriber, DriverToGui::DeviceConnected(false));
-                match end {
-                    SessionEnd::Shutdown => return Ok(()),
-                    SessionEnd::DeviceLost => {
-                        eprintln!("Maschine Mikro MK3 disconnected; waiting for reconnect…");
-                        continue;
+                    device_present.store(false, Ordering::Release);
+                    emit_event(&subscriber, DriverToGui::DeviceConnected(false));
+                    match end {
+                        SessionEnd::Shutdown => return Ok(()),
+                        SessionEnd::DeviceLost => {
+                            eprintln!("Maschine Mikro MK3 disconnected; waiting for reconnect…");
+                            continue;
+                        }
                     }
                 }
-            }
-            Err(_) => {
-                std::thread::sleep(Duration::from_secs(2));
+                Err(_) => {
+                    std::thread::sleep(Duration::from_secs(2));
+                }
             }
         }
-    }
+    })();
+
+    // Close the channel so the writer drains any queued Commit, then wait for its
+    // persist to finish — otherwise a page selected microseconds before SIGTERM is
+    // lost when the process exits out from under the detached thread.
+    drop(page_apply_tx);
+    let _ = page_apply_join.join();
+    result
 }
 
 fn open_device() -> DriverResult<HidDevice> {
@@ -180,6 +200,10 @@ pub fn run_with_device<D: HidIo>(
         runtime_state.clone(),
         subscriber.clone(),
     )?;
+    // Page applies need a consumer even here: without one the picker would
+    // render and accept taps while the active page never moved.
+    let (page_apply_tx, page_apply_join) =
+        crate::settings::writer::spawn_live_page_applier(settings.clone(), subscriber.clone());
     let _ = run_device_loop(
         &settings,
         device,
@@ -190,13 +214,22 @@ pub fn run_with_device<D: HidIo>(
         &runtime_state,
         &mut backend,
         &outputs,
+        &page_apply_tx,
     );
+    drop(page_apply_tx);
+    let _ = page_apply_join.join();
     Ok(())
 }
 
 /// Run one device session. Returns when the device is lost (HID error) or a
 /// shutdown is requested. Never propagates a HID error so the caller can
 /// re-acquire the device without tearing down long-lived state.
+///
+/// Wraps `run_device_session` so every exit path — shutdown, device loss, any
+/// of the several `DeviceLost` returns inside the session — flushes held notes
+/// exactly once on the way out. Soft-off and unplug both swallow or never
+/// deliver the physical release, so without this a stale `held` entry would
+/// survive into the next session on this backend.
 #[allow(clippy::too_many_arguments)]
 fn run_device_loop<D: HidIo>(
     settings: &SharedSettings,
@@ -208,6 +241,36 @@ fn run_device_loop<D: HidIo>(
     runtime_state: &crate::runtime_state::RuntimeState,
     backend: &mut MidiBackend,
     outputs: &DeviceOutputs,
+    page_apply_tx: &std::sync::mpsc::Sender<crate::settings::writer::PageApplyMsg>,
+) -> SessionEnd {
+    let end = run_device_session(
+        settings,
+        device,
+        shutdown_requested,
+        effects_rx,
+        subscriber,
+        soft_off,
+        runtime_state,
+        backend,
+        outputs,
+        page_apply_tx,
+    );
+    let _ = backend.flush_held_notes();
+    end
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_device_session<D: HidIo>(
+    settings: &SharedSettings,
+    device: &D,
+    shutdown_requested: &AtomicBool,
+    effects_rx: &Receiver<SideEffects>,
+    subscriber: &EventSubscriber,
+    soft_off: &mut SoftOffState,
+    runtime_state: &crate::runtime_state::RuntimeState,
+    backend: &mut MidiBackend,
+    outputs: &DeviceOutputs,
+    page_apply_tx: &std::sync::mpsc::Sender<crate::settings::writer::PageApplyMsg>,
 ) -> SessionEnd {
     // A fresh session always starts awake. Soft-off state is long-lived (it
     // persists across unplug/replug so the MIDI ports stay stable), so a device
@@ -239,6 +302,30 @@ fn run_device_loop<D: HidIo>(
     // once (not once per event) and again only after it recovers.
     let mut midi_send_failed = false;
 
+    let mut paging = crate::paging::PagingState::new();
+    let mut indicator = PageIndicator::new();
+    let mut last_active = settings.load().pad_paging.active;
+    // True once a Preview was sent this hold, so Group release commits exactly one
+    // persist (and only when the page actually moved).
+    let mut sent_preview = false;
+    // Set whenever the picker's rendered content changes (open, page select) or
+    // something else repainted the pads, so the picker is pushed once per change
+    // instead of on every ~1 ms loop iteration.
+    let mut picker_dirty = false;
+    // Backstop repaint interval for the picker. `picker_dirty` covers our own
+    // changes; this catches pad writes from the MIDI-in feedback thread, which
+    // paints pad LEDs independently of this loop and would otherwise leave the
+    // picker corrupted until the next select.
+    const PICKER_REFRESH: Duration = Duration::from_millis(50);
+    let mut picker_rendered_at: Option<Instant> = None;
+    // Tracks soft-off state across iterations so sleep/wake edges (held-note
+    // flush, picker repaint) fire exactly once per transition.
+    let mut was_asleep = false;
+    // Set when soft-off tears down an open picker at sleep, so the wake-side
+    // reseed only fires when the restored snapshot could actually contain
+    // picker colors — not on every wake (which would clobber live DAW LEDs).
+    let mut picker_torn_down_at_sleep = false;
+
     while !shutdown_requested.load(Ordering::Relaxed) {
         // Apply any pending hardware side effects from IPC applies (HID is
         // owned by this thread). Re-load the settings per effect so the overlay
@@ -261,12 +348,18 @@ fn run_device_loop<D: HidIo>(
                 pending_overlays.refresh_pad_leds |= effects.refresh_pad_leds;
             } else {
                 apply_output_overlays(&effects, &settings.load(), outputs);
+                if effects.refresh_pad_leds != 0 && paging.is_picking() {
+                    picker_dirty = true;
+                }
             }
         }
         if !soft_off_sync.is_active()
             && (pending_overlays.refresh_backlight || pending_overlays.refresh_pad_leds != 0)
         {
             apply_output_overlays(&pending_overlays, &settings.load(), outputs);
+            if pending_overlays.refresh_pad_leds != 0 && paging.is_picking() {
+                picker_dirty = true;
+            }
             pending_overlays = SideEffects::default();
         }
 
@@ -303,7 +396,60 @@ fn run_device_loop<D: HidIo>(
                     SoftOffOutcome::Forward
                 };
                 if outcome == SoftOffOutcome::Swallow {
+                    // Soft-off owns the device while asleep; drop any latched
+                    // picker hold so it can't resume hijacking the grid on wake.
+                    // No repaint here: the device is blanked, so the grid is
+                    // reseeded on the wake edge instead.
+                    if soft_off_sync.is_active() && tear_down_picker(&mut paging, &mut sent_preview)
+                    {
+                        picker_torn_down_at_sleep = true;
+                    }
                     continue;
+                }
+                if snapshot.pad_paging.enabled {
+                    let active = snapshot.pad_paging.active;
+                    let page_count = snapshot.pad_paging.pages.len();
+                    match paging.observe_event(active, page_count, &event) {
+                        PagingAction::None => {}
+                        PagingAction::Swallow => {
+                            if let ControlEvent::PadNoteOn { index, .. } = &event {
+                                backend.mark_picker_tap(*index);
+                            }
+                            continue;
+                        }
+                        PagingAction::OpenPicker => {
+                            picker_dirty = true;
+                            continue;
+                        }
+                        PagingAction::SelectPage(target) => {
+                            let _ = page_apply_tx
+                                .send(crate::settings::writer::PageApplyMsg::Preview(target));
+                            if let ControlEvent::PadNoteOn { index, .. } = &event {
+                                backend.mark_picker_tap(*index);
+                            }
+                            sent_preview = true;
+                            picker_dirty = true;
+                            continue;
+                        }
+                        PagingAction::ClosePicker(final_page) => {
+                            let pads = snapshot
+                                .pad_paging
+                                .pages
+                                .get(final_page)
+                                .map(|p| &p.pads)
+                                .unwrap_or_else(|| snapshot.active_pads());
+                            seed_pads_from(outputs, pads, u16::MAX);
+                            if sent_preview {
+                                let _ = page_apply_tx.send(
+                                    crate::settings::writer::PageApplyMsg::Commit(final_page),
+                                );
+                                sent_preview = false;
+                            }
+                            continue;
+                        }
+                    }
+                } else {
+                    close_picker(outputs, &snapshot, &mut paging, &mut sent_preview);
                 }
                 if let Some(control) = control_ref_for(&event) {
                     emit_event(subscriber, DriverToGui::ControlActuated { control });
@@ -320,7 +466,18 @@ fn run_device_loop<D: HidIo>(
                 }
                 // Local feedback is best-effort: a failure here shouldn't end the
                 // session (the flush below will catch real device loss).
-                let _ = apply_local_output_feedback(outputs, &snapshot, &event);
+                //
+                // While the page picker is open it owns the 16 pad LEDs, so pad
+                // feedback must not repaint them; non-pad feedback still applies.
+                let pad_event = matches!(
+                    event,
+                    ControlEvent::PadNoteOn { .. }
+                        | ControlEvent::PadNoteOff { .. }
+                        | ControlEvent::PadAftertouch { .. }
+                );
+                if !(pad_event && paging.is_picking()) {
+                    let _ = apply_local_output_feedback(outputs, &snapshot, &event);
+                }
                 // A MIDI send failure shouldn't tear down the session (a transient
                 // hiccup would needlessly drop the device); log it once and keep
                 // going so a recovered port resumes without a restart.
@@ -341,6 +498,63 @@ fn run_device_loop<D: HidIo>(
                     }
                 }
             }
+        }
+
+        let asleep = soft_off_sync.is_active();
+        if !was_asleep && asleep {
+            // Releases are swallowed while asleep; don't leave hung notes or
+            // stale held state behind.
+            let _ = backend.flush_held_notes();
+        }
+        if was_asleep && !asleep && picker_torn_down_at_sleep {
+            // The restored soft-off snapshot still holds picker colors from
+            // when the picker was open at sleep time, so the grid needs
+            // repainting from `active_pads()` no matter what `pad_paging.enabled`
+            // is now — the GUI may have toggled it off while asleep, and that
+            // alone doesn't repaint the pads (`refresh_pad_leds` stays 0 in
+            // `apply.rs`), so this reseed is the only thing that clears them.
+            seed_pads_from(outputs, snapshot.active_pads(), u16::MAX);
+            picker_torn_down_at_sleep = false;
+        }
+        was_asleep = asleep;
+
+        if snapshot.pad_paging.enabled && paging.is_picking() && !soft_off_sync.is_active() {
+            let stale = picker_rendered_at.is_none_or(|at| at.elapsed() >= PICKER_REFRESH);
+            if picker_dirty || stale {
+                let pending = paging
+                    .pending_active()
+                    .unwrap_or(snapshot.pad_paging.active);
+                crate::paging::render_picker(outputs, &snapshot.pad_paging, pending);
+                picker_dirty = false;
+                picker_rendered_at = Some(Instant::now());
+            }
+        } else {
+            picker_rendered_at = None;
+        }
+
+        // Screen page indicator, driven by observing the active-page change from
+        // any source (hardware writer thread or IPC). Never paint a soft-off
+        // -blanked device, and never flash a fresh overlay while paging is
+        // disabled — but keep ticking so an overlay already in flight still
+        // expires even if paging is disabled mid-overlay.
+        if !soft_off_sync.is_active() {
+            let now = Instant::now();
+            if snapshot.pad_paging.enabled {
+                let current_active = snapshot.pad_paging.active;
+                if current_active != last_active {
+                    last_active = current_active;
+                    // Same resolution the GUI shows, so a page never reads one
+                    // way on the device screen and another in the app.
+                    let label = snapshot.pad_paging.display_name(current_active);
+                    indicator.show(outputs, &label, now);
+                }
+            } else {
+                // Keep tracking the active page while paging is disabled so
+                // re-enabling it later doesn't fire a stale indicator for a
+                // change that happened while it was off.
+                last_active = snapshot.pad_paging.active;
+            }
+            indicator.tick(outputs, now);
         }
 
         if let Some(released_at) = slider_released_at
@@ -437,21 +651,187 @@ pub(crate) fn reseed_pad_leds(outputs: &DeviceOutputs, settings: &Settings, mask
 }
 
 fn seed_pad_leds(outputs: &DeviceOutputs, settings: &Settings, mask: u16) {
+    seed_pads_from(outputs, settings.active_pads(), mask);
+}
+
+fn seed_pads_from(outputs: &DeviceOutputs, pads: &crate::settings::PadsByIndex, mask: u16) {
     outputs.with_lights_mut(|lights| {
         for index in 0..16 {
             if mask & (1 << index) == 0 {
                 continue;
             }
-            let (color, brightness) = settings.pads[index].led.resolve(false, 0);
+            let (color, brightness) = pads[index].led.resolve(false, 0);
             lights.set_pad(index, color, brightness);
         }
     });
+}
+
+/// Tear down an open page picker: drop the latched hold and forget any pending
+/// commit. Returns whether a picker was actually open, which the callers use to
+/// decide whether the grid still shows picker colors.
+fn tear_down_picker(paging: &mut crate::paging::PagingState, sent_preview: &mut bool) -> bool {
+    let was_picking = paging.is_picking();
+    paging.reset();
+    *sent_preview = false;
+    was_picking
+}
+
+/// Tear the picker down and repaint the grid from the active page's idle LEDs.
+/// Used on the transition where the picker's own close path never runs (paging
+/// disabled mid-hold) so the grid is never left showing picker colors. Soft-off
+/// entry deliberately does NOT call this — it must not reseed onto a blanked
+/// device — and tears down without the repaint; see the `Swallow` branch above.
+fn close_picker(
+    outputs: &DeviceOutputs,
+    settings: &Settings,
+    paging: &mut crate::paging::PagingState,
+    sent_preview: &mut bool,
+) {
+    if tear_down_picker(paging, sent_preview) {
+        seed_pads_from(outputs, settings.active_pads(), u16::MAX);
+    }
 }
 
 pub fn prepare_startup_outputs(outputs: &DeviceOutputs, settings: &Settings) {
     outputs.with_screen_mut(|screen| render_centered_text(screen, "MIDI MODE"));
     initialize_button_backlight(outputs, settings);
     initialize_pad_leds(outputs, settings);
+}
+
+/// A brief on-screen page-name overlay, restored to the prior screen after a
+/// short delay. Snapshots the screen only when a fresh overlay starts, so
+/// back-to-back page changes during a Group sweep extend the deadline without
+/// capturing the overlay itself.
+struct PageIndicator {
+    snapshot: Option<Screen>,
+    /// Exactly what the overlay drew. On expiry the previous screen is restored
+    /// only if the live screen still matches this — otherwise the DAW (or any
+    /// other writer) has taken the screen since, and its content wins.
+    rendered: Option<Screen>,
+    until: Option<Instant>,
+}
+
+impl PageIndicator {
+    const DURATION: Duration = Duration::from_millis(800);
+
+    fn new() -> Self {
+        Self {
+            snapshot: None,
+            rendered: None,
+            until: None,
+        }
+    }
+
+    fn show(&mut self, outputs: &DeviceOutputs, label: &str, now: Instant) {
+        // One lock hold: snapshot, draw, and capture what we drew, so a
+        // concurrent DAW write can't land between the draw and the capture and
+        // poison the comparison `tick` later relies on.
+        outputs.with_screen_mut(|screen| {
+            if self.until.is_none() {
+                self.snapshot = Some(screen.clone());
+            }
+            render_centered_text(screen, label);
+            self.rendered = Some(screen.clone());
+        });
+        self.until = Some(now + Self::DURATION);
+    }
+
+    fn tick(&mut self, outputs: &DeviceOutputs, now: Instant) {
+        if let Some(deadline) = self.until
+            && now >= deadline
+        {
+            // Compare and restore under one lock hold, so a write can't slip in
+            // after the check and get clobbered by the restore.
+            outputs.with_screen_mut(|live| {
+                let untouched = self.rendered.as_ref().is_some_and(|drawn| live == drawn);
+                if untouched && let Some(screen) = self.snapshot.take() {
+                    *live = screen;
+                }
+            });
+            // Discard the snapshot if it wasn't consumed above: someone else owns
+            // the screen now and must not be reverted by a later tick.
+            self.snapshot = None;
+            self.rendered = None;
+            self.until = None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod page_indicator_tests {
+    use super::*;
+
+    #[test]
+    fn restore_is_skipped_when_something_else_wrote_the_screen() {
+        let outputs = DeviceOutputs::new();
+        outputs.with_screen_mut(|s| render_centered_text(s, "MIDI MODE"));
+        let original = outputs.with_screen(Clone::clone);
+
+        let mut indicator = PageIndicator::new();
+        let t0 = Instant::now();
+        indicator.show(&outputs, "Page 2", t0);
+
+        // The DAW writes the screen while the overlay is up (midir thread).
+        outputs.with_screen_mut(|s| render_centered_text(s, "DAW TEXT"));
+        let daw = outputs.with_screen(Clone::clone);
+
+        indicator.tick(&outputs, t0 + PageIndicator::DURATION);
+
+        assert_eq!(
+            outputs.with_screen(Clone::clone),
+            daw,
+            "a concurrent DAW screen write must not be reverted by the indicator"
+        );
+        assert_ne!(outputs.with_screen(Clone::clone), original);
+    }
+
+    #[test]
+    fn restore_happens_when_the_overlay_is_untouched() {
+        let outputs = DeviceOutputs::new();
+        outputs.with_screen_mut(|s| render_centered_text(s, "MIDI MODE"));
+        let original = outputs.with_screen(Clone::clone);
+
+        let mut indicator = PageIndicator::new();
+        let t0 = Instant::now();
+        indicator.show(&outputs, "Page 2", t0);
+        indicator.tick(&outputs, t0 + PageIndicator::DURATION);
+
+        assert_eq!(
+            outputs.with_screen(Clone::clone),
+            original,
+            "an untouched overlay restores the previous screen"
+        );
+    }
+
+    #[test]
+    fn tick_expires_the_overlay_even_without_a_follow_up_show() {
+        // Simulates paging being disabled mid-overlay: the run loop stops
+        // calling `show` (no page changes are being observed), but must keep
+        // calling `tick` so an in-flight overlay still expires instead of
+        // sticking on the physical screen forever.
+        let outputs = DeviceOutputs::new();
+        outputs.with_screen_mut(|s| render_centered_text(s, "MIDI MODE"));
+        let original = outputs.with_screen(Clone::clone);
+
+        let mut indicator = PageIndicator::new();
+        let t0 = Instant::now();
+        indicator.show(&outputs, "Page 2", t0);
+
+        indicator.tick(&outputs, t0 + PageIndicator::DURATION / 2);
+        assert_ne!(
+            outputs.with_screen(Clone::clone),
+            original,
+            "overlay should still be showing before the deadline"
+        );
+
+        indicator.tick(&outputs, t0 + PageIndicator::DURATION);
+        assert_eq!(
+            outputs.with_screen(Clone::clone),
+            original,
+            "ticking past the deadline restores the pre-overlay screen even \
+             without another show()"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -465,11 +845,11 @@ mod pad_led_seed_tests {
         let outputs = DeviceOutputs::new();
         let mut settings = Settings::default();
         // pad 0: Single Green on the active (Out) source → dim idle.
-        settings.pads[0].led.midi_out = PadLedColorMode::single(PadColors::Green);
+        settings.active_pads_mut()[0].led.midi_out = PadLedColorMode::single(PadColors::Green);
         // pad 1: Velocity on the active source → dark idle.
-        settings.pads[1].led.midi_out = PadLedColorMode::velocity();
+        settings.active_pads_mut()[1].led.midi_out = PadLedColorMode::velocity();
         // pad 2: source Off → dark.
-        settings.pads[2].led.source = PadLedSource::Off;
+        settings.active_pads_mut()[2].led.source = PadLedSource::Off;
 
         initialize_pad_leds(&outputs, &settings);
 
@@ -491,7 +871,7 @@ mod pad_led_seed_tests {
     fn reseed_only_touches_masked_pads() {
         let outputs = DeviceOutputs::new();
         let mut settings = Settings::default();
-        settings.pads[0].led.midi_out = PadLedColorMode::single(PadColors::Green);
+        settings.active_pads_mut()[0].led.midi_out = PadLedColorMode::single(PadColors::Green);
         // Pad 1 is currently lit by live feedback, not at its idle state.
         outputs.with_lights_mut(|l| l.set_pad(1, PadColors::Red, Brightness::Bright));
 
@@ -506,6 +886,46 @@ mod pad_led_seed_tests {
             outputs.with_lights(|l| l.get_pad(1)),
             (PadColors::Red, Brightness::Bright),
             "a targeted re-seed must not clobber an unrelated lit pad"
+        );
+    }
+
+    #[test]
+    fn close_picker_only_reseeds_when_a_picker_was_actually_open() {
+        let outputs = DeviceOutputs::new();
+        let settings = Settings::default();
+        // Pad 0 is currently lit by something other than its idle state.
+        outputs.with_lights_mut(|l| l.set_pad(0, PadColors::Red, Brightness::Bright));
+
+        // Not picking: close_picker must leave the grid untouched.
+        let mut paging = crate::paging::PagingState::new();
+        let mut sent_preview = false;
+        close_picker(&outputs, &settings, &mut paging, &mut sent_preview);
+        assert_eq!(
+            outputs.with_lights(|l| l.get_pad(0)),
+            (PadColors::Red, Brightness::Bright),
+            "close_picker must not repaint the grid when no picker was open"
+        );
+
+        // Picking: close_picker must reseed the grid and clear sent_preview.
+        paging.observe_event(
+            0,
+            4,
+            &ControlEvent::ButtonChanged {
+                index: Buttons::Group as usize,
+                pressed: true,
+            },
+        );
+        assert!(paging.is_picking());
+        sent_preview = true;
+
+        close_picker(&outputs, &settings, &mut paging, &mut sent_preview);
+
+        assert!(!paging.is_picking());
+        assert!(!sent_preview);
+        assert_eq!(
+            outputs.with_lights(|l| l.get_pad(0)),
+            (PadColors::Off, Brightness::Off),
+            "close_picker must repaint the grid from idle LEDs when a picker was open"
         );
     }
 }

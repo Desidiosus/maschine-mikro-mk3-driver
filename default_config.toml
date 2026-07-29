@@ -39,353 +39,361 @@
 # soft_off_enabled = true
 # self_test_on_launch = true
 
-[pads.1.hit]
+[pad_paging]
+# enabled = false
+# active = 0
+# default_page_color = "white"
+
+[[pad_paging.pages]]
+# name = "Pad Page A"
+
+[pad_paging.pages.pads.1.hit]
 # type = "note"
 # note = 36
 
-[pads.1.pressure]
+[pad_paging.pages.pads.1.pressure]
 # type = "disabled"
 
-[pads.1.led]
+[pad_paging.pages.pads.1.led]
 # source = "midi_out"
 
-[pads.1.led.midi_in]
+[pad_paging.pages.pads.1.led.midi_in]
 # mode = "velocity"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.1.led.midi_out]
+[pad_paging.pages.pads.1.led.midi_out]
 # mode = "dual"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.10.hit]
+[pad_paging.pages.pads.10.hit]
 # type = "note"
 # note = 45
 
-[pads.10.pressure]
+[pad_paging.pages.pads.10.pressure]
 # type = "disabled"
 
-[pads.10.led]
+[pad_paging.pages.pads.10.led]
 # source = "midi_out"
 
-[pads.10.led.midi_in]
+[pad_paging.pages.pads.10.led.midi_in]
 # mode = "velocity"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.10.led.midi_out]
+[pad_paging.pages.pads.10.led.midi_out]
 # mode = "dual"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.11.hit]
+[pad_paging.pages.pads.11.hit]
 # type = "note"
 # note = 46
 
-[pads.11.pressure]
+[pad_paging.pages.pads.11.pressure]
 # type = "disabled"
 
-[pads.11.led]
+[pad_paging.pages.pads.11.led]
 # source = "midi_out"
 
-[pads.11.led.midi_in]
+[pad_paging.pages.pads.11.led.midi_in]
 # mode = "velocity"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.11.led.midi_out]
+[pad_paging.pages.pads.11.led.midi_out]
 # mode = "dual"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.12.hit]
+[pad_paging.pages.pads.12.hit]
 # type = "note"
 # note = 47
 
-[pads.12.pressure]
+[pad_paging.pages.pads.12.pressure]
 # type = "disabled"
 
-[pads.12.led]
+[pad_paging.pages.pads.12.led]
 # source = "midi_out"
 
-[pads.12.led.midi_in]
+[pad_paging.pages.pads.12.led.midi_in]
 # mode = "velocity"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.12.led.midi_out]
+[pad_paging.pages.pads.12.led.midi_out]
 # mode = "dual"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.13.hit]
+[pad_paging.pages.pads.13.hit]
 # type = "note"
 # note = 48
 
-[pads.13.pressure]
+[pad_paging.pages.pads.13.pressure]
 # type = "disabled"
 
-[pads.13.led]
+[pad_paging.pages.pads.13.led]
 # source = "midi_out"
 
-[pads.13.led.midi_in]
+[pad_paging.pages.pads.13.led.midi_in]
 # mode = "velocity"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.13.led.midi_out]
+[pad_paging.pages.pads.13.led.midi_out]
 # mode = "dual"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.14.hit]
+[pad_paging.pages.pads.14.hit]
 # type = "note"
 # note = 49
 
-[pads.14.pressure]
+[pad_paging.pages.pads.14.pressure]
 # type = "disabled"
 
-[pads.14.led]
+[pad_paging.pages.pads.14.led]
 # source = "midi_out"
 
-[pads.14.led.midi_in]
+[pad_paging.pages.pads.14.led.midi_in]
 # mode = "velocity"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.14.led.midi_out]
+[pad_paging.pages.pads.14.led.midi_out]
 # mode = "dual"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.15.hit]
+[pad_paging.pages.pads.15.hit]
 # type = "note"
 # note = 50
 
-[pads.15.pressure]
+[pad_paging.pages.pads.15.pressure]
 # type = "disabled"
 
-[pads.15.led]
+[pad_paging.pages.pads.15.led]
 # source = "midi_out"
 
-[pads.15.led.midi_in]
+[pad_paging.pages.pads.15.led.midi_in]
 # mode = "velocity"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.15.led.midi_out]
+[pad_paging.pages.pads.15.led.midi_out]
 # mode = "dual"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.16.hit]
+[pad_paging.pages.pads.16.hit]
 # type = "note"
 # note = 51
 
-[pads.16.pressure]
+[pad_paging.pages.pads.16.pressure]
 # type = "disabled"
 
-[pads.16.led]
+[pad_paging.pages.pads.16.led]
 # source = "midi_out"
 
-[pads.16.led.midi_in]
+[pad_paging.pages.pads.16.led.midi_in]
 # mode = "velocity"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.16.led.midi_out]
+[pad_paging.pages.pads.16.led.midi_out]
 # mode = "dual"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.2.hit]
+[pad_paging.pages.pads.2.hit]
 # type = "note"
 # note = 37
 
-[pads.2.pressure]
+[pad_paging.pages.pads.2.pressure]
 # type = "disabled"
 
-[pads.2.led]
+[pad_paging.pages.pads.2.led]
 # source = "midi_out"
 
-[pads.2.led.midi_in]
+[pad_paging.pages.pads.2.led.midi_in]
 # mode = "velocity"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.2.led.midi_out]
+[pad_paging.pages.pads.2.led.midi_out]
 # mode = "dual"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.3.hit]
+[pad_paging.pages.pads.3.hit]
 # type = "note"
 # note = 38
 
-[pads.3.pressure]
+[pad_paging.pages.pads.3.pressure]
 # type = "disabled"
 
-[pads.3.led]
+[pad_paging.pages.pads.3.led]
 # source = "midi_out"
 
-[pads.3.led.midi_in]
+[pad_paging.pages.pads.3.led.midi_in]
 # mode = "velocity"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.3.led.midi_out]
+[pad_paging.pages.pads.3.led.midi_out]
 # mode = "dual"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.4.hit]
+[pad_paging.pages.pads.4.hit]
 # type = "note"
 # note = 39
 
-[pads.4.pressure]
+[pad_paging.pages.pads.4.pressure]
 # type = "disabled"
 
-[pads.4.led]
+[pad_paging.pages.pads.4.led]
 # source = "midi_out"
 
-[pads.4.led.midi_in]
+[pad_paging.pages.pads.4.led.midi_in]
 # mode = "velocity"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.4.led.midi_out]
+[pad_paging.pages.pads.4.led.midi_out]
 # mode = "dual"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.5.hit]
+[pad_paging.pages.pads.5.hit]
 # type = "note"
 # note = 40
 
-[pads.5.pressure]
+[pad_paging.pages.pads.5.pressure]
 # type = "disabled"
 
-[pads.5.led]
+[pad_paging.pages.pads.5.led]
 # source = "midi_out"
 
-[pads.5.led.midi_in]
+[pad_paging.pages.pads.5.led.midi_in]
 # mode = "velocity"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.5.led.midi_out]
+[pad_paging.pages.pads.5.led.midi_out]
 # mode = "dual"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.6.hit]
+[pad_paging.pages.pads.6.hit]
 # type = "note"
 # note = 41
 
-[pads.6.pressure]
+[pad_paging.pages.pads.6.pressure]
 # type = "disabled"
 
-[pads.6.led]
+[pad_paging.pages.pads.6.led]
 # source = "midi_out"
 
-[pads.6.led.midi_in]
+[pad_paging.pages.pads.6.led.midi_in]
 # mode = "velocity"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.6.led.midi_out]
+[pad_paging.pages.pads.6.led.midi_out]
 # mode = "dual"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.7.hit]
+[pad_paging.pages.pads.7.hit]
 # type = "note"
 # note = 42
 
-[pads.7.pressure]
+[pad_paging.pages.pads.7.pressure]
 # type = "disabled"
 
-[pads.7.led]
+[pad_paging.pages.pads.7.led]
 # source = "midi_out"
 
-[pads.7.led.midi_in]
+[pad_paging.pages.pads.7.led.midi_in]
 # mode = "velocity"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.7.led.midi_out]
+[pad_paging.pages.pads.7.led.midi_out]
 # mode = "dual"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.8.hit]
+[pad_paging.pages.pads.8.hit]
 # type = "note"
 # note = 43
 
-[pads.8.pressure]
+[pad_paging.pages.pads.8.pressure]
 # type = "disabled"
 
-[pads.8.led]
+[pad_paging.pages.pads.8.led]
 # source = "midi_out"
 
-[pads.8.led.midi_in]
+[pad_paging.pages.pads.8.led.midi_in]
 # mode = "velocity"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.8.led.midi_out]
+[pad_paging.pages.pads.8.led.midi_out]
 # mode = "dual"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.9.hit]
+[pad_paging.pages.pads.9.hit]
 # type = "note"
 # note = 44
 
-[pads.9.pressure]
+[pad_paging.pages.pads.9.pressure]
 # type = "disabled"
 
-[pads.9.led]
+[pad_paging.pages.pads.9.led]
 # source = "midi_out"
 
-[pads.9.led.midi_in]
+[pad_paging.pages.pads.9.led.midi_in]
 # mode = "velocity"
 # single = "white"
 # dual_on = "blue"
 # dual_off = "off"
 
-[pads.9.led.midi_out]
+[pad_paging.pages.pads.9.led.midi_out]
 # mode = "dual"
 # single = "white"
 # dual_on = "blue"

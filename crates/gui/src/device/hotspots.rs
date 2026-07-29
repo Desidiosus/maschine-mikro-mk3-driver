@@ -143,6 +143,12 @@ pub struct Device {
     /// Native SVG size (1520 x 842).
     pub size: (f32, f32),
     pub hotspots: Vec<Hotspot>,
+    /// Union of the 16 pad hotspot rects in device space: the pad-grid area the
+    /// hardware frame and the page selector both anchor to. `None` if the SVG
+    /// exposed no pad ids at all. Resolved once here because the hotspot table
+    /// never changes after `load`, and the frame is re-derived on every canvas
+    /// draw and every responsive layout pass.
+    pad_grid: Option<Rect>,
 }
 
 impl Device {
@@ -179,7 +185,13 @@ impl Device {
         push(&tree, "Encoder", ControlRef::Encoder);
         push(&tree, "Slider", ControlRef::Slider);
 
-        Self { size, hotspots }
+        let mut device = Self {
+            size,
+            hotspots,
+            pad_grid: None,
+        };
+        device.pad_grid = device.pad_grid_union();
+        device
     }
 
     /// Control whose hotspot contains a device-space point. Overlaps resolve by
@@ -197,6 +209,28 @@ impl Device {
             .iter()
             .find(|h| h.control == control)
             .map(|h| h.rect)
+    }
+
+    /// The pad-grid area in device space (see the `pad_grid` field).
+    pub fn pad_grid_rect(&self) -> Option<Rect> {
+        self.pad_grid
+    }
+
+    fn pad_grid_union(&self) -> Option<Rect> {
+        let mut pads = (0..16u8).filter_map(|i| self.rect_for(ControlRef::Pad(i)));
+        let first = pads.next()?;
+        Some(pads.fold(first, |acc, r| {
+            let x = acc.x.min(r.x);
+            let y = acc.y.min(r.y);
+            let x2 = (acc.x + acc.w).max(r.x + r.w);
+            let y2 = (acc.y + acc.h).max(r.y + r.h);
+            Rect {
+                x,
+                y,
+                w: x2 - x,
+                h: y2 - y,
+            }
+        }))
     }
 
     /// Controls whose hotspots intersect `sel`, reduced to a single control kind.
@@ -281,6 +315,41 @@ mod tests {
         // bottom-left of the pad grid (left side, lower half of the canvas).
         assert!(r.x < 1000.0, "pad 1 is on the left of the grid: {r:?}");
         assert!(r.y > 400.0, "pad 1 is in the lower half: {r:?}");
+    }
+
+    #[test]
+    fn pad_grid_rect_is_the_tight_union_of_every_pad() {
+        let device = Device::load();
+        let grid = device.pad_grid_rect().expect("device SVG exposes pads");
+        let mut min_x = f32::MAX;
+        let mut min_y = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut max_y = f32::MIN;
+        for i in 0..16u8 {
+            let r = device.rect_for(ControlRef::Pad(i)).unwrap();
+            assert!(grid.x <= r.x && grid.y <= r.y);
+            assert!(grid.x + grid.w >= r.x + r.w);
+            assert!(grid.y + grid.h >= r.y + r.h);
+            min_x = min_x.min(r.x);
+            min_y = min_y.min(r.y);
+            max_x = max_x.max(r.x + r.w);
+            max_y = max_y.max(r.y + r.h);
+        }
+        // Tight, not merely containing: an oversized rect would drag the frame
+        // and the selector anchored to it away from the pads. The origin is a
+        // plain minimum so it must match exactly; the far edges are compared
+        // with a sub-thousandth-of-a-device-unit tolerance because the union
+        // stores a width, and recovering `x + w` back to the maximum edge is
+        // not guaranteed to round-trip exactly in f32.
+        assert_eq!((grid.x, grid.y), (min_x, min_y));
+        assert!(
+            (grid.x + grid.w - max_x).abs() < 1e-3,
+            "right edge: {grid:?}"
+        );
+        assert!(
+            (grid.y + grid.h - max_y).abs() < 1e-3,
+            "bottom edge: {grid:?}"
+        );
     }
 
     #[test]

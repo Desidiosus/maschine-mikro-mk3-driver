@@ -20,7 +20,7 @@ pub fn note_name(note: u8) -> String {
 /// CC, slider→position CC, pad→hit note name.
 pub fn control_label(settings: &Settings, control: ControlRef) -> String {
     match control {
-        ControlRef::Pad(i) => match settings.pads[i as usize].hit {
+        ControlRef::Pad(i) => match settings.active_pads()[i as usize].hit {
             settings::PadHitAction::Note { note, .. } => note_name(note),
             settings::PadHitAction::Off => "Off".to_string(),
         },
@@ -54,7 +54,7 @@ pub fn subaction_label(
             C => control_label(settings, ControlRef::Button(Buttons::EncoderTouch as u8)),
         },
         ControlRef::Pad(i) => match tab {
-            B => match settings.pads[i as usize].pressure {
+            B => match settings.active_pads()[i as usize].pressure {
                 settings::PadPressureAction::Disabled => "Off".to_string(),
                 settings::PadPressureAction::Poly { .. } => "Poly".to_string(),
             },

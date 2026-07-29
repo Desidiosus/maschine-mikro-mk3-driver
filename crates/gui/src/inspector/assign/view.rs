@@ -360,26 +360,63 @@ pub fn pad_form<'a>(
         }
     };
 
-    column![
-        header(name, assignment),
-        tab_strip(&[("Hit", AssignTab::A), ("Press", AssignTab::B)], tab),
-        group_box(body),
-        group_box(pad_led_section(state)),
-    ]
-    .spacing(10)
-    .into()
+    let mut col = column![];
+    if let Some(page_context) = page_context_block(state) {
+        col = col.push(page_context);
+    }
+    col.push(header(name, assignment))
+        .push(tab_strip(
+            &[("Hit", AssignTab::A), ("Press", AssignTab::B)],
+            tab,
+        ))
+        .push(group_box(body))
+        .push(group_box(pad_led_section(state)))
+        .spacing(10)
+        .into()
+}
+
+/// The active pad page's name + Color picker, shown above the pad Assign form
+/// and the empty-selection prompt while paging is enabled. `None` when paging
+/// is off or settings have not arrived yet, so the form looks unchanged until
+/// paging is opted into.
+fn page_context_block<'a>(state: &State) -> Option<Element<'a, Message>> {
+    let settings = state.settings.as_ref()?;
+    let pp = &settings.pad_paging;
+    if !pp.enabled {
+        return None;
+    }
+    let active = pp.active.min(pp.pages.len().saturating_sub(1));
+    let page = pp.pages.get(active)?;
+    let page_name = pp.display_name(active);
+    let selected = match page.color {
+        None => crate::message::PageColorChoice::Inherit,
+        Some(c) => crate::message::PageColorChoice::Color(c),
+    };
+    let color_row = labeled_pick_list(
+        "Color",
+        crate::inspector::pages::view::page_color_choices(),
+        Some(selected),
+        move |c| Message::SetPageColor(active, c),
+    );
+    Some(group_box(
+        column![text(page_name).size(14), color_row].spacing(8),
+    ))
 }
 
 /// A labeled `pick_list` row: `label  [ value ▾ ]`. `selected` is the shared
 /// value, or `None` (indeterminate → placeholder) across a multi-selection.
-fn labeled_pick_list<'a, T>(
+/// `options` takes anything a `pick_list` itself can own (a borrowed `&'a [T]`
+/// slice of a `const ALL`, or a freshly-built owned `Vec<T>`), matching
+/// `pick_list`'s own `Borrow<[T]>` flexibility.
+pub(crate) fn labeled_pick_list<'a, T, L>(
     label: &str,
-    options: &'a [T],
+    options: L,
     selected: Option<T>,
     on_select: impl Fn(T) -> Message + 'a,
 ) -> Element<'a, Message>
 where
     T: ToString + PartialEq + Clone + 'a,
+    L: std::borrow::Borrow<[T]> + 'a,
 {
     row![
         text(label.to_string()).width(Length::Fixed(90.0)),
@@ -626,6 +663,34 @@ pub fn slider_form<'a>(
     .into()
 }
 
+/// Why `Group` carries no assignment while paging is enabled, shown in place of
+/// the form when it is the only thing selected.
+fn reserved_group_panel<'a>() -> Element<'a, Message> {
+    let name = crate::device::hotspots::control_name(ControlRef::Button(Buttons::Group as u8));
+    column![
+        header(&name, "Reserved for pad pages"),
+        group_box(
+            column![
+                text("The Group button switches pad pages while paging is enabled."),
+                text("Disable paging in the Pages tab to assign it an action."),
+            ]
+            .spacing(6)
+        ),
+    ]
+    .spacing(10)
+    .into()
+}
+
+/// Shown under the batched form when a multi-selection includes the reserved
+/// `Group`: the form edits every other button in the selection, and leaving
+/// that unsaid would make Group look like it took an assignment it can't emit.
+fn excluded_group_note<'a>() -> Element<'a, Message> {
+    group_box(text(
+        "The Group button switches pad pages while paging is enabled, so it is \
+         left out of this selection.",
+    ))
+}
+
 /// The assignment label shown in a multi-selection header: the common label, or
 /// `…` when the per-control labels differ.
 fn indeterminate_label(labels: impl IntoIterator<Item = String>) -> String {
@@ -665,6 +730,10 @@ pub fn assignment_body(state: &State) -> Element<'_, Message> {
         }));
         return pad_form(state, &name, &label, state.assign_tab, &active);
     }
+    let group_reserved = state.selection_holds_reserved_group();
+    if buttons.is_empty() && group_reserved {
+        return reserved_group_panel();
+    }
     if !buttons.is_empty() {
         let name = if buttons.len() == 1 {
             crate::device::hotspots::control_name(ControlRef::Button(buttons[0]))
@@ -676,7 +745,11 @@ pub fn assignment_body(state: &State) -> Element<'_, Message> {
                 .iter()
                 .map(|&b| crate::device::labels::control_label(s, ControlRef::Button(b))),
         );
-        return button_form(state, &name, &label, &active);
+        let form = button_form(state, &name, &label, &active);
+        if group_reserved {
+            return column![form, excluded_group_note()].spacing(10).into();
+        }
+        return form;
     }
     match state.selection.first() {
         Some(ControlRef::Encoder) => {
@@ -697,11 +770,69 @@ pub fn assignment_body(state: &State) -> Element<'_, Message> {
                 &active,
             )
         }
-        _ => column![
-            text("Assignment").size(18),
-            text("Select a control on the device.")
-        ]
-        .spacing(8)
-        .into(),
+        _ => {
+            let mut col = column![];
+            if let Some(page_context) = page_context_block(state) {
+                col = col.push(page_context);
+            }
+            col.push(text("Assignment").size(18))
+                .push(text("Select a control on the device."))
+                .spacing(8)
+                .into()
+        }
+    }
+}
+
+#[cfg(test)]
+mod group_reservation_tests {
+    use super::*;
+
+    const GROUP: u8 = Buttons::Group as u8;
+
+    fn selecting(paging_enabled: bool, selection: &[u8]) -> State {
+        let mut settings = settings::Settings::default();
+        settings.pad_paging.enabled = paging_enabled;
+        State {
+            settings: Some(std::sync::Arc::new(settings)),
+            selection: selection.iter().map(|&b| ControlRef::Button(b)).collect(),
+            ..State::default()
+        }
+    }
+
+    #[test]
+    fn group_alone_is_reserved_when_paging_enabled() {
+        let state = selecting(true, &[GROUP]);
+        assert!(state.selection_holds_reserved_group());
+        assert!(
+            state.selected_buttons().is_empty(),
+            "nothing is editable, so the form shows the reserved panel instead"
+        );
+    }
+
+    #[test]
+    fn group_is_editable_when_paging_is_disabled() {
+        let state = selecting(false, &[GROUP]);
+        assert!(!state.selection_holds_reserved_group());
+        assert_eq!(state.selected_buttons(), vec![GROUP]);
+    }
+
+    #[test]
+    fn group_is_left_out_of_a_multi_selection_while_paging_is_enabled() {
+        // The runtime swallows every Group event while paging is enabled, so a
+        // batched edit must not write an assignment there that can never fire —
+        // the other buttons in the selection stay editable.
+        let state = selecting(true, &[GROUP, 0]);
+        assert_eq!(state.selected_buttons(), vec![0]);
+        assert!(
+            state.selection_holds_reserved_group(),
+            "the form has to say why Group is missing from the batch"
+        );
+    }
+
+    #[test]
+    fn a_selection_without_group_is_untouched() {
+        let state = selecting(true, &[0, 1]);
+        assert_eq!(state.selected_buttons(), vec![0, 1]);
+        assert!(!state.selection_holds_reserved_group());
     }
 }

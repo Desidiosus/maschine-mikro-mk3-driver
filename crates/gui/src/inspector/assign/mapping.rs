@@ -245,7 +245,7 @@ pub(crate) fn default_pad_hit_delta(pads: &[u8]) -> PartialSettings {
     let def = settings::Settings::default();
     pads_map(pads, |i| {
         Some(PartialPadConfig {
-            hit: Some(def.pads[i as usize].hit.clone()),
+            hit: Some(def.active_pads()[i as usize].hit.clone()),
             pressure: None,
             led: None,
         })
@@ -324,7 +324,7 @@ impl State {
     pub(crate) fn first_pad_note(&self) -> Option<u8> {
         let i = self.selected_pads().first().copied()? as usize;
         let s = self.settings.as_ref()?;
-        match s.pads[i].hit {
+        match s.active_pads()[i].hit {
             PadHitAction::Note { note, .. } => Some(note),
             PadHitAction::Off => None,
         }
@@ -333,7 +333,7 @@ impl State {
     pub(crate) fn first_pad_channel(&self) -> Option<u8> {
         let i = self.selected_pads().first().copied()? as usize;
         let s = self.settings.as_ref()?;
-        match s.pads[i].hit {
+        match s.active_pads()[i].hit {
             PadHitAction::Note { channel, .. } => channel.map(|c| c.as_u8()),
             PadHitAction::Off => None,
         }
@@ -402,13 +402,16 @@ impl State {
     /// `Same(false)`=all Off, `Differ`=mixed.
     pub(crate) fn pads_hit_type(&self) -> MultiValue<bool> {
         self.fold_selected(&self.selected_pads(), |s, i| {
-            Some(matches!(s.pads[i].hit, settings::PadHitAction::Note { .. }))
+            Some(matches!(
+                s.active_pads()[i].hit,
+                settings::PadHitAction::Note { .. }
+            ))
         })
     }
 
     /// Shared Hit note across selected pads (only meaningful when all are Note).
     pub(crate) fn pads_hit_note(&self) -> MultiValue<u8> {
-        self.fold_selected(&self.selected_pads(), |s, i| match s.pads[i].hit {
+        self.fold_selected(&self.selected_pads(), |s, i| match s.active_pads()[i].hit {
             PadHitAction::Note { note, .. } => Some(note),
             PadHitAction::Off => None,
         })
@@ -416,7 +419,7 @@ impl State {
 
     /// Shared Hit channel (displayed 1..=16) across selected pads.
     pub(crate) fn pads_hit_channel(&self) -> MultiValue<u8> {
-        self.fold_selected(&self.selected_pads(), |s, i| match s.pads[i].hit {
+        self.fold_selected(&self.selected_pads(), |s, i| match s.active_pads()[i].hit {
             PadHitAction::Note { channel, .. } => Some(displayed_channel(channel)),
             PadHitAction::Off => None,
         })
@@ -427,7 +430,7 @@ impl State {
     pub(crate) fn pads_press_type(&self) -> MultiValue<bool> {
         self.fold_selected(&self.selected_pads(), |s, i| {
             Some(matches!(
-                s.pads[i].pressure,
+                s.active_pads()[i].pressure,
                 settings::PadPressureAction::Poly { .. }
             ))
         })
@@ -435,17 +438,21 @@ impl State {
 
     /// Shared Press note (displayed; `None` → 0) across selected pads.
     pub(crate) fn pads_press_note(&self) -> MultiValue<u8> {
-        self.fold_selected(&self.selected_pads(), |s, i| match s.pads[i].pressure {
-            PadPressureAction::Poly { note, .. } => Some(note.unwrap_or(0)),
-            PadPressureAction::Disabled => None,
+        self.fold_selected(&self.selected_pads(), |s, i| {
+            match s.active_pads()[i].pressure {
+                PadPressureAction::Poly { note, .. } => Some(note.unwrap_or(0)),
+                PadPressureAction::Disabled => None,
+            }
         })
     }
 
     /// Shared Press channel (displayed 1..=16) across selected pads.
     pub(crate) fn pads_press_channel(&self) -> MultiValue<u8> {
-        self.fold_selected(&self.selected_pads(), |s, i| match s.pads[i].pressure {
-            PadPressureAction::Poly { channel, .. } => Some(displayed_channel(channel)),
-            PadPressureAction::Disabled => None,
+        self.fold_selected(&self.selected_pads(), |s, i| {
+            match s.active_pads()[i].pressure {
+                PadPressureAction::Poly { channel, .. } => Some(displayed_channel(channel)),
+                PadPressureAction::Disabled => None,
+            }
         })
     }
 
@@ -577,7 +584,7 @@ impl State {
     ) -> Option<PartialSettings> {
         let s = self.settings.as_ref()?;
         Some(pads_map(&self.selected_pads(), |i| {
-            match &s.pads[i as usize].hit {
+            match &s.active_pads()[i as usize].hit {
                 PadHitAction::Note { channel, note } => Some(PartialPadConfig {
                     hit: Some(PadHitAction::Note {
                         channel: set_channel.unwrap_or(*channel),
@@ -600,7 +607,7 @@ impl State {
     ) -> Option<PartialSettings> {
         let s = self.settings.as_ref()?;
         Some(pads_map(&self.selected_pads(), |i| {
-            match &s.pads[i as usize].pressure {
+            match &s.active_pads()[i as usize].pressure {
                 PadPressureAction::Poly { channel, note } => Some(PartialPadConfig {
                     hit: None,
                     pressure: Some(PadPressureAction::Poly {
@@ -618,14 +625,16 @@ impl State {
     fn pad_led_mode_at(&self, i: usize, tab: LedTab) -> Option<settings::PadLedColorMode> {
         let s = self.settings.as_ref()?;
         Some(match tab {
-            LedTab::In => s.pads[i].led.midi_in,
-            LedTab::Out => s.pads[i].led.midi_out,
+            LedTab::In => s.active_pads()[i].led.midi_in,
+            LedTab::Out => s.active_pads()[i].led.midi_out,
         })
     }
 
     /// Shared LED source across the pad selection.
     pub(crate) fn pads_led_source(&self) -> MultiValue<settings::PadLedSource> {
-        self.fold_selected(&self.selected_pads(), |s, i| Some(s.pads[i].led.source))
+        self.fold_selected(&self.selected_pads(), |s, i| {
+            Some(s.active_pads()[i].led.source)
+        })
     }
 
     /// Shared LED mode across the pad selection, for `tab`'s source.
@@ -672,7 +681,7 @@ impl State {
         let changed: Vec<u8> = self
             .selected_pads()
             .into_iter()
-            .filter(|&i| settings.pads[i as usize].led.source != source)
+            .filter(|&i| settings.active_pads()[i as usize].led.source != source)
             .collect();
         if !changed.is_empty() {
             self.send_apply(pad_led_source_delta(&changed, source), true);
@@ -777,9 +786,9 @@ mod tests {
         use settings::{PadLedSource, Settings};
         let delta = pad_led_source_delta(&[2, 5], PadLedSource::MidiIn);
         let merged = Settings::default().merge_overrides(delta);
-        assert_eq!(merged.pads[2].led.source, PadLedSource::MidiIn);
-        assert_eq!(merged.pads[5].led.source, PadLedSource::MidiIn);
-        assert_eq!(merged.pads[0].led.source, PadLedSource::MidiOut);
+        assert_eq!(merged.active_pads()[2].led.source, PadLedSource::MidiIn);
+        assert_eq!(merged.active_pads()[5].led.source, PadLedSource::MidiIn);
+        assert_eq!(merged.active_pads()[0].led.source, PadLedSource::MidiOut);
     }
 
     #[test]
@@ -811,7 +820,7 @@ mod tests {
         });
         let merged = Settings::default().merge_overrides(delta);
         for (i, expected) in notes.iter().enumerate() {
-            match merged.pads[i].hit {
+            match merged.active_pads()[i].hit {
                 PadHitAction::Note { channel, note } => {
                     assert_eq!(note, *expected, "pad {i} keeps its own note");
                     assert_eq!(channel, MidiChannel::try_from(3).ok());
@@ -819,7 +828,10 @@ mod tests {
                 PadHitAction::Off => panic!("pad {i} should be a note"),
             }
         }
-        assert_eq!(merged.pads[3], Settings::default().pads[3]);
+        assert_eq!(
+            merged.active_pads()[3],
+            Settings::default().active_pads()[3]
+        );
     }
 
     #[test]
@@ -857,20 +869,23 @@ mod tests {
         );
         let merged = Settings::default().merge_overrides(delta);
         assert_eq!(
-            merged.pads[2].hit,
+            merged.active_pads()[2].hit,
             PadHitAction::Note {
                 channel: None,
                 note: 60
             }
         );
         assert_eq!(
-            merged.pads[5].hit,
+            merged.active_pads()[5].hit,
             PadHitAction::Note {
                 channel: None,
                 note: 60
             }
         );
-        assert_eq!(merged.pads[0], Settings::default().pads[0]);
+        assert_eq!(
+            merged.active_pads()[0],
+            Settings::default().active_pads()[0]
+        );
     }
 
     #[test]

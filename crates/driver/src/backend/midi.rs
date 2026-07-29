@@ -31,10 +31,24 @@ impl MidiSink for MidiOutputConnection {
     }
 }
 
+/// What was actually emitted for a pad that is currently held down. Recorded at
+/// NoteOn from the page that was active *then*, so the matching NoteOff and any
+/// aftertouch stay correct even if the active page changes while the pad is held.
+#[derive(Debug, Clone, Copy)]
+struct HeldPad {
+    /// The note actually emitted, if the pad's hit action produced one.
+    /// `None` for a `hit: Off` pad (which can still emit poly pressure).
+    note: Option<(u8, u8)>,
+    /// Resolved poly-aftertouch target `(channel, note)`, or `None` when the
+    /// pad's pressure action was disabled on the pressing page.
+    pressure: Option<(u8, u8)>,
+}
+
 pub struct MidiBackend<S: MidiSink = MidiOutputConnection> {
     settings: SharedSettings,
     sink: S,
     _input: Option<MidiInputConnection<DeviceOutputs>>,
+    held: [Option<HeldPad>; 16],
 }
 
 impl MidiBackend {
@@ -69,6 +83,7 @@ impl MidiBackend {
             settings: Arc::clone(settings),
             sink,
             _input: Some(input),
+            held: [None; 16],
         })
     }
 }
@@ -81,11 +96,31 @@ impl<S: MidiSink> MidiBackend<S> {
             settings: new_shared(settings),
             sink,
             _input: None,
+            held: [None; 16],
         }
     }
 
     pub fn sink(&self) -> &S {
         &self.sink
+    }
+
+    /// Mark a pad as consumed by the page picker: it has no sounding note and must
+    /// stay silent until its next real press. Without this, the pad's trailing
+    /// pressure ramp (which continues after the tap, and after `Group` is released)
+    /// would fall through to current-page resolution and emit poly pressure for a
+    /// tap that was only a page selection.
+    pub fn mark_picker_tap(&mut self, index: usize) {
+        if let Some(slot) = self.held.get_mut(index) {
+            *slot = Some(HeldPad {
+                note: None,
+                pressure: None,
+            });
+        }
+    }
+
+    #[cfg(test)]
+    pub fn replace_settings_for_test(&mut self, settings: Settings) {
+        self.settings.store(std::sync::Arc::new(settings));
     }
 
     pub fn handle_event(
@@ -94,13 +129,101 @@ impl<S: MidiSink> MidiBackend<S> {
         rt: &crate::runtime_state::RuntimeState,
     ) -> DriverResult<bool> {
         let snapshot = self.settings.load();
-        match event_to_midi_bytes(event, &snapshot, rt) {
-            Some(bytes) => {
-                self.sink.send(&bytes)?;
+        match event {
+            ControlEvent::PadNoteOn { index, .. } => {
+                let bytes = event_to_midi_bytes(event, &snapshot, rt);
+                if let Some(b) = bytes {
+                    self.sink.send(&b)?;
+                }
+                if let Some(slot) = self.held.get_mut(*index) {
+                    *slot = Some(HeldPad {
+                        note: bytes.map(|b| (b[0] & 0x0F, b[1])),
+                        pressure: resolve_pressure_target(&snapshot, *index, bytes.map(|b| b[1])),
+                    });
+                }
+                Ok(bytes.is_some())
+            }
+            ControlEvent::PadNoteOff { index, velocity } => {
+                // Release the note that was actually pressed. A pad with no held
+                // note (its NoteOn was swallowed by the page picker, or the pad's
+                // hit action is Off) emits nothing.
+                let Some(slot) = self.held.get_mut(*index) else {
+                    return Ok(false);
+                };
+                let Some(held) = slot.take() else {
+                    return Ok(false);
+                };
+                // Keep the pad's pressure target after the release: the device
+                // ramps pressure down for a while afterwards, and that tail
+                // belongs to the note just released even if the active page has
+                // changed since the press. The slot is dropped when the ramp
+                // reaches 0.
+                *slot = Some(HeldPad {
+                    note: None,
+                    pressure: held.pressure,
+                });
+                let Some((channel, note)) = held.note else {
+                    return Ok(false);
+                };
+                self.sink.send(&[0x80 | channel, note, *velocity])?;
                 Ok(true)
             }
-            None => Ok(false),
+            ControlEvent::PadAftertouch { index, pressure } => {
+                if let Some(held) = self.held.get(*index).and_then(|h| h.as_ref()) {
+                    // Sounding (or just-released) note: use the target recorded at
+                    // press time so a page switch mid-note cannot retarget it.
+                    let (released, target) = (held.note.is_none(), held.pressure);
+                    // End of a released pad's ramp: forget the pad so the next
+                    // press — which the device precedes with its own pressure ramp
+                    // — resolves against whichever page is active by then.
+                    if released && *pressure == 0 {
+                        self.held[*index] = None;
+                    }
+                    let Some((channel, note)) = target else {
+                        return Ok(false);
+                    };
+                    self.sink.send(&[0xA0 | channel, note, *pressure])?;
+                    Ok(true)
+                } else {
+                    // No held note. The device ramps pressure before note-on and
+                    // after note-off (43% of aftertouch in the reference capture),
+                    // so resolve against the current page — the pre-paging behavior.
+                    match event_to_midi_bytes(event, &snapshot, rt) {
+                        Some(bytes) => {
+                            self.sink.send(&bytes)?;
+                            Ok(true)
+                        }
+                        None => Ok(false),
+                    }
+                }
+            }
+            _ => match event_to_midi_bytes(event, &snapshot, rt) {
+                Some(bytes) => {
+                    self.sink.send(&bytes)?;
+                    Ok(true)
+                }
+                None => Ok(false),
+            },
         }
+    }
+
+    /// Release every note this backend still believes is held and forget the
+    /// state. Used when soft-off takes the device and when a session ends: those
+    /// paths swallow or never deliver the physical release, so without this a
+    /// stale entry both leaves a hung note in the DAW and lets a later page-picker
+    /// tap on the same pad emit MIDI.
+    pub fn flush_held_notes(&mut self) -> DriverResult<()> {
+        let mut first_err = Ok(());
+        for slot in self.held.iter_mut() {
+            let Some(held) = slot.take() else { continue };
+            if let Some((channel, note)) = held.note
+                && let Err(err) = self.sink.send(&[0x80 | channel, note, 0])
+                && first_err.is_ok()
+            {
+                first_err = Err(err);
+            }
+        }
+        first_err
     }
 }
 
@@ -142,6 +265,28 @@ fn create_midi_input(
 
 fn resolve_channel(per_action: Option<MidiChannel>) -> u8 {
     per_action.map(|c| c.as_u8()).unwrap_or(0)
+}
+
+/// Resolve a pad's poly-aftertouch `(channel, note)` against `settings`, given the
+/// note that its NoteOn just emitted (`None` for a `hit: Off` pad). `None` when
+/// pressure is disabled for the pad, or when it has neither an explicit pressure
+/// note nor a hit note to fall back on.
+fn resolve_pressure_target(
+    settings: &Settings,
+    index: usize,
+    hit_note: Option<u8>,
+) -> Option<(u8, u8)> {
+    let pad = settings.active_pads().0.get(index)?;
+    match &pad.pressure {
+        PadPressureAction::Disabled => None,
+        PadPressureAction::Poly { channel, note } => {
+            let resolved = match note {
+                Some(n) => *n,
+                None => hit_note?,
+            };
+            Some((resolve_channel(*channel), resolved))
+        }
+    }
 }
 
 /// NI relative (sign-magnitude) turn encoding: forward turns emit
@@ -255,7 +400,7 @@ pub fn event_to_midi_bytes(
             ]),
         },
         ControlEvent::PadNoteOn { index, velocity } => {
-            let pad = settings.pads.0.get(*index)?;
+            let pad = settings.active_pads().0.get(*index)?;
             match &pad.hit {
                 PadHitAction::Note { channel, note } => {
                     Some([0x90 | resolve_channel(*channel), *note, *velocity])
@@ -264,7 +409,7 @@ pub fn event_to_midi_bytes(
             }
         }
         ControlEvent::PadNoteOff { index, velocity } => {
-            let pad = settings.pads.0.get(*index)?;
+            let pad = settings.active_pads().0.get(*index)?;
             match &pad.hit {
                 PadHitAction::Note { channel, note } => {
                     Some([0x80 | resolve_channel(*channel), *note, *velocity])
@@ -273,7 +418,7 @@ pub fn event_to_midi_bytes(
             }
         }
         ControlEvent::PadAftertouch { index, pressure } => {
-            let pad = settings.pads.0.get(*index)?;
+            let pad = settings.active_pads().0.get(*index)?;
             match &pad.pressure {
                 PadPressureAction::Disabled => None,
                 PadPressureAction::Poly { channel, note } => {
@@ -309,12 +454,14 @@ where
 }
 
 pub fn pad_index_for_message(settings: &Settings, channel: u8, note: u8) -> Option<usize> {
-    find_index_for(settings.pads.iter(), (channel, note), |pad| {
-        match &pad.hit {
+    find_index_for(
+        settings.active_pads().iter(),
+        (channel, note),
+        |pad| match &pad.hit {
             PadHitAction::Note { channel, note } => Some((*channel, *note)),
             PadHitAction::Off => None,
-        }
-    })
+        },
+    )
 }
 
 pub fn button_index_for_message(settings: &Settings, channel: u8, cc: u8) -> Option<usize> {
@@ -368,7 +515,7 @@ mod tests {
 
     fn settings_with_pad_pressure_enabled(idx: usize, channel: u8, note: Option<u8>) -> Settings {
         let mut s = Settings::default();
-        s.pads[idx].pressure = PadPressureAction::Poly {
+        s.active_pads_mut()[idx].pressure = PadPressureAction::Poly {
             channel: MidiChannel::try_from(channel).ok(),
             note,
         };
@@ -610,7 +757,7 @@ mod tests {
         s.encoder.turn = EncoderTurnAction::Off;
         s.slider.position = SliderPositionAction::Off;
         s.buttons.0[0].press = ButtonPressAction::Off;
-        s.pads.0[0].hit = PadHitAction::Off;
+        s.active_pads_mut().0[0].hit = PadHitAction::Off;
 
         assert_eq!(
             event_to_midi_bytes(&ControlEvent::EncoderTurn { delta: 1 }, &s, &rt()),
@@ -649,6 +796,559 @@ mod tests {
             ),
             None
         );
+    }
+
+    fn two_page_settings_different_notes() -> Settings {
+        // Page 0: pad 0 → note 60. Page 1: pad 0 → note 72.
+        let mut s = Settings::default();
+        s.pad_paging.pages.push(s.pad_paging.new_page());
+        s.pad_paging.pages[0].pads.0[0].hit = PadHitAction::Note {
+            channel: None,
+            note: 60,
+        };
+        s.pad_paging.pages[1].pads.0[0].hit = PadHitAction::Note {
+            channel: None,
+            note: 72,
+        };
+        s
+    }
+
+    #[test]
+    fn note_off_uses_the_note_that_was_pressed_not_the_current_page() {
+        let rt = crate::runtime_state::RuntimeState::default();
+        let mut backend = MidiBackend::with_sink(
+            two_page_settings_different_notes(),
+            CapturingSink { sent: Vec::new() },
+        );
+
+        backend
+            .handle_event(
+                &ControlEvent::PadNoteOn {
+                    index: 0,
+                    velocity: 100,
+                },
+                &rt,
+            )
+            .unwrap();
+
+        // Page switches while the pad is still physically held.
+        let mut switched = two_page_settings_different_notes();
+        switched.pad_paging.active = 1;
+        backend.replace_settings_for_test(switched);
+
+        backend
+            .handle_event(
+                &ControlEvent::PadNoteOff {
+                    index: 0,
+                    velocity: 0,
+                },
+                &rt,
+            )
+            .unwrap();
+
+        let sent = &backend.sink().sent;
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0][1], 60, "note-on used page 0");
+        assert_eq!(
+            sent[1][1], 60,
+            "note-off must release the note that was pressed"
+        );
+        assert_eq!(sent[1][0] & 0xF0, 0x80, "second message is a note-off");
+    }
+
+    #[test]
+    fn note_off_without_a_held_note_emits_nothing() {
+        let rt = crate::runtime_state::RuntimeState::default();
+        let mut backend = MidiBackend::with_sink(
+            two_page_settings_different_notes(),
+            CapturingSink { sent: Vec::new() },
+        );
+
+        // A picker tap's NoteOn never reaches the backend; its NoteOff must be silent.
+        let sent_any = backend
+            .handle_event(
+                &ControlEvent::PadNoteOff {
+                    index: 0,
+                    velocity: 0,
+                },
+                &rt,
+            )
+            .unwrap();
+
+        assert!(!sent_any);
+        assert!(backend.sink().sent.is_empty());
+    }
+
+    #[test]
+    fn flush_held_notes_releases_and_clears() {
+        let rt = crate::runtime_state::RuntimeState::default();
+        let mut settings = Settings::default();
+        settings.active_pads_mut()[1].hit = PadHitAction::Note {
+            channel: None,
+            note: 64,
+        };
+        // Pad 3 has no hit note (hit: Off) but an enabled poly-pressure target,
+        // so its `HeldPad` has `note: None` and `pressure: Some(..)`. Flush must
+        // still clear it, but silently — no note-off for a note that was never
+        // emitted.
+        settings.active_pads_mut()[3].hit = PadHitAction::Off;
+        settings.active_pads_mut()[3].pressure = PadPressureAction::Poly {
+            channel: None,
+            note: Some(60),
+        };
+        let mut backend = MidiBackend::with_sink(settings, CapturingSink { sent: Vec::new() });
+
+        backend
+            .handle_event(
+                &ControlEvent::PadNoteOn {
+                    index: 1,
+                    velocity: 100,
+                },
+                &rt,
+            )
+            .unwrap();
+        backend
+            .handle_event(
+                &ControlEvent::PadNoteOn {
+                    index: 3,
+                    velocity: 100,
+                },
+                &rt,
+            )
+            .unwrap();
+        // Pad 3's hit:Off NoteOn emits nothing; only pad 1's note-on was sent so far.
+        assert_eq!(backend.sink().sent.len(), 1);
+
+        backend.flush_held_notes().unwrap();
+
+        let sent = &backend.sink().sent;
+        assert_eq!(
+            sent.len(),
+            2,
+            "flush emits exactly one note-off (pad 1); pad 3's note-less entry is dropped silently"
+        );
+        assert_eq!(sent[1][0] & 0xF0, 0x80, "flush emits a note-off");
+        assert_eq!(sent[1][1], 64);
+
+        // Pad 1's held state is cleared: a later note-off (already released by
+        // the flush) emits nothing more.
+        assert!(
+            !backend
+                .handle_event(
+                    &ControlEvent::PadNoteOff {
+                        index: 1,
+                        velocity: 0
+                    },
+                    &rt
+                )
+                .unwrap()
+        );
+
+        // Pad 3's held entry is cleared too, but — unlike NoteOff — aftertouch
+        // with no held note now falls back to resolving against the current
+        // page. Swap in a page whose pad 3 pressure config differs from the
+        // one captured at press time, and confirm aftertouch follows the new
+        // config: a stale held target would ignore this settings change.
+        let mut after_flush = Settings::default();
+        after_flush.active_pads_mut()[3].hit = PadHitAction::Off;
+        after_flush.active_pads_mut()[3].pressure = PadPressureAction::Poly {
+            channel: None,
+            note: Some(77),
+        };
+        backend.replace_settings_for_test(after_flush);
+
+        assert!(
+            backend
+                .handle_event(
+                    &ControlEvent::PadAftertouch {
+                        index: 3,
+                        pressure: 90
+                    },
+                    &rt
+                )
+                .unwrap(),
+            "with the held entry cleared by flush, aftertouch resolves via the current-page fallback"
+        );
+        assert_eq!(
+            backend.sink().sent[2],
+            vec![0xA0, 77, 90],
+            "resolved from the post-flush settings, proving the held target was actually cleared"
+        );
+        assert_eq!(backend.sink().sent.len(), 3);
+    }
+
+    #[test]
+    fn hit_off_pad_still_emits_poly_pressure() {
+        let rt = crate::runtime_state::RuntimeState::default();
+        let mut settings = Settings::default();
+        settings.active_pads_mut()[3].hit = PadHitAction::Off;
+        settings.active_pads_mut()[3].pressure = PadPressureAction::Poly {
+            channel: None,
+            note: Some(60),
+        };
+        let mut backend = MidiBackend::with_sink(settings, CapturingSink { sent: Vec::new() });
+
+        // No note-on is emitted for a hit:Off pad ...
+        assert!(
+            !backend
+                .handle_event(
+                    &ControlEvent::PadNoteOn {
+                        index: 3,
+                        velocity: 100,
+                    },
+                    &rt,
+                )
+                .unwrap()
+        );
+        // ... but poly pressure must still be emitted.
+        assert!(
+            backend
+                .handle_event(
+                    &ControlEvent::PadAftertouch {
+                        index: 3,
+                        pressure: 80,
+                    },
+                    &rt,
+                )
+                .unwrap()
+        );
+
+        let sent = &backend.sink().sent;
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0][0] & 0xF0, 0xA0);
+        assert_eq!(sent[0][1], 60);
+    }
+
+    #[test]
+    fn poly_pressure_without_an_explicit_note_inherits_the_pressed_note() {
+        let rt = crate::runtime_state::RuntimeState::default();
+        let mut settings = Settings::default();
+        settings.active_pads_mut()[2].hit = PadHitAction::Note {
+            channel: None,
+            note: 55,
+        };
+        settings.active_pads_mut()[2].pressure = PadPressureAction::Poly {
+            channel: None,
+            note: None,
+        };
+        let mut backend = MidiBackend::with_sink(settings, CapturingSink { sent: Vec::new() });
+
+        backend
+            .handle_event(
+                &ControlEvent::PadNoteOn {
+                    index: 2,
+                    velocity: 100,
+                },
+                &rt,
+            )
+            .unwrap();
+        backend
+            .handle_event(
+                &ControlEvent::PadAftertouch {
+                    index: 2,
+                    pressure: 90,
+                },
+                &rt,
+            )
+            .unwrap();
+
+        let sent = &backend.sink().sent;
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1][0] & 0xF0, 0xA0);
+        assert_eq!(
+            sent[1][1], 55,
+            "aftertouch inherits the note that was pressed"
+        );
+    }
+
+    #[test]
+    fn poly_pressure_inherited_note_survives_a_page_switch() {
+        // The inherited note is resolved at NoteOn time from the pressing
+        // page, so a later page switch (with a different hit note on the same
+        // pad index) must not change what aftertouch reports.
+        let rt = crate::runtime_state::RuntimeState::default();
+        let mut settings = two_page_settings_different_notes();
+        settings.active_pads_mut()[2].hit = PadHitAction::Note {
+            channel: None,
+            note: 55,
+        };
+        settings.active_pads_mut()[2].pressure = PadPressureAction::Poly {
+            channel: None,
+            note: None,
+        };
+        let mut backend = MidiBackend::with_sink(settings, CapturingSink { sent: Vec::new() });
+
+        backend
+            .handle_event(
+                &ControlEvent::PadNoteOn {
+                    index: 2,
+                    velocity: 100,
+                },
+                &rt,
+            )
+            .unwrap();
+
+        // Page switches while the pad is still physically held; the new
+        // page's pad 2 has a different hit note.
+        let mut switched = two_page_settings_different_notes();
+        switched.pad_paging.active = 1;
+        switched.active_pads_mut()[2].hit = PadHitAction::Note {
+            channel: None,
+            note: 77,
+        };
+        switched.active_pads_mut()[2].pressure = PadPressureAction::Poly {
+            channel: None,
+            note: None,
+        };
+        backend.replace_settings_for_test(switched);
+
+        backend
+            .handle_event(
+                &ControlEvent::PadAftertouch {
+                    index: 2,
+                    pressure: 90,
+                },
+                &rt,
+            )
+            .unwrap();
+
+        let sent = &backend.sink().sent;
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1][0] & 0xF0, 0xA0);
+        assert_eq!(
+            sent[1][1], 55,
+            "aftertouch keeps the note resolved at press time, not the new page's note"
+        );
+    }
+
+    #[test]
+    fn aftertouch_without_a_held_note_resolves_against_the_current_page() {
+        // No NoteOn precedes this: the device ramps pressure up before
+        // crossing the note-on threshold, so this must resolve like the
+        // pre-paging `event_to_midi_bytes` path rather than dropping
+        // silently just because there's no held note yet.
+        let rt = crate::runtime_state::RuntimeState::default();
+        let s = settings_with_pad_pressure_enabled(0, 0, None);
+        let mut backend = MidiBackend::with_sink(s, CapturingSink { sent: Vec::new() });
+
+        let sent_any = backend
+            .handle_event(
+                &ControlEvent::PadAftertouch {
+                    index: 0,
+                    pressure: 40,
+                },
+                &rt,
+            )
+            .unwrap();
+
+        assert!(sent_any);
+        // pads[0].hit.note default = 48
+        assert_eq!(backend.sink().sent, vec![vec![0xA0, 48, 40]]);
+    }
+
+    #[test]
+    fn aftertouch_after_note_off_still_emits_the_trailing_ramp_down_to_zero() {
+        // The device keeps sending aftertouch after NoteOff as pressure ramps
+        // back down, ending in a pressure-0 reading. That reading must still
+        // reach the DAW to reset poly pressure — otherwise a released note
+        // leaves stale non-zero pressure held.
+        let rt = crate::runtime_state::RuntimeState::default();
+        let s = settings_with_pad_pressure_enabled(0, 0, None);
+        let mut backend = MidiBackend::with_sink(s, CapturingSink { sent: Vec::new() });
+
+        backend
+            .handle_event(
+                &ControlEvent::PadNoteOn {
+                    index: 0,
+                    velocity: 100,
+                },
+                &rt,
+            )
+            .unwrap();
+        backend
+            .handle_event(
+                &ControlEvent::PadNoteOff {
+                    index: 0,
+                    velocity: 0,
+                },
+                &rt,
+            )
+            .unwrap();
+        backend
+            .handle_event(
+                &ControlEvent::PadAftertouch {
+                    index: 0,
+                    pressure: 12,
+                },
+                &rt,
+            )
+            .unwrap();
+        let sent_any = backend
+            .handle_event(
+                &ControlEvent::PadAftertouch {
+                    index: 0,
+                    pressure: 0,
+                },
+                &rt,
+            )
+            .unwrap();
+
+        assert!(sent_any);
+        let sent = &backend.sink().sent;
+        assert_eq!(sent.len(), 4);
+        assert_eq!(sent[2], vec![0xA0, 48, 12]);
+        assert_eq!(
+            sent[3],
+            vec![0xA0, 48, 0],
+            "the trailing pressure-0 reading must reach the DAW to reset poly pressure"
+        );
+    }
+
+    #[test]
+    fn the_trailing_ramp_after_a_page_switch_resets_the_note_that_was_played() {
+        // Pad held across a page switch, then released. The device keeps ramping
+        // pressure down afterwards; that tail must reset the note that actually
+        // sounded, not poke a note on the new page that was never played.
+        let rt = crate::runtime_state::RuntimeState::default();
+        let mut settings = two_page_settings_different_notes();
+        for page in settings.pad_paging.pages.iter_mut() {
+            page.pads.0[0].pressure = PadPressureAction::Poly {
+                channel: None,
+                note: None,
+            };
+        }
+        let mut backend =
+            MidiBackend::with_sink(settings.clone(), CapturingSink { sent: Vec::new() });
+
+        backend
+            .handle_event(
+                &ControlEvent::PadNoteOn {
+                    index: 0,
+                    velocity: 100,
+                },
+                &rt,
+            )
+            .unwrap();
+
+        // Group hold + page tap while the pad is still down.
+        let mut switched = settings.clone();
+        switched.pad_paging.active = 1;
+        backend.replace_settings_for_test(switched);
+
+        backend
+            .handle_event(
+                &ControlEvent::PadNoteOff {
+                    index: 0,
+                    velocity: 0,
+                },
+                &rt,
+            )
+            .unwrap();
+        for pressure in [12u8, 0] {
+            backend
+                .handle_event(&ControlEvent::PadAftertouch { index: 0, pressure }, &rt)
+                .unwrap();
+        }
+
+        let sent = &backend.sink().sent;
+        assert_eq!(sent.len(), 4);
+        assert_eq!(sent[1], vec![0x80, 60, 0], "the pressed note is released");
+        assert_eq!(sent[2], vec![0xA0, 60, 12]);
+        assert_eq!(
+            sent[3],
+            vec![0xA0, 60, 0],
+            "the ramp must zero the note that sounded, not note 72 on the new page"
+        );
+
+        // The ramp is over: the pad's next press resolves against the new page.
+        backend
+            .handle_event(
+                &ControlEvent::PadNoteOn {
+                    index: 0,
+                    velocity: 100,
+                },
+                &rt,
+            )
+            .unwrap();
+        assert_eq!(backend.sink().sent[4], vec![0x90, 72, 100]);
+    }
+
+    #[test]
+    fn mark_picker_tap_silences_trailing_aftertouch_and_note_off() {
+        // Regression: a picker-tapped pad's trailing pressure ramp (which
+        // continues after Group is released) must not fall back to
+        // current-page resolution and emit poly pressure for a tap that was
+        // only a page selection.
+        let s = settings_with_pad_pressure_enabled(0, 0, None);
+        let mut backend = MidiBackend::with_sink(s, CapturingSink { sent: Vec::new() });
+
+        backend.mark_picker_tap(0);
+
+        let aftertouch_sent = backend
+            .handle_event(
+                &ControlEvent::PadAftertouch {
+                    index: 0,
+                    pressure: 100,
+                },
+                &rt(),
+            )
+            .unwrap();
+        assert!(
+            !aftertouch_sent,
+            "a picker-tapped pad's trailing aftertouch must stay silent"
+        );
+
+        let note_off_sent = backend
+            .handle_event(
+                &ControlEvent::PadNoteOff {
+                    index: 0,
+                    velocity: 0,
+                },
+                &rt(),
+            )
+            .unwrap();
+        assert!(!note_off_sent, "a picker-tapped pad emits no note-off");
+
+        assert!(backend.sink().sent.is_empty());
+    }
+
+    #[test]
+    fn mark_picker_tap_does_not_block_the_pads_next_real_press() {
+        let s = settings_with_pad_pressure_enabled(0, 0, None);
+        let mut backend = MidiBackend::with_sink(s, CapturingSink { sent: Vec::new() });
+
+        backend.mark_picker_tap(0);
+
+        let note_on_sent = backend
+            .handle_event(
+                &ControlEvent::PadNoteOn {
+                    index: 0,
+                    velocity: 100,
+                },
+                &rt(),
+            )
+            .unwrap();
+        assert!(note_on_sent, "the pad's next real press must emit normally");
+
+        let aftertouch_sent = backend
+            .handle_event(
+                &ControlEvent::PadAftertouch {
+                    index: 0,
+                    pressure: 90,
+                },
+                &rt(),
+            )
+            .unwrap();
+        assert!(
+            aftertouch_sent,
+            "aftertouch after a real press uses the press-time target"
+        );
+
+        let sent = &backend.sink().sent;
+        assert_eq!(sent.len(), 2);
+        // pads[0].hit.note default = 48
+        assert_eq!(sent[0], vec![0x90, 48, 100]);
+        assert_eq!(sent[1], vec![0xA0, 48, 90]);
     }
 
     #[test]

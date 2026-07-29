@@ -16,7 +16,7 @@ pub(crate) fn render_pad_led(
     on: bool,
     velocity: u8,
 ) {
-    let led = &settings.pads[index].led;
+    let led = &settings.active_pads()[index].led;
     if led.source != expected {
         return;
     }

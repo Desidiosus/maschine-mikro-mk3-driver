@@ -48,6 +48,10 @@ impl MidiSink for CapturingSink {
 
 #[test]
 fn pad_aftertouch_event_does_not_emit_when_pressure_disabled() {
+    // Disabled aftertouch drops silently whether or not the pad has a held
+    // note: `handle_event` resolves via stored held state when a note is
+    // sounding, and falls back to the current page (same `Disabled` check)
+    // otherwise. No NoteOn prelude is needed to reach either branch.
     let mut backend = MidiBackend::with_sink(Settings::default(), CapturingSink::default());
     backend
         .handle_event(
@@ -58,13 +62,25 @@ fn pad_aftertouch_event_does_not_emit_when_pressure_disabled() {
             &RuntimeState::default(),
         )
         .unwrap();
-    assert!(backend.sink().sent.is_empty());
+    assert!(
+        !backend.sink().sent.iter().any(|msg| msg[0] & 0xF0 == 0xA0),
+        "pressure disabled must not emit an aftertouch message, got {:?}",
+        backend.sink().sent
+    );
 }
 
 #[test]
 fn pad_aftertouch_event_emits_poly_pressure_when_enabled() {
+    // Real captures (wireshark/finger_drumming_on_windows.pcapng, report id
+    // 0x02) show the device ramping pressure up before crossing the NoteOn
+    // threshold and back down after NoteOff, including a trailing pressure-0
+    // reading with no outstanding note. `handle_event` resolves aftertouch
+    // for a held note against the target recorded at press time (so a page
+    // switch mid-note can't retarget it), and falls back to resolving
+    // against the current page whenever there is no held note — which is
+    // what this test exercises, with no NoteOn prelude needed.
     let mut settings = Settings::default();
-    settings.pads[3].pressure = PadPressureAction::Poly {
+    settings.active_pads_mut()[3].pressure = PadPressureAction::Poly {
         channel: MidiChannel::try_from(1).ok(),
         note: Some(60),
     };
@@ -78,7 +94,11 @@ fn pad_aftertouch_event_emits_poly_pressure_when_enabled() {
             &RuntimeState::default(),
         )
         .unwrap();
-    assert_eq!(backend.sink().sent, vec![vec![0xA1, 60, 99]]);
+    assert_eq!(
+        backend.sink().sent,
+        vec![vec![0xA1, 60, 99]],
+        "aftertouch resolves against the current page even with no held note"
+    );
 }
 
 #[test]

@@ -7,6 +7,7 @@ pub mod feedback;
 pub mod hid;
 pub mod ipc;
 pub mod outputs;
+pub mod paging;
 pub mod runtime_state;
 mod self_test;
 pub mod settings;
