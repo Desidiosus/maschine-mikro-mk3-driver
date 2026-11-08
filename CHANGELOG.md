@@ -13,8 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Pages tab in the GUI** — turn paging on, name your pages, drag to reorder, and add, duplicate, or delete them. Each page can have its own colour on the picker.
 - **Page picker on the pad grid** — switch pages from the app without reaching for the controller; the Assign panel shows which page the pad you're editing belongs to.
 - **Driver preferences** — soft-off (`Shift + Maschine`) and the LED sweep at launch can now be switched off in the GUI preferences.
+- **Automatic recovery from a frozen controller** — when the controller stops taking light and screen updates (a firmware freeze that used to need a replug), the driver resets it over USB and restores the lights and screen on its own.
+- **`--reset` flag** — `driver --reset` resets a frozen controller and exits.
+- **Recovery settings** — a new `[recovery]` section in `config.toml` turns auto-recovery off or tunes its timing. A GUI built with `--features recovery-tuning` shows these under Preferences → Advanced.
+- **`--debug-wedge` flag** — runs the driver as usual while logging write timing, input activity, and kernel log lines around each freeze.
 
 ### Changed
+- **udev rule updated** — the rule now also grants access to the raw USB device, which the USB reset needs, and keeps the controller out of USB autosuspend. Reinstall `98-maschine.rules` and reload udev after updating.
 - **`Group` switches pages while paging is on** — it stops sending its assigned note or CC until you turn paging off again.
 - Existing configurations keep working: your current pad mapping becomes the first page.
 - Holding a pad while the page changes no longer leaves a stuck note.

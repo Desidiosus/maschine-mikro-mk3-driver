@@ -259,6 +259,8 @@ pub fn update(state: &mut State, message: Message) -> Task<Message> {
             crate::prefs::overrides::driver_delta(|d| d.self_test_on_launch = Some(on)),
             true,
         ),
+        #[cfg(feature = "recovery-tuning")]
+        Message::Advanced(message) => crate::prefs::advanced::update(state, message),
         Message::NumericInput(field, s) => {
             state.edit_field = Some(field);
             state.edit_text = s.clone();

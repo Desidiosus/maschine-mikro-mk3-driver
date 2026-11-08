@@ -1,3 +1,26 @@
-SUBSYSTEM=="usb", ATTR{idVendor}=="17cc", ATTR{idProduct}=="1700", MODE="0666", TAG+="uaccess", TAG+="udev-acl", SYMLINK+="maschine%n"
-KERNEL=="hidraw*", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1700", MODE="0666", TAG+="uaccess", TAG+="udev-acl"
+# Native Instruments Maschine Mikro MK3 (17cc:1700)
+#
+# Install to /etc/udev/rules.d/98-maschine.rules, then:
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# uaccess grants the logged-in user access on systemd-logind systems. MODE is
+# the fallback for systems without logind; swap it for e.g. MODE="0660",
+# GROUP="plugdev" if 0666 is too permissive.
+#
+# Pinning runtime PM avoids an unexpected USB suspend, which can leave the
+# firmware stuck until the device is replugged.
 
+# Raw USB device: rusb needs it for USBDEVFS_RESET.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="17cc", ATTR{idProduct}=="1700", \
+  MODE="0666", TAG+="uaccess", \
+  ATTR{power/control}="on", ATTR{power/autosuspend_delay_ms}="-1"
+
+# hidraw node: hidapi talks to the device through it.
+KERNEL=="hidraw*", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1700", \
+  MODE="0666", TAG+="uaccess"
+
+# Optional: if the device sits behind a hub with runtime PM enabled, pin the
+# hub too. The IDs below are an example; find your hub with:
+#   readlink -f /sys/bus/usb/devices/<port>/..
+#SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="05e3", ATTR{idProduct}=="0610", \
+#  ATTR{power/control}="on"

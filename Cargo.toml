@@ -30,6 +30,7 @@ libc = "0.2"
 iced = { version = "0.14", features = ["canvas", "image-without-codecs", "svg", "smol"] }
 futures = "0.3"
 resvg = "0.47"
+rusb = { version = "0.9.4" }
 
 [workspace.metadata.cargo-shear]
 ignored = ["num-traits"]

@@ -16,6 +16,9 @@ resvg.workspace = true
 serde.workspace = true
 toml.workspace = true
 
+[features]
+recovery-tuning = []
+
 [[bin]]
 name = "gui"
 path = "src/main.rs"
