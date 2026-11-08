@@ -1,6 +1,7 @@
 use clap::Parser;
 use driver::app;
 use driver::error::DriverResult;
+use driver::session_observer::NoopObserver;
 use hidapi::HidResult;
 use maschine_library::font::Font;
 use maschine_library::hid::HidIo;
@@ -35,6 +36,12 @@ struct Args {
         help = "Issue a USB reset to the device and exit (recover a wedged controller)"
     )]
     reset: bool,
+
+    #[clap(
+        long,
+        help = "Run normally while logging diagnostics for device wedges (IN/OUT timing, kernel log)"
+    )]
+    debug_wedge: bool,
 }
 
 fn display_text(device: &impl HidIo, screen: &mut Screen, text: &str) -> HidResult<()> {
@@ -160,7 +167,11 @@ fn run() -> DriverResult<()> {
     println!("Running with settings:");
     println!("{:?}", loaded.settings);
 
-    app::run(loaded)
+    if args.debug_wedge {
+        driver::wedge_debug::run(loaded)
+    } else {
+        app::run(loaded, &NoopObserver)
+    }
 }
 
 fn main() -> ExitCode {

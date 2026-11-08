@@ -23,6 +23,7 @@ use crate::outputs::DeviceOutputs;
 use crate::paging::PagingAction;
 use crate::recovery::{RecoveryResult, recover_or_lost};
 use crate::self_test::self_test;
+use crate::session_observer::{NoopObserver, SessionObserver};
 use crate::settings::Settings;
 use crate::shared_settings::{SharedSettings, new_shared};
 use crate::soft_off::{SoftOffOutcome, SoftOffState, SoftOffSync, blank_outputs};
@@ -64,7 +65,10 @@ fn install_shutdown_signal_handlers() -> DriverResult<()> {
     Ok(())
 }
 
-pub fn run(loaded: crate::settings::LoadedConfig) -> DriverResult<()> {
+pub fn run(
+    loaded: crate::settings::LoadedConfig,
+    observer: &dyn SessionObserver,
+) -> DriverResult<()> {
     let crate::settings::LoadedConfig {
         settings,
         persist_base,
@@ -155,6 +159,7 @@ pub fn run(loaded: crate::settings::LoadedConfig) -> DriverResult<()> {
                         &page_apply_tx,
                         &device_present,
                         &tuning,
+                        observer,
                     );
 
                     // Recovery already emits `DeviceConnected(false)` when it drops
@@ -274,6 +279,7 @@ fn run_single_session<C: DeviceController>(
         &page_apply_tx,
         &device_present,
         &tuning,
+        &NoopObserver,
     );
     drop(page_apply_tx);
     let _ = page_apply_join.join();
@@ -304,6 +310,7 @@ fn run_device_loop<C: DeviceController>(
     page_apply_tx: &std::sync::mpsc::Sender<crate::settings::writer::PageApplyMsg>,
     device_present: &AtomicBool,
     tuning: &dyn Fn() -> RecoveryTuning,
+    observer: &dyn SessionObserver,
 ) -> SessionEnd {
     // A wedged OUT endpoint blocks the runtime thread in `write()` for the
     // kernel's 5 s timeout, so a watchdog thread resets the device on its
@@ -326,6 +333,7 @@ fn run_device_loop<C: DeviceController>(
             device_present,
             tuning,
             watchdog,
+            observer,
         )
     };
 
@@ -364,6 +372,7 @@ fn run_device_session<C: DeviceController>(
     device_present: &AtomicBool,
     tuning: &dyn Fn() -> RecoveryTuning,
     watchdog: &WriteWatchdog,
+    observer: &dyn SessionObserver,
 ) -> SessionEnd {
     let soft_off_sync = soft_off.sync();
     let mut state = ControlState::new();
@@ -394,6 +403,7 @@ fn run_device_session<C: DeviceController>(
             // its flag so recovery knows whether the device was already reset.
             watchdog.disarm();
             let watchdog_already_reset = watchdog.take_reset_issued();
+            let recovery_started = Instant::now();
             let outcome = recover_or_lost(
                 device,
                 controller,
@@ -408,6 +418,10 @@ fn run_device_session<C: DeviceController>(
                 watchdog_already_reset,
             );
             watchdog.arm();
+            observer.recovery_finished(
+                recovery_started.elapsed(),
+                matches!(outcome, RecoveryResult::Recovered(_)),
+            );
             device = match outcome {
                 RecoveryResult::Recovered(dev) => dev,
                 RecoveryResult::GaveUp => return SessionEnd::DeviceLost,
@@ -423,6 +437,7 @@ fn run_device_session<C: DeviceController>(
         if session_setup_succeeded(&device, outputs, &settings.load()) {
             break;
         }
+        observer.fault("device setup failed");
         recover!();
     }
     // Recoveries spent during setup must not count against the mid-session
@@ -487,6 +502,7 @@ fn run_device_session<C: DeviceController>(
         }
         if register_write_failed {
             eprintln!("HID register write error; entering recovery");
+            observer.fault("HID register write error");
             recover!();
             continue;
         }
@@ -623,6 +639,7 @@ fn run_device_session<C: DeviceController>(
                 let tuning = tuning();
                 if read_error_streak > tuning.quick_retries {
                     eprintln!("HID read error (streak {read_error_streak}); entering recovery");
+                    observer.fault("HID read error streak");
                     recover!();
                 } else {
                     thread::sleep(tuning.quick_retry_delay);
@@ -701,9 +718,11 @@ fn run_device_session<C: DeviceController>(
 
         // Bracket only the main-loop flush: setup sleeps between writes (the
         // self-test animation), which the watchdog would read as a stall.
+        observer.flush_started(outputs.lights_dirty() || outputs.screen_dirty());
         watchdog.begin_write(watchdog.now_ms());
         let flushed = outputs.flush(&device);
         watchdog.end_write();
+        observer.flush_finished(&flushed);
 
         match flushed {
             Ok(()) => {
