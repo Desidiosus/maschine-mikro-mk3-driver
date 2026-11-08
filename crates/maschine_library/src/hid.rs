@@ -20,3 +20,17 @@ impl HidIo for HidDevice {
         HidDevice::send_feature_report(self, data)
     }
 }
+
+impl<T: HidIo + ?Sized> HidIo for &T {
+    fn read_timeout(&self, buf: &mut [u8], timeout_ms: i32) -> HidResult<usize> {
+        (**self).read_timeout(buf, timeout_ms)
+    }
+
+    fn write(&self, data: &[u8]) -> HidResult<usize> {
+        (**self).write(data)
+    }
+
+    fn send_feature_report(&self, data: &[u8]) -> HidResult<()> {
+        (**self).send_feature_report(data)
+    }
+}
