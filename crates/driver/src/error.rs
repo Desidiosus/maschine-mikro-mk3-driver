@@ -9,6 +9,7 @@ pub enum DriverError {
     Midi(String),
     Bridge(String),
     Ipc(String),
+    Usb(rusb::Error),
 }
 
 pub type DriverResult<T> = Result<T, DriverError>;
@@ -21,6 +22,7 @@ impl fmt::Display for DriverError {
             Self::Midi(message) => write!(f, "MIDI error: {message}"),
             Self::Bridge(message) => write!(f, "MIDI bridge error: {message}"),
             Self::Ipc(message) => write!(f, "IPC error: {message}"),
+            Self::Usb(err) => write!(f, "USB error: {err}"),
         }
     }
 }
@@ -29,6 +31,7 @@ impl std::error::Error for DriverError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Hid(err) => Some(err),
+            Self::Usb(err) => Some(err),
             _ => None,
         }
     }
@@ -37,5 +40,11 @@ impl std::error::Error for DriverError {
 impl From<HidError> for DriverError {
     fn from(value: HidError) -> Self {
         Self::Hid(value)
+    }
+}
+
+impl From<rusb::Error> for DriverError {
+    fn from(value: rusb::Error) -> Self {
+        Self::Usb(value)
     }
 }
