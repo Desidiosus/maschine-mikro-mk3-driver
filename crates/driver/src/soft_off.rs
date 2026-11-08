@@ -96,6 +96,25 @@ impl SoftOffState {
         }
     }
 
+    /// Clears combo-button tracking after a device reopen, since a release missed
+    /// while the device was wedged would leave a button stuck and mis-toggle
+    /// soft-off. Preserves the sleep state and the saved output snapshot.
+    pub fn reset_input_tracking(&mut self) {
+        self.shift_pressed = false;
+        self.maschine_pressed = false;
+        self.suppress_combo_releases_until_clear = false;
+    }
+
+    /// Clears all soft-off state for a new device session, including the sleep
+    /// state and snapshot that [`reset_input_tracking`](Self::reset_input_tracking)
+    /// keeps, so a previous session's sleep does not carry over.
+    pub fn reset_for_new_session(&mut self) {
+        self.active = false;
+        self.sync.active.store(false, Ordering::SeqCst);
+        self.snapshot = None;
+        self.reset_input_tracking();
+    }
+
     #[cfg(test)]
     fn is_active(&self) -> bool {
         self.active
@@ -399,6 +418,38 @@ mod tests {
         let outcome = soft_off.observe_event(&outputs, &button_event(Buttons::Maschine, true));
 
         assert_eq!(outcome, SoftOffOutcome::Swallow);
+        assert!(soft_off.is_active());
+    }
+
+    #[test]
+    fn reset_input_tracking_drops_stale_combo_so_lone_press_does_not_toggle() {
+        let outputs = DeviceOutputs::new();
+        let mut soft_off = SoftOffState::new(SoftOffSync::new());
+
+        // The device is reopened before Shift's release is reported.
+        soft_off.observe_event(&outputs, &button_event(Buttons::Shift, true));
+        soft_off.reset_input_tracking();
+
+        assert_eq!(
+            soft_off.observe_event(&outputs, &button_event(Buttons::Maschine, true)),
+            SoftOffOutcome::Forward
+        );
+        assert!(
+            !soft_off.is_active(),
+            "a lone press after reopen must not toggle soft-off via stale combo state"
+        );
+    }
+
+    #[test]
+    fn reset_input_tracking_preserves_sleep_state() {
+        let outputs = DeviceOutputs::new();
+        let mut soft_off = SoftOffState::new(SoftOffSync::new());
+
+        soft_off.observe_event(&outputs, &button_event(Buttons::Shift, true));
+        soft_off.observe_event(&outputs, &button_event(Buttons::Maschine, true));
+        assert!(soft_off.is_active());
+
+        soft_off.reset_input_tracking();
         assert!(soft_off.is_active());
     }
 

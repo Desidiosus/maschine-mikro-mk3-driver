@@ -1,22 +1,19 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
+use std::thread;
 use std::time::{Duration, Instant};
 
-use hidapi::{HidApi, HidDevice};
 use maschine_library::controls::Buttons;
 use maschine_library::hid::HidIo;
 use maschine_library::lights::{BUTTON_BACKLIGHT_LEVEL, Brightness, Lights};
-use maschine_library::preferences::{
-    set_button_brightness, set_display_contrast, set_pad_sensitivity,
-};
 use maschine_library::screen::{Screen, render_centered_text};
-use maschine_library::{USB_PID, USB_VID};
 use num::FromPrimitive;
 use protocol::{ControlRef, DriverToGui, MidiDir};
 
 use crate::apply::{SideEffects, apply_device_registers, apply_output_overlays};
 use crate::backend::midi::MidiBackend;
+use crate::device::{BorrowedController, DeviceController, HidController, RecoveryTuning};
 use crate::error::{DriverError, DriverResult};
 use crate::events::ControlEvent;
 use crate::feedback::local::apply_local_output_feedback;
@@ -24,12 +21,20 @@ use crate::hid::{ControlState, decode_packet_with_curve};
 use crate::ipc::{EventSubscriber, emit_event};
 use crate::outputs::DeviceOutputs;
 use crate::paging::PagingAction;
+use crate::recovery::{RecoveryResult, recover_or_lost};
 use crate::self_test::self_test;
 use crate::settings::Settings;
 use crate::shared_settings::{SharedSettings, new_shared};
 use crate::soft_off::{SoftOffOutcome, SoftOffState, SoftOffSync, blank_outputs};
+use crate::write_watchdog::{self, WriteWatchdog};
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Pause before re-acquiring after a session ends. A controller wedged past
+/// recovery still accepts `open` (feature-report control transfers survive an
+/// OUT-endpoint wedge), so without it the loop would storm USB resets and
+/// repaints and flap `DeviceConnected` at the GUI.
+const REACQUIRE_BACKOFF: Duration = Duration::from_secs(2);
 
 /// Why a device session ended.
 enum SessionEnd {
@@ -109,29 +114,37 @@ pub fn run(loaded: crate::settings::LoadedConfig) -> DriverResult<()> {
         subscriber.clone(),
     )?;
 
+    // The controller holds the live settings handle so every reopen (recovery
+    // or hotplug) re-applies the current settings, not a startup snapshot.
+    let controller = HidController::new(shared.clone())?;
+    let tuning = RecoveryTuning::default();
+
     // Acquire the device, retrying so a later hotplug starts the runtime loop.
-    // On unplug the session ends with `DeviceLost` and we re-acquire without
-    // tearing down the IPC server or the virtual MIDI ports.
+    // A session recovers a wedge in place and ends with `DeviceLost` only once
+    // recovery gives up; we then re-acquire without tearing down the IPC server
+    // or the virtual MIDI ports.
     let result = (|| -> DriverResult<()> {
         loop {
             if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
                 return Ok(());
             }
-            match open_device() {
+            match controller.open() {
                 Ok(device) => {
-                    if apply_startup_preferences(&device, &shared.load()).is_err() {
-                        continue; // device flaked during init → re-acquire
-                    }
+                    // Clear soft-off sleep carried over from a previous session,
+                    // or setup paints an awake display while the shared flag still
+                    // suppresses DAW feedback and diverts overlay applies.
+                    soft_off.reset_for_new_session();
                     // Discard any side effects queued by IPC applies while there was
-                    // no device — startup preferences above already pushed the
-                    // current settings to the freshly opened device.
+                    // no device — `open` already pushed the current settings to the
+                    // freshly opened device.
                     while effects_rx.try_recv().is_ok() {}
                     device_present.store(true, Ordering::Release);
                     emit_event(&subscriber, DriverToGui::DeviceConnected(true));
 
                     let end = run_device_loop(
                         &shared,
-                        &device,
+                        &controller,
+                        device,
                         &SHUTDOWN_REQUESTED,
                         &effects_rx,
                         &subscriber,
@@ -140,20 +153,26 @@ pub fn run(loaded: crate::settings::LoadedConfig) -> DriverResult<()> {
                         &mut backend,
                         &outputs,
                         &page_apply_tx,
+                        &device_present,
+                        &tuning,
                     );
 
-                    device_present.store(false, Ordering::Release);
-                    emit_event(&subscriber, DriverToGui::DeviceConnected(false));
+                    // Recovery already emits `DeviceConnected(false)` when it drops
+                    // the handle, so emit only if we still own the transition.
+                    if device_present.swap(false, Ordering::AcqRel) {
+                        emit_event(&subscriber, DriverToGui::DeviceConnected(false));
+                    }
                     match end {
                         SessionEnd::Shutdown => return Ok(()),
                         SessionEnd::DeviceLost => {
                             eprintln!("Maschine Mikro MK3 disconnected; waiting for reconnect…");
+                            thread::sleep(REACQUIRE_BACKOFF);
                             continue;
                         }
                     }
                 }
                 Err(_) => {
-                    std::thread::sleep(Duration::from_secs(2));
+                    thread::sleep(REACQUIRE_BACKOFF);
                 }
             }
         }
@@ -167,20 +186,9 @@ pub fn run(loaded: crate::settings::LoadedConfig) -> DriverResult<()> {
     result
 }
 
-fn open_device() -> DriverResult<HidDevice> {
-    let api = HidApi::new()?;
-    let device = api.open(USB_VID, USB_PID)?;
-    device.set_blocking_mode(false)?;
-    Ok(device)
-}
-
-fn apply_startup_preferences<D: HidIo>(device: &D, settings: &Settings) -> DriverResult<()> {
-    set_pad_sensitivity(device, settings.hardware.pad_sensitivity)?;
-    set_display_contrast(device, settings.hardware.display_contrast)?;
-    set_button_brightness(device, settings.hardware.led_brightness)?;
-    Ok(())
-}
-
+/// Drive the loop against an already-open device. Reset is a no-op and reopen
+/// always returns the same handle, so only `max_consecutive_recoveries` ends a
+/// wedged session; setting it to `u32::MAX` would loop recovery forever.
 pub fn run_with_device<D: HidIo>(
     settings: SharedSettings,
     device: &D,
@@ -190,11 +198,55 @@ pub fn run_with_device<D: HidIo>(
 ) -> DriverResult<()> {
     settings.load().validate().map_err(DriverError::Settings)?;
 
+    let controller = BorrowedController::new(device);
+    run_single_session(
+        &settings,
+        &controller,
+        shutdown_requested,
+        &effects_rx,
+        &subscriber,
+        &RecoveryTuning::default(),
+    )
+}
+
+/// Run a single session that owns the device through `controller`, with no IPC
+/// client and no live settings updates.
+pub fn run_with_controller<C: DeviceController>(
+    settings: Settings,
+    controller: &C,
+    shutdown_requested: &AtomicBool,
+    tuning: &RecoveryTuning,
+) -> DriverResult<()> {
+    let shared = new_shared(settings);
+    shared.load().validate().map_err(DriverError::Settings)?;
+
+    let subscriber = crate::ipc::new_subscriber();
+    let (_effects_tx, effects_rx) = mpsc::channel();
+    run_single_session(
+        &shared,
+        controller,
+        shutdown_requested,
+        &effects_rx,
+        &subscriber,
+        tuning,
+    )
+}
+
+/// Build the per-session scaffold (outputs, soft-off, runtime state, MIDI
+/// backend) and run a single device session to completion.
+fn run_single_session<C: DeviceController>(
+    settings: &SharedSettings,
+    controller: &C,
+    shutdown_requested: &AtomicBool,
+    effects_rx: &Receiver<SideEffects>,
+    subscriber: &EventSubscriber,
+    tuning: &RecoveryTuning,
+) -> DriverResult<()> {
     let outputs = DeviceOutputs::new();
     let mut soft_off = SoftOffState::new(SoftOffSync::new());
     let runtime_state = crate::runtime_state::RuntimeState::default();
     let mut backend = MidiBackend::new(
-        &settings,
+        settings,
         &outputs,
         soft_off.sync(),
         runtime_state.clone(),
@@ -204,26 +256,32 @@ pub fn run_with_device<D: HidIo>(
     // render and accept taps while the active page never moved.
     let (page_apply_tx, page_apply_join) =
         crate::settings::writer::spawn_live_page_applier(settings.clone(), subscriber.clone());
+
+    let device = controller.open()?;
+    let device_present = AtomicBool::new(true);
     let _ = run_device_loop(
-        &settings,
+        settings,
+        controller,
         device,
         shutdown_requested,
-        &effects_rx,
-        &subscriber,
+        effects_rx,
+        subscriber,
         &mut soft_off,
         &runtime_state,
         &mut backend,
         &outputs,
         &page_apply_tx,
+        &device_present,
+        tuning,
     );
     drop(page_apply_tx);
     let _ = page_apply_join.join();
     Ok(())
 }
 
-/// Run one device session. Returns when the device is lost (HID error) or a
-/// shutdown is requested. Never propagates a HID error so the caller can
-/// re-acquire the device without tearing down long-lived state.
+/// Run one device session. HID errors are never propagated: recovery handles
+/// them in place, and `DeviceLost` is returned only once recovery gives up, so
+/// the caller can re-acquire.
 ///
 /// Wraps `run_device_session` so every exit path — shutdown, device loss, any
 /// of the several `DeviceLost` returns inside the session — flushes held notes
@@ -231,9 +289,10 @@ pub fn run_with_device<D: HidIo>(
 /// deliver the physical release, so without this a stale `held` entry would
 /// survive into the next session on this backend.
 #[allow(clippy::too_many_arguments)]
-fn run_device_loop<D: HidIo>(
+fn run_device_loop<C: DeviceController>(
     settings: &SharedSettings,
-    device: &D,
+    controller: &C,
+    device: C::Device,
     shutdown_requested: &AtomicBool,
     effects_rx: &Receiver<SideEffects>,
     subscriber: &EventSubscriber,
@@ -242,27 +301,52 @@ fn run_device_loop<D: HidIo>(
     backend: &mut MidiBackend,
     outputs: &DeviceOutputs,
     page_apply_tx: &std::sync::mpsc::Sender<crate::settings::writer::PageApplyMsg>,
+    device_present: &AtomicBool,
+    tuning: &RecoveryTuning,
 ) -> SessionEnd {
-    let end = run_device_session(
-        settings,
-        device,
-        shutdown_requested,
-        effects_rx,
-        subscriber,
-        soft_off,
-        runtime_state,
-        backend,
-        outputs,
-        page_apply_tx,
-    );
+    // A wedged OUT endpoint blocks the runtime thread in `write()` for the
+    // kernel's 5 s timeout, so a watchdog thread resets the device on its
+    // behalf; the reset also completes the pending URB and unblocks the write.
+    let watchdog = WriteWatchdog::new(tuning.write_stall_timeout);
+    let session = |watchdog: &WriteWatchdog| {
+        run_device_session(
+            settings,
+            controller,
+            device,
+            shutdown_requested,
+            effects_rx,
+            subscriber,
+            soft_off,
+            runtime_state,
+            backend,
+            outputs,
+            page_apply_tx,
+            device_present,
+            tuning,
+            watchdog,
+        )
+    };
+
+    let end = match controller.out_of_band_reset() {
+        Some(reset) => thread::scope(|scope| {
+            let watcher = write_watchdog::spawn(scope, &watchdog, reset, tuning.write_stall_poll);
+            let end = session(&watchdog);
+            watchdog.stop();
+            let _ = watcher.join();
+            end
+        }),
+        None => session(&watchdog),
+    };
+
     let _ = backend.flush_held_notes();
     end
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_device_session<D: HidIo>(
+fn run_device_session<C: DeviceController>(
     settings: &SharedSettings,
-    device: &D,
+    controller: &C,
+    mut device: C::Device,
     shutdown_requested: &AtomicBool,
     effects_rx: &Receiver<SideEffects>,
     subscriber: &EventSubscriber,
@@ -271,25 +355,10 @@ fn run_device_session<D: HidIo>(
     backend: &mut MidiBackend,
     outputs: &DeviceOutputs,
     page_apply_tx: &std::sync::mpsc::Sender<crate::settings::writer::PageApplyMsg>,
+    device_present: &AtomicBool,
+    tuning: &RecoveryTuning,
+    watchdog: &WriteWatchdog,
 ) -> SessionEnd {
-    // A fresh session always starts awake. Soft-off state is long-lived (it
-    // persists across unplug/replug so the MIDI ports stay stable), so a device
-    // unplugged while asleep would otherwise resume with the shared soft-off flag
-    // still set — silently dropping DAW feedback and deferring output overlays on
-    // a device that looks alive. Once soft-off is disabled the wake combo is no
-    // longer observed, so that phantom-sleep state would be unrecoverable.
-    soft_off.force_wake(outputs);
-
-    // Session setup; treat any HID error here as device loss.
-    let startup = settings.load();
-    if startup.driver.self_test_on_launch && run_startup_self_test(device).is_err() {
-        return SessionEnd::DeviceLost;
-    }
-    prepare_startup_outputs(outputs, &startup);
-    if outputs.flush(device).is_err() {
-        return SessionEnd::DeviceLost;
-    }
-
     let soft_off_sync = soft_off.sync();
     let mut state = ControlState::new();
     let mut buf = [0u8; 64];
@@ -301,6 +370,54 @@ fn run_device_session<D: HidIo>(
     // Tracks whether MIDI output is currently failing, so a broken port is logged
     // once (not once per event) and again only after it recovers.
     let mut midi_send_failed = false;
+    // Consecutive read errors; a sustained streak escalates to USB-reset recovery.
+    let mut read_error_streak: u32 = 0;
+    // Cleared on each successful flush, so a device that reopens but stays
+    // wedged eventually gives up to the re-acquire loop.
+    let mut consecutive_recoveries: u32 = 0;
+
+    // Returns from the enclosing session on `GaveUp` or `Shutdown`.
+    macro_rules! recover {
+        () => {{
+            // Park the watchdog so it can't reset underneath a reopen, and take
+            // its flag so recovery knows whether the device was already reset.
+            watchdog.disarm();
+            let watchdog_already_reset = watchdog.take_reset_issued();
+            let outcome = recover_or_lost(
+                device,
+                controller,
+                outputs,
+                &mut state,
+                soft_off,
+                subscriber,
+                device_present,
+                shutdown_requested,
+                tuning,
+                &mut consecutive_recoveries,
+                watchdog_already_reset,
+            );
+            watchdog.arm();
+            device = match outcome {
+                RecoveryResult::Recovered(dev) => dev,
+                RecoveryResult::GaveUp => return SessionEnd::DeviceLost,
+                RecoveryResult::Shutdown => return SessionEnd::Shutdown,
+            };
+            read_error_streak = 0;
+        }};
+    }
+
+    // A shutdown requested mid-setup is observed by `recover!()` on failure or
+    // by the main loop on success.
+    loop {
+        if session_setup_succeeded(&device, outputs, &settings.load()) {
+            break;
+        }
+        recover!();
+    }
+    // Recoveries spent during setup must not count against the mid-session
+    // budget, or a startup that needed a few resets would give up on the first
+    // flush failure.
+    consecutive_recoveries = 0;
 
     let mut paging = crate::paging::PagingState::new();
     let mut indicator = PageIndicator::new();
@@ -336,9 +453,13 @@ fn run_device_session<D: HidIo>(
         // overlays (backlight + pad idle LEDs) would light a sleeping device, so
         // while soft-off is active they accumulate in `pending_overlays` and are
         // flushed on wake against the restored outputs.
+        let mut register_write_failed = false;
         while let Ok(effects) = effects_rx.try_recv() {
-            if apply_device_registers(&effects, device).is_err() {
-                return SessionEnd::DeviceLost;
+            if apply_device_registers(&effects, &device).is_err() {
+                // A wedge can surface first on an IPC-driven register write,
+                // so recover in place as for read and flush faults.
+                register_write_failed = true;
+                break;
             }
             if effects.wake_soft_off && soft_off_sync.is_active() {
                 soft_off.force_wake(outputs);
@@ -352,6 +473,11 @@ fn run_device_session<D: HidIo>(
                     picker_dirty = true;
                 }
             }
+        }
+        if register_write_failed {
+            eprintln!("HID register write error; entering recovery");
+            recover!();
+            continue;
         }
         if !soft_off_sync.is_active()
             && (pending_overlays.refresh_backlight || pending_overlays.refresh_pad_leds != 0)
@@ -373,130 +499,123 @@ fn run_device_session<D: HidIo>(
         let auto_off_color = snapshot.slider.led.color;
 
         buf.fill(0);
-        let size = match device.read_timeout(&mut buf, 1) {
-            Ok(s) => s,
+        match device.read_timeout(&mut buf, 1) {
+            Ok(size) => {
+                read_error_streak = 0;
+                if size >= 1 {
+                    for event in decode_packet_with_curve(&mut state, &buf, pad_velocity_curve) {
+                        let outcome = if snapshot.driver.soft_off_enabled {
+                            soft_off.observe_event(outputs, &event)
+                        } else {
+                            SoftOffOutcome::Forward
+                        };
+                        if outcome == SoftOffOutcome::Swallow {
+                            // Soft-off owns the device while asleep; drop any
+                            // latched picker hold so it can't resume hijacking the
+                            // grid on wake. No repaint here: the device is blanked,
+                            // so the grid is reseeded on the wake edge instead.
+                            if soft_off_sync.is_active()
+                                && tear_down_picker(&mut paging, &mut sent_preview)
+                            {
+                                picker_torn_down_at_sleep = true;
+                            }
+                            continue;
+                        }
+                        if snapshot.pad_paging.enabled {
+                            let active = snapshot.pad_paging.active;
+                            let page_count = snapshot.pad_paging.pages.len();
+                            match paging.observe_event(active, page_count, &event) {
+                                PagingAction::None => {}
+                                PagingAction::Swallow => {
+                                    if let ControlEvent::PadNoteOn { index, .. } = &event {
+                                        backend.mark_picker_tap(*index);
+                                    }
+                                    continue;
+                                }
+                                PagingAction::OpenPicker => {
+                                    picker_dirty = true;
+                                    continue;
+                                }
+                                PagingAction::SelectPage(target) => {
+                                    let _ = page_apply_tx.send(
+                                        crate::settings::writer::PageApplyMsg::Preview(target),
+                                    );
+                                    if let ControlEvent::PadNoteOn { index, .. } = &event {
+                                        backend.mark_picker_tap(*index);
+                                    }
+                                    sent_preview = true;
+                                    picker_dirty = true;
+                                    continue;
+                                }
+                                PagingAction::ClosePicker(final_page) => {
+                                    let pads = snapshot
+                                        .pad_paging
+                                        .pages
+                                        .get(final_page)
+                                        .map(|p| &p.pads)
+                                        .unwrap_or_else(|| snapshot.active_pads());
+                                    seed_pads_from(outputs, pads, u16::MAX);
+                                    if sent_preview {
+                                        let _ = page_apply_tx.send(
+                                            crate::settings::writer::PageApplyMsg::Commit(
+                                                final_page,
+                                            ),
+                                        );
+                                        sent_preview = false;
+                                    }
+                                    continue;
+                                }
+                            }
+                        } else {
+                            close_picker(outputs, &snapshot, &mut paging, &mut sent_preview);
+                        }
+                        if let Some(control) = control_ref_for(&event) {
+                            emit_event(subscriber, DriverToGui::ControlActuated { control });
+                        }
+                        track_slider_release(&event, &mut slider_released_at);
+                        // Local feedback is best-effort: a failure here shouldn't
+                        // end the session (the flush below catches real device loss).
+                        //
+                        // While the page picker is open it owns the 16 pad LEDs, so
+                        // pad feedback must not repaint them; non-pad feedback still
+                        // applies.
+                        let pad_event = matches!(
+                            event,
+                            ControlEvent::PadNoteOn { .. }
+                                | ControlEvent::PadNoteOff { .. }
+                                | ControlEvent::PadAftertouch { .. }
+                        );
+                        if !(pad_event && paging.is_picking()) {
+                            let _ = apply_local_output_feedback(outputs, &snapshot, &event);
+                        }
+                        forward_event_to_backend(
+                            backend,
+                            &event,
+                            runtime_state,
+                            subscriber,
+                            &mut midi_send_failed,
+                        );
+                    }
+                }
+            }
             Err(_) => {
                 // A signal (SIGTERM/SIGINT) interrupts the read as EINTR → Err.
                 // On shutdown, still blank the device before exiting (the device
                 // is fine; only the read was interrupted).
                 if shutdown_requested.load(Ordering::Relaxed) {
                     blank_outputs(outputs);
-                    let _ = outputs.flush(device);
+                    let _ = outputs.flush(&device);
                     return SessionEnd::Shutdown;
                 }
-                return SessionEnd::DeviceLost; // unplugged → re-acquire
-            }
-        };
-
-        if size >= 1 {
-            for event in decode_packet_with_curve(&mut state, &buf, pad_velocity_curve) {
-                let outcome = if snapshot.driver.soft_off_enabled {
-                    soft_off.observe_event(outputs, &event)
+                // Otherwise the controller may be wedged.
+                read_error_streak += 1;
+                if read_error_streak > tuning.quick_retries {
+                    eprintln!("HID read error (streak {read_error_streak}); entering recovery");
+                    recover!();
                 } else {
-                    SoftOffOutcome::Forward
-                };
-                if outcome == SoftOffOutcome::Swallow {
-                    // Soft-off owns the device while asleep; drop any latched
-                    // picker hold so it can't resume hijacking the grid on wake.
-                    // No repaint here: the device is blanked, so the grid is
-                    // reseeded on the wake edge instead.
-                    if soft_off_sync.is_active() && tear_down_picker(&mut paging, &mut sent_preview)
-                    {
-                        picker_torn_down_at_sleep = true;
-                    }
-                    continue;
+                    thread::sleep(tuning.quick_retry_delay);
                 }
-                if snapshot.pad_paging.enabled {
-                    let active = snapshot.pad_paging.active;
-                    let page_count = snapshot.pad_paging.pages.len();
-                    match paging.observe_event(active, page_count, &event) {
-                        PagingAction::None => {}
-                        PagingAction::Swallow => {
-                            if let ControlEvent::PadNoteOn { index, .. } = &event {
-                                backend.mark_picker_tap(*index);
-                            }
-                            continue;
-                        }
-                        PagingAction::OpenPicker => {
-                            picker_dirty = true;
-                            continue;
-                        }
-                        PagingAction::SelectPage(target) => {
-                            let _ = page_apply_tx
-                                .send(crate::settings::writer::PageApplyMsg::Preview(target));
-                            if let ControlEvent::PadNoteOn { index, .. } = &event {
-                                backend.mark_picker_tap(*index);
-                            }
-                            sent_preview = true;
-                            picker_dirty = true;
-                            continue;
-                        }
-                        PagingAction::ClosePicker(final_page) => {
-                            let pads = snapshot
-                                .pad_paging
-                                .pages
-                                .get(final_page)
-                                .map(|p| &p.pads)
-                                .unwrap_or_else(|| snapshot.active_pads());
-                            seed_pads_from(outputs, pads, u16::MAX);
-                            if sent_preview {
-                                let _ = page_apply_tx.send(
-                                    crate::settings::writer::PageApplyMsg::Commit(final_page),
-                                );
-                                sent_preview = false;
-                            }
-                            continue;
-                        }
-                    }
-                } else {
-                    close_picker(outputs, &snapshot, &mut paging, &mut sent_preview);
-                }
-                if let Some(control) = control_ref_for(&event) {
-                    emit_event(subscriber, DriverToGui::ControlActuated { control });
-                }
-                match &event {
-                    ControlEvent::SliderTouch { pressed: false } => {
-                        slider_released_at = Some(Instant::now());
-                    }
-                    ControlEvent::SliderTouch { pressed: true }
-                    | ControlEvent::SliderMoved { .. } => {
-                        slider_released_at = None;
-                    }
-                    _ => {}
-                }
-                // Local feedback is best-effort: a failure here shouldn't end the
-                // session (the flush below will catch real device loss).
-                //
-                // While the page picker is open it owns the 16 pad LEDs, so pad
-                // feedback must not repaint them; non-pad feedback still applies.
-                let pad_event = matches!(
-                    event,
-                    ControlEvent::PadNoteOn { .. }
-                        | ControlEvent::PadNoteOff { .. }
-                        | ControlEvent::PadAftertouch { .. }
-                );
-                if !(pad_event && paging.is_picking()) {
-                    let _ = apply_local_output_feedback(outputs, &snapshot, &event);
-                }
-                // A MIDI send failure shouldn't tear down the session (a transient
-                // hiccup would needlessly drop the device); log it once and keep
-                // going so a recovered port resumes without a restart.
-                match backend.handle_event(&event, runtime_state) {
-                    Ok(true) => {
-                        midi_send_failed = false;
-                        emit_event(subscriber, DriverToGui::MidiActivity { dir: MidiDir::Out });
-                    }
-                    Ok(false) => {}
-                    Err(err) => {
-                        if !midi_send_failed {
-                            midi_send_failed = true;
-                            eprintln!(
-                                "MIDI send failed: {err} (continuing; suppressing further \
-                                 errors until output recovers)"
-                            );
-                        }
-                    }
-                }
+                continue;
             }
         }
 
@@ -568,14 +687,93 @@ fn run_device_session<D: HidIo>(
             slider_released_at = None;
         }
 
-        if outputs.flush(device).is_err() {
-            return SessionEnd::DeviceLost;
+        // Bracket only the main-loop flush: setup sleeps between writes (the
+        // self-test animation), which the watchdog would read as a stall.
+        watchdog.begin_write(watchdog.now_ms());
+        let flushed = outputs.flush(&device);
+        watchdog.end_write();
+
+        match flushed {
+            Ok(()) => {
+                // The device is making progress, so the recovery budget restarts.
+                consecutive_recoveries = 0;
+            }
+            Err(_) => {
+                if shutdown_requested.load(Ordering::Relaxed) {
+                    break;
+                }
+                // A flush error arrives only after the kernel USB timeout, so
+                // retrying would burn more multi-second timeouts. Recovery's
+                // dirty-all refresh repaints the dropped frame.
+                eprintln!("HID flush error; entering recovery");
+                recover!();
+                continue;
+            }
         }
     }
 
     blank_outputs(outputs);
-    let _ = outputs.flush(device); // device may already be gone on shutdown
+    let _ = outputs.flush(&device); // device may already be gone on shutdown
     SessionEnd::Shutdown
+}
+
+/// Run the self-test and startup paint, returning `false` on the first I/O fault.
+fn session_setup_succeeded<D: HidIo>(
+    device: &D,
+    outputs: &DeviceOutputs,
+    settings: &Settings,
+) -> bool {
+    if settings.driver.self_test_on_launch && run_startup_self_test(device).is_err() {
+        eprintln!("device setup failed (self-test); entering recovery");
+        return false;
+    }
+    prepare_startup_outputs(outputs, settings);
+    if outputs.flush(device).is_err() {
+        eprintln!("device setup failed (startup paint); entering recovery");
+        return false;
+    }
+    true
+}
+
+/// Stamp the slider release time so the idle timeout can later blank its LED.
+fn track_slider_release(event: &ControlEvent, slider_released_at: &mut Option<Instant>) {
+    match event {
+        ControlEvent::SliderTouch { pressed: false } => {
+            *slider_released_at = Some(Instant::now());
+        }
+        ControlEvent::SliderTouch { pressed: true } | ControlEvent::SliderMoved { .. } => {
+            *slider_released_at = None;
+        }
+        _ => {}
+    }
+}
+
+/// A send failure must not end the session, since a transient port hiccup would
+/// needlessly drop the device. It is logged once and suppressed until a send
+/// succeeds.
+fn forward_event_to_backend(
+    backend: &mut MidiBackend,
+    event: &ControlEvent,
+    runtime_state: &crate::runtime_state::RuntimeState,
+    subscriber: &EventSubscriber,
+    midi_send_failed: &mut bool,
+) {
+    match backend.handle_event(event, runtime_state) {
+        Ok(true) => {
+            *midi_send_failed = false;
+            emit_event(subscriber, DriverToGui::MidiActivity { dir: MidiDir::Out });
+        }
+        Ok(false) => {}
+        Err(err) => {
+            if !*midi_send_failed {
+                *midi_send_failed = true;
+                eprintln!(
+                    "MIDI send failed: {err} (continuing; suppressing \
+                     further errors until output recovers)"
+                );
+            }
+        }
+    }
 }
 
 fn control_ref_for(event: &ControlEvent) -> Option<ControlRef> {
