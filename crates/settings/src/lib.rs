@@ -7,9 +7,11 @@ pub mod groups;
 pub mod pad_paging;
 pub mod pads_by_index;
 pub mod partial;
+pub mod recovery;
 pub mod velocity_curve;
 
 pub use partial::PartialSettings;
+pub use recovery::RecoverySettings;
 pub use velocity_curve::PadVelocityCurve;
 
 pub use actions::{
@@ -64,6 +66,7 @@ pub struct Settings {
     pub hardware: HardwareSettings,
     pub bridge: BridgeSettings,
     pub driver: DriverSettings,
+    pub recovery: RecoverySettings,
     pub pad_paging: PadPaging,
     pub buttons: ButtonsByName,
     pub encoder: EncoderConfig,
@@ -77,6 +80,7 @@ impl Default for Settings {
             hardware: HardwareSettings::default(),
             bridge: BridgeSettings::default(),
             driver: DriverSettings::default(),
+            recovery: RecoverySettings::default(),
             pad_paging: pad_paging::default_pad_paging(),
             buttons: defaults::default_buttons(),
             encoder: defaults::default_encoder(),
@@ -116,6 +120,7 @@ impl Settings {
         if self.global.port_name_in.is_empty() {
             return Err("port_name_in must not be empty".to_string());
         }
+        self.recovery.validate()?;
         // Every emitted MIDI data byte must fit in 7 bits. The GUI clamps these,
         // but a hand-edited config file or a raw IPC client could carry an
         // out-of-range value; reject it here (the single gate every load and apply

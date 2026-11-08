@@ -117,7 +117,7 @@ pub fn run(loaded: crate::settings::LoadedConfig) -> DriverResult<()> {
     // The controller holds the live settings handle so every reopen (recovery
     // or hotplug) re-applies the current settings, not a startup snapshot.
     let controller = HidController::new(shared.clone())?;
-    let tuning = RecoveryTuning::default();
+    let tuning = || RecoveryTuning::from(&shared.load().recovery);
 
     // Acquire the device, retrying so a later hotplug starts the runtime loop.
     // A session recovers a wedge in place and ends with `DeviceLost` only once
@@ -259,6 +259,7 @@ fn run_single_session<C: DeviceController>(
 
     let device = controller.open()?;
     let device_present = AtomicBool::new(true);
+    let tuning = || tuning.clone();
     let _ = run_device_loop(
         settings,
         controller,
@@ -272,7 +273,7 @@ fn run_single_session<C: DeviceController>(
         &outputs,
         &page_apply_tx,
         &device_present,
-        tuning,
+        &tuning,
     );
     drop(page_apply_tx);
     let _ = page_apply_join.join();
@@ -302,12 +303,13 @@ fn run_device_loop<C: DeviceController>(
     outputs: &DeviceOutputs,
     page_apply_tx: &std::sync::mpsc::Sender<crate::settings::writer::PageApplyMsg>,
     device_present: &AtomicBool,
-    tuning: &RecoveryTuning,
+    tuning: &dyn Fn() -> RecoveryTuning,
 ) -> SessionEnd {
     // A wedged OUT endpoint blocks the runtime thread in `write()` for the
     // kernel's 5 s timeout, so a watchdog thread resets the device on its
     // behalf; the reset also completes the pending URB and unblocks the write.
-    let watchdog = WriteWatchdog::new(tuning.write_stall_timeout);
+    let session_tuning = tuning();
+    let watchdog = WriteWatchdog::new(session_tuning.write_stall_timeout);
     let session = |watchdog: &WriteWatchdog| {
         run_device_session(
             settings,
@@ -327,9 +329,13 @@ fn run_device_loop<C: DeviceController>(
         )
     };
 
-    let end = match controller.out_of_band_reset() {
+    let reset = controller
+        .out_of_band_reset()
+        .filter(|_| session_tuning.enabled);
+    let end = match reset {
         Some(reset) => thread::scope(|scope| {
-            let watcher = write_watchdog::spawn(scope, &watchdog, reset, tuning.write_stall_poll);
+            let watcher =
+                write_watchdog::spawn(scope, &watchdog, reset, session_tuning.write_stall_poll);
             let end = session(&watchdog);
             watchdog.stop();
             let _ = watcher.join();
@@ -356,7 +362,7 @@ fn run_device_session<C: DeviceController>(
     outputs: &DeviceOutputs,
     page_apply_tx: &std::sync::mpsc::Sender<crate::settings::writer::PageApplyMsg>,
     device_present: &AtomicBool,
-    tuning: &RecoveryTuning,
+    tuning: &dyn Fn() -> RecoveryTuning,
     watchdog: &WriteWatchdog,
 ) -> SessionEnd {
     let soft_off_sync = soft_off.sync();
@@ -379,6 +385,11 @@ fn run_device_session<C: DeviceController>(
     // Returns from the enclosing session on `GaveUp` or `Shutdown`.
     macro_rules! recover {
         () => {{
+            let tuning = tuning();
+            if !tuning.enabled {
+                eprintln!("USB auto-recovery disabled; reconnecting without a reset");
+                return SessionEnd::DeviceLost;
+            }
             // Park the watchdog so it can't reset underneath a reopen, and take
             // its flag so recovery knows whether the device was already reset.
             watchdog.disarm();
@@ -392,7 +403,7 @@ fn run_device_session<C: DeviceController>(
                 subscriber,
                 device_present,
                 shutdown_requested,
-                tuning,
+                &tuning,
                 &mut consecutive_recoveries,
                 watchdog_already_reset,
             );
@@ -609,6 +620,7 @@ fn run_device_session<C: DeviceController>(
                 }
                 // Otherwise the controller may be wedged.
                 read_error_streak += 1;
+                let tuning = tuning();
                 if read_error_streak > tuning.quick_retries {
                     eprintln!("HID read error (streak {read_error_streak}); entering recovery");
                     recover!();

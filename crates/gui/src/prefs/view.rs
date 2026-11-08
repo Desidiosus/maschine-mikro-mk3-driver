@@ -179,14 +179,29 @@ pub fn prefs_overlay(state: &State) -> Element<'_, Message> {
     ]
     .spacing(10);
 
+    #[allow(unused_mut)]
+    let mut sections = column![
+        pref_header("Editor settings"),
+        crate::widget::group_box::group_box(editor),
+        pref_header("Device settings"),
+        crate::widget::group_box::group_box(device),
+        pref_header("Driver"),
+        crate::widget::group_box::group_box(driver),
+    ]
+    .spacing(14);
+    #[cfg(feature = "recovery-tuning")]
+    {
+        sections =
+            sections
+                .push(pref_header("Advanced"))
+                .push(crate::widget::group_box::group_box(
+                    crate::prefs::advanced::view(state, &settings.recovery),
+                ));
+    }
+
     let panel = container(
         column![
-            pref_header("Editor settings"),
-            crate::widget::group_box::group_box(editor),
-            pref_header("Device settings"),
-            crate::widget::group_box::group_box(device),
-            pref_header("Driver"),
-            crate::widget::group_box::group_box(driver),
+            iced::widget::scrollable(sections).height(Length::Shrink),
             container(button("Close").on_press(Message::TogglePrefs))
                 .width(Length::Fill)
                 .align_x(iced::alignment::Horizontal::Right),
@@ -194,6 +209,7 @@ pub fn prefs_overlay(state: &State) -> Element<'_, Message> {
         .spacing(14)
         .padding(20),
     )
+    .max_height(680.0)
     .width(Length::Fixed(460.0))
     .height(Length::Shrink)
     .style(|_t: &Theme| container::Style {

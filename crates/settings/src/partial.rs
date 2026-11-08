@@ -20,6 +20,7 @@ pub struct PartialSettings {
     pub hardware: Option<PartialHardwareSettings>,
     pub bridge: Option<PartialBridgeSettings>,
     pub driver: Option<PartialDriverSettings>,
+    pub recovery: Option<crate::recovery::PartialRecoverySettings>,
     // Sparse per-pad overrides applied to the ACTIVE page on merge. Retained so a
     // pre-paging `[pads]` config still loads (migrating onto page 0) and so the
     // GUI's per-pad edits stay small. Never emitted by `diff_from` — persistence
@@ -399,6 +400,9 @@ impl Settings {
         if let Some(d) = partial.driver {
             apply_overrides!(self.driver, d; soft_off_enabled, self_test_on_launch);
         }
+        if let Some(r) = partial.recovery {
+            self.recovery.apply_overrides(r);
+        }
         if let Some(pp) = partial.pad_paging {
             apply_overrides!(self.pad_paging, pp; enabled, active, default_page_color);
             if let Some(pages) = pp.pages {
@@ -515,6 +519,7 @@ impl Settings {
         if d != PartialDriverSettings::default() {
             out.driver = Some(d);
         }
+        out.recovery = self.recovery.diff_from(&base.recovery);
 
         if self.pad_paging != base.pad_paging {
             let pages = if self.pad_paging.pages != base.pad_paging.pages {

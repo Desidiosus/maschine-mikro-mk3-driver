@@ -21,6 +21,8 @@ pub mod device {
     pub mod view;
 }
 pub mod prefs {
+    #[cfg(feature = "recovery-tuning")]
+    pub mod advanced;
     pub mod overrides;
     pub mod persistence;
     pub mod view;

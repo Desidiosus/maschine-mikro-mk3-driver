@@ -67,6 +67,8 @@ pub enum Message {
     /// Persisted driver toggles from the Preferences overlay.
     ToggleSoftOff(bool),
     ToggleSelfTestAtLaunch(bool),
+    #[cfg(feature = "recovery-tuning")]
+    Advanced(crate::prefs::advanced::AdvancedMessage),
     // --- redesign: generic numeric + tabs + labels ---
     NumericInput(EditField, String),
     NumericStep(EditField, i8),

@@ -21,6 +21,7 @@ fn test_settings() -> driver::settings::Settings {
 
 fn fast_tuning() -> RecoveryTuning {
     RecoveryTuning {
+        enabled: true,
         quick_retries: 3,
         quick_retry_delay: Duration::from_millis(0),
         reset_attempts: 2,
@@ -226,6 +227,7 @@ fn shutdown_during_escalation_exits_cleanly() {
     // Every reopen fails and the budgets are unbounded, so only a shutdown request
     // can end escalation, and it must do so promptly.
     let escalation_tuning = RecoveryTuning {
+        enabled: true,
         quick_retries: 3,
         quick_retry_delay: Duration::from_millis(0),
         reset_attempts: 2,
@@ -289,6 +291,36 @@ fn escalation_gives_up_and_reports_lost_when_device_never_returns() {
     // `max_reopen_attempts` (5) cycles x `reset_attempts` (2).
     assert_eq!(open_calls.load(Ordering::SeqCst), 1 + 5 * 2);
     assert_eq!(reset_calls.load(Ordering::SeqCst), 5 * 2);
+}
+
+#[test]
+fn disabled_recovery_ends_the_session_without_a_reset() {
+    if !alsa_seq_available() {
+        return;
+    }
+
+    let controller = FakeController::new(
+        vec![OpenOutcome::Device(vec![
+            Err(timed_out()),
+            Err(timed_out()),
+            Err(timed_out()),
+            Err(timed_out()),
+        ])],
+        false,
+    );
+    let tuning = RecoveryTuning {
+        enabled: false,
+        ..fast_tuning()
+    };
+
+    controller.run(&tuning).expect("loop should exit cleanly");
+
+    assert_eq!(controller.reset_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        controller.open_calls.load(Ordering::SeqCst),
+        1,
+        "the session hands the device back to the re-acquire loop instead of reopening it"
+    );
 }
 
 /// Reads emitted by a wedged device while writes (LED/screen flushes) fail.

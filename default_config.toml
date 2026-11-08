@@ -39,6 +39,19 @@
 # soft_off_enabled = true
 # self_test_on_launch = true
 
+[recovery]
+# enabled = true
+# quick_retries = 3
+# quick_retry_delay_ms = 5
+# reset_attempts = 2
+# reset_settle_ms = 500
+# backoff_initial_ms = 100
+# backoff_cap_ms = 2000
+# max_reopen_attempts = 6
+# max_consecutive_recoveries = 4
+# write_stall_timeout_ms = 500
+# write_stall_poll_ms = 100
+
 [pad_paging]
 # enabled = false
 # active = 0

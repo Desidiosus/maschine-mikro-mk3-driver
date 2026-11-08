@@ -292,6 +292,7 @@ mod tests {
 
     fn tuning() -> RecoveryTuning {
         RecoveryTuning {
+            enabled: true,
             quick_retries: 0,
             quick_retry_delay: Duration::ZERO,
             reset_attempts: 2,

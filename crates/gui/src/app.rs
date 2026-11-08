@@ -42,6 +42,8 @@ pub struct State {
     /// Which numeric field is being typed, and its in-progress text.
     pub(crate) edit_field: Option<crate::inspector::assign::numeric::EditField>,
     pub(crate) edit_text: String,
+    #[cfg(feature = "recovery-tuning")]
+    pub(crate) recovery_edit: crate::prefs::advanced::RecoveryEdit,
     /// Active sub-action tab for the current selection.
     pub(crate) assign_tab: crate::inspector::assign::forms::AssignTab,
     /// Active top-level inspector tab (Assign vs Pages).
@@ -346,6 +348,8 @@ impl Default for State {
             last_acked_seq: 0,
             edit_field: None,
             edit_text: String::new(),
+            #[cfg(feature = "recovery-tuning")]
+            recovery_edit: None,
             assign_tab: crate::inspector::assign::forms::AssignTab::A,
             inspector_tab: crate::message::InspectorTab::Assign,
             show_all_labels: false,

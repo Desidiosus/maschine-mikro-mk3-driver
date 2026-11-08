@@ -9,7 +9,7 @@ use maschine_library::preferences::{
 use maschine_library::{USB_PID, USB_VID};
 
 use crate::error::{DriverError, DriverResult};
-use crate::settings::Settings;
+use crate::settings::{RecoverySettings, Settings};
 use crate::shared_settings::SharedSettings;
 
 /// Opens and resets the HID device. Lets the runtime loop swap the device
@@ -72,6 +72,9 @@ pub fn reset_usb_device() -> DriverResult<()> {
 /// escalation fast.
 #[derive(Debug, Clone)]
 pub struct RecoveryTuning {
+    /// When false, a fault ends the session and the device is re-acquired
+    /// without any USB reset.
+    pub enabled: bool,
     pub quick_retries: u32,
     pub quick_retry_delay: Duration,
     /// Upper bound on USB resets per recovery cycle. A reopen follows each reset,
@@ -99,17 +102,24 @@ pub struct RecoveryTuning {
 
 impl Default for RecoveryTuning {
     fn default() -> Self {
+        Self::from(&RecoverySettings::default())
+    }
+}
+
+impl From<&RecoverySettings> for RecoveryTuning {
+    fn from(s: &RecoverySettings) -> Self {
         Self {
-            quick_retries: 3,
-            quick_retry_delay: Duration::from_millis(5),
-            reset_attempts: 2,
-            reset_settle: Duration::from_millis(500),
-            backoff_initial: Duration::from_millis(100),
-            backoff_cap: Duration::from_millis(2000),
-            max_reopen_attempts: 6,
-            max_consecutive_recoveries: 4,
-            write_stall_timeout: Duration::from_millis(500),
-            write_stall_poll: Duration::from_millis(100),
+            enabled: s.enabled,
+            quick_retries: s.quick_retries,
+            quick_retry_delay: Duration::from_millis(s.quick_retry_delay_ms),
+            reset_attempts: s.reset_attempts,
+            reset_settle: Duration::from_millis(s.reset_settle_ms),
+            backoff_initial: Duration::from_millis(s.backoff_initial_ms),
+            backoff_cap: Duration::from_millis(s.backoff_cap_ms),
+            max_reopen_attempts: s.max_reopen_attempts,
+            max_consecutive_recoveries: s.max_consecutive_recoveries,
+            write_stall_timeout: Duration::from_millis(s.write_stall_timeout_ms),
+            write_stall_poll: Duration::from_millis(s.write_stall_poll_ms),
         }
     }
 }
